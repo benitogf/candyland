@@ -1,0 +1,10 @@
+node_modules/
+build/
+db/
+dist/
+*.local
+*.log
+.DS_Store
+/candyland
+/candyland.exe
+/candyland-*
