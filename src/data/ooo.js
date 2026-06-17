@@ -35,3 +35,12 @@ export const useRun = (id) => {
     const cache = useOoo(id ? `runs/${id}` : null)
     return cache?.data || null
 }
+
+// Saved workspaces (named folder sets), live from the backend.
+export const useWorkspaces = () => {
+    const cache = useOoo('workspaces/*')
+    if (!Array.isArray(cache)) return []
+    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => (a.label || '').localeCompare(b.label || ''))
+}
+
+export const workspaceById = (list, id) => (list || []).find((w) => w.id === id) || null

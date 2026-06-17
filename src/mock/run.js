@@ -26,18 +26,8 @@ export const MODES = {
     'non-developer': { label: 'Non-developer', tagline: 'multiple-choice · a simple progress view, we handle the rest', accent: candy.pink },
 }
 
-// A workspace is a named set of folders. (Client config for now; the backend
-// will serve these once workspace persistence lands.)
-export const WORKSPACES = [
-    { id: 'web', label: 'Web app', folders: ['~/src/acme/web', '~/src/acme/ui-kit'] },
-    { id: 'reports-api', label: 'Reports API', folders: ['~/src/acme/reports-api', '~/src/acme/shared-go'] },
-    { id: 'full-stack', label: 'Full stack (web + api)', folders: ['~/src/acme/web', '~/src/acme/ui-kit', '~/src/acme/reports-api'] },
-    { id: 'mobile', label: 'Mobile app', folders: ['~/src/acme/mobile', '~/src/acme/ui-kit'] },
-    { id: 'infra', label: 'Infra & deploy', folders: ['~/src/acme/infra', '~/src/acme/terraform', '~/src/acme/ci'] },
-    { id: 'docs', label: 'Docs site', folders: ['~/src/acme/docs'] },
-]
-
-export const workspaceById = (id) => WORKSPACES.find((w) => w.id === id) || null
+// Workspaces now live in the backend (ooo) — see src/data/ooo.js useWorkspaces /
+// workspaceById. They are no longer client config.
 
 // Find an agent within a run object (run comes from live ooo state).
 export const agentInRun = (run, id) => (run ? (run.agents || []).find((a) => a.id === id) || null : null)

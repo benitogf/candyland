@@ -20,7 +20,8 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 
 import { useMode } from '../mode'
-import { MODES, WORKSPACES, workspaceById } from '../mock/run'
+import { MODES } from '../mock/run'
+import { useWorkspaces } from '../data/ooo'
 import { suggestTitle } from '../util'
 import CommandInput from '../components/CommandInput'
 import WorkspacesModal from '../components/WorkspacesModal'
@@ -47,6 +48,7 @@ const SelectCard = ({ selected, onClick, accent, children }) => (
 
 const NewRunWizard = ({ onClose, onStart }) => {
     const { mode, setMode } = useMode()
+    const workspaces = useWorkspaces()
     const [step, setStep] = useState(0)
     const [workspace, setWorkspace] = useState('')
     const [prompt, setPrompt] = useState('')
@@ -107,7 +109,7 @@ const NewRunWizard = ({ onClose, onStart }) => {
                             <Typography variant="h4" sx={{ mb: 0.5 }}>Which workspace?</Typography>
                             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>The set of folders this run is allowed to touch.</Typography>
                             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                                {WORKSPACES.map((w) => (
+                                {workspaces.map((w) => (
                                     <SelectCard key={w.id} selected={workspace === w.id} accent={MODES[mode].accent} onClick={() => setWorkspace(w.id)}>
                                         <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{w.label}</Typography>
                                         <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{w.folders.join(' · ')}</Typography>

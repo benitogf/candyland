@@ -13,9 +13,9 @@ import FolderIcon from '@mui/icons-material/Folder'
 
 import { candy } from '../config'
 import { useMode } from '../mode'
-import { PHASES, WORKSPACES, STATE_META, workspaceById } from '../mock/run'
+import { PHASES, STATE_META } from '../mock/run'
 import { runLabel } from '../util'
-import { useRuns } from '../data/ooo'
+import { useRuns, useWorkspaces } from '../data/ooo'
 import { createRun } from '../data/api'
 import { ModeBadge } from '../components/StatusBits'
 import NewRunWizard from '../wizard/NewRunWizard'
@@ -62,11 +62,11 @@ const RunCard = ({ run, onOpen, onClear }) => {
     )
 }
 
-const Landing = ({ runs, onClear, onOpen, onNew }) => {
+const Landing = ({ runs, workspaces, onClear, onOpen, onNew }) => {
     const running = runs.filter((r) => !isDoneRun(r))
     const recentDone = runs.filter(isDoneRun).slice(0, RECENT_DONE)
     const visible = [...running, ...recentDone]
-    const groups = WORKSPACES
+    const groups = workspaces
         .map((ws) => ({ ws, items: visible.filter((r) => r.workspace === ws.id) }))
         .filter((g) => g.items.length)
 
@@ -111,6 +111,7 @@ const Dashboard = () => {
     const { runId, tab } = useParams()
     const { mode } = useMode()
     const liveRuns = useRuns()
+    const workspaces = useWorkspaces()
     const [dismissed, setDismissed] = useState([])
 
     const runs = liveRuns.filter((r) => !dismissed.includes(r.id))
@@ -125,6 +126,7 @@ const Dashboard = () => {
         <Box>
             <Landing
                 runs={runs}
+                workspaces={workspaces}
                 onNew={() => navigate('/new')}
                 onOpen={(id) => navigate(`/run/${id}`)}
                 onClear={(id) => setDismissed((d) => [...d, id])}

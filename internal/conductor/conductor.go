@@ -62,6 +62,9 @@ func New(server *ooo.Server) *Conductor {
 
 // publish writes the run object to ooo (key runs/<id>); subscribers update live.
 func (c *Conductor) publish(r run.Run) {
+	if c.server == nil {
+		return // tests construct a serverless conductor and read state via Get
+	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return

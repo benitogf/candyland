@@ -45,6 +45,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // Register opens the realtime run paths and mounts the REST endpoints.
 func Register(server *ooo.Server, c *conductor.Conductor) {
 	server.OpenFilter("runs/*") // enables both the list (runs/*) and item (runs/<id>) reads
+	registerWorkspaces(server)
 
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}

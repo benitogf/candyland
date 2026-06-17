@@ -76,3 +76,11 @@ type Spec struct {
 
 // Phases are the lifecycle stages shown in the stepper.
 var Phases = []string{"Plan", "Build", "Integrate", "Review", "PR"}
+
+// Workspace is a named set of folders a run is allowed to touch. Persisted in
+// ooo (workspaces/<id>) and served to the client — no longer client config.
+type Workspace struct {
+	ID      string   `json:"id"`
+	Label   string   `json:"label"`
+	Folders []string `json:"folders"`
+}

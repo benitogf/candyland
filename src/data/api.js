@@ -24,6 +24,10 @@ export const beginRun = (id, answers) => post(`/runs/${id}/begin`, { answers })
 // Stop | resume | restart.
 export const commandRun = (id, command) => post(`/runs/${id}/command`, { command })
 
+// Workspace CRUD (named folder sets).
+export const createWorkspace = (ws) => post('/workspaces', ws)
+export const deleteWorkspace = (id) => fetch(`${base}/workspaces/${id}`, { method: 'DELETE' })
+
 // Planning questions for a mode (served by the backend).
 export const fetchQuestions = async (mode) => {
     const res = await fetch(`${base}/questions?mode=${encodeURIComponent(mode)}`)

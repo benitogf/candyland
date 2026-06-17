@@ -20,7 +20,8 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import ReplayIcon from '@mui/icons-material/Replay'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
-import { PHASES, workspaceById, isDone } from '../mock/run'
+import { PHASES, isDone } from '../mock/run'
+import { useWorkspaces, workspaceById } from '../data/ooo'
 import { runLabel } from '../util'
 import { StateChip, StateIcon, StateLegend, ModeBadge } from '../components/StatusBits'
 import RunSwitcher from './RunSwitcher'
@@ -192,11 +193,12 @@ const RunControls = ({ run, controls, done }) => {
 }
 
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
+    const workspaces = useWorkspaces()
     const isPlanning = !!planning
     const isDev = run.mode === 'developer'
     const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
-    const ws = workspaceById(run.workspace)
+    const ws = workspaceById(workspaces, run.workspace)
     const showTabs = isDev && !isPlanning
     // Real, functional completion — moves over the live run (elapsed-driven), or
     // reflects the phase for a static snapshot.

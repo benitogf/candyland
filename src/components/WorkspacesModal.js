@@ -16,18 +16,19 @@ import CloseIcon from '@mui/icons-material/Close'
 import FolderIcon from '@mui/icons-material/Folder'
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder'
 
-import { WORKSPACES } from '../mock/run'
+import { useWorkspaces } from '../data/ooo'
+import { createWorkspace, deleteWorkspace } from '../data/api'
 
-// Manage the saved folder sets, as a modal opened from the dashboard. A
-// workspace is just a name + the folders a run is allowed to touch — saved so
-// you pick it once. Mock: edits live in local state (no persistence yet).
+// Manage the saved folder sets, as a modal opened from the dashboard. Workspaces
+// are persisted in the backend (ooo) — created/deleted via REST, read live.
 
-const WorkspaceCard = ({ ws }) => (
+const WorkspaceCard = ({ ws, onDelete }) => (
     <Card>
         <CardContent>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1 }}>{ws.label}</Typography>
                 <Chip size="small" variant="outlined" label={`${ws.folders.length} folder${ws.folders.length === 1 ? '' : 's'}`} sx={{ height: 20, fontSize: 11 }} />
+                <IconButton size="small" onClick={() => onDelete(ws.id)} aria-label="delete workspace"><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
             </Box>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
                 {ws.folders.map((f) => (
@@ -97,7 +98,7 @@ const NewWorkspaceForm = ({ onCreate }) => {
 }
 
 const WorkspacesModal = ({ open, onClose }) => {
-    const [list, setList] = useState(WORKSPACES)
+    const list = useWorkspaces()
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { backgroundImage: 'none' } }}>
@@ -109,15 +110,12 @@ const WorkspacesModal = ({ open, onClose }) => {
                 <IconButton onClick={onClose} aria-label="close"><CloseIcon /></IconButton>
             </DialogTitle>
             <DialogContent dividers sx={{ borderColor: 'divider' }}>
-                <NewWorkspaceForm onCreate={(ws) => setList([...list, ws])} />
+                <NewWorkspaceForm onCreate={(ws) => createWorkspace(ws)} />
                 <Divider sx={{ mb: 3 }} />
                 <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 1.5 }}>saved · {list.length}</Typography>
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 2 }}>
-                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} />)}
+                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} onDelete={(id) => deleteWorkspace(id)} />)}
                 </Box>
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 3, fontStyle: 'italic' }}>
-                    Created workspaces live in memory this session; persistence wires in Phase 1.
-                </Typography>
             </DialogContent>
         </Dialog>
     )
