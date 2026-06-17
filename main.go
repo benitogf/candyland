@@ -67,5 +67,6 @@ func main() {
 	}()
 
 	server.Start("0.0.0.0:" + strconv.Itoa(*port))
+	httpapi.SeedWorkspaces(server) // storage is live only after Start
 	server.WaitClose()
 }

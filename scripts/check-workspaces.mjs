@@ -19,12 +19,23 @@ try {
     const web = await j('/workspaces/web')
     check('seeded default workspace served', web.status === 200 && web.body?.data?.label === 'Web app', web.body?.data?.label)
 
-    await j('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'Test WS', folders: ['~/x', '~/y'] }) })
-    const created = await j('/workspaces/test-ws')
-    check('create persists a workspace', created.status === 200 && created.body?.data?.folders?.length === 2, JSON.stringify(created.body?.data?.folders))
+    const postRes = await j('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'Test WS', folders: ['~/x', '~/y'] }) })
+    // The store settles asynchronously (the real client gets it over ws); poll the read.
+    let created = { status: 0 }
+    for (let i = 0; i < 20; i++) {
+        created = await j('/workspaces/test-ws')
+        if (created.status === 200) break
+        await new Promise((r) => setTimeout(r, 100))
+    }
+    check('create persists a workspace', postRes.status === 200 && created.status === 200 && created.body?.data?.folders?.length === 2, `post ${postRes.status}, read ${created.status}, folders ${created.body?.data?.folders?.length}`)
 
     await j('/api/workspaces/test-ws', { method: 'DELETE' })
-    const gone = await fetch(API + '/workspaces/test-ws')
+    let gone = { status: 200 }
+    for (let i = 0; i < 20; i++) {
+        gone = await fetch(API + '/workspaces/test-ws')
+        if (gone.status !== 200) break
+        await new Promise((r) => setTimeout(r, 100))
+    }
     check('delete removes a workspace', gone.status !== 200, `status ${gone.status}`)
 } catch (e) {
     check('workspace REST flow', false, e.message.split('\n')[0])

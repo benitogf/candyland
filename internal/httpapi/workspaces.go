@@ -40,8 +40,9 @@ func setWorkspace(server *ooo.Server, ws run.Workspace) {
 	_, _ = server.Storage.Set("workspaces/"+ws.ID, json.RawMessage(b))
 }
 
-// seedWorkspaces writes the defaults once (only if the path is empty).
-func seedWorkspaces(server *ooo.Server) {
+// SeedWorkspaces writes the defaults once (only if the path is empty). Must run
+// AFTER server.Start() — the storage isn't live before then.
+func SeedWorkspaces(server *ooo.Server) {
 	keys, _ := server.Storage.Keys()
 	for _, k := range keys {
 		if strings.HasPrefix(k, "workspaces/") {
@@ -56,7 +57,8 @@ func seedWorkspaces(server *ooo.Server) {
 // registerWorkspaces opens the realtime path and mounts CRUD endpoints.
 func registerWorkspaces(server *ooo.Server) {
 	server.OpenFilter("workspaces/*")
-	seedWorkspaces(server)
+	// Seeding happens after server.Start() (see SeedWorkspaces) — storage isn't
+	// live at registration time.
 
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/workspaces",
