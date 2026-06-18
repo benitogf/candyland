@@ -11,6 +11,7 @@ export const PHASES = ['Plan', 'Build', 'Integrate', 'Review', 'PR']
 export const STATE_META = {
     idle: { label: 'Queued', color: 'text.secondary', dot: '#6b5c8a', phase: 'progress' },
     working: { label: 'Working', color: 'info.main', dot: candy.sky, phase: 'progress' },
+    retrying: { label: 'Retrying', color: 'warning.main', dot: '#ffa94d', phase: 'progress' },
     blocked: { label: 'Blocked', color: 'warning.main', dot: candy.lemon, phase: 'progress' },
     integrating: { label: 'Integrating', color: 'secondary.main', dot: candy.mint, phase: 'progress' },
     green: { label: 'Green', color: 'success.main', dot: '#7bdc6a', phase: 'done' },

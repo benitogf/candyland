@@ -10,7 +10,7 @@ import Navbar from './Navbar'
 import Footer from './Footer'
 import Router from './Router'
 import SystemModal from '../components/SystemModal'
-import { useSystem } from '../data/system'
+import { useSystemStatus } from '../data/system'
 
 const drawerWidth = 248
 
@@ -20,7 +20,7 @@ const drawerWidth = 248
 const Layout = () => {
     const [mobileOpen, setMobileOpen] = useState(false)
     const [sysOpen, setSysOpen] = useState(false)
-    const { system, reachable, refetch } = useSystem()
+    const { system, reachable, refetch } = useSystemStatus()
 
     const drawerPaper = {
         width: drawerWidth, boxSizing: 'border-box',

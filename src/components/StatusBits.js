@@ -19,6 +19,7 @@ import { STATE_META, MODES } from '../mock/run'
 export const STATE_ICON = {
     idle: RadioButtonUncheckedIcon,
     working: AutorenewIcon,
+    retrying: AutorenewIcon,
     blocked: BlockIcon,
     integrating: CallMergeIcon,
     green: CheckCircleIcon,
@@ -28,7 +29,7 @@ export const STATE_ICON = {
 export const StateIcon = ({ state, size = 15 }) => {
     const m = STATE_META[state] || STATE_META.idle
     const Icon = STATE_ICON[state]
-    const spin = state === 'working'
+    const spin = state === 'working' || state === 'retrying'
     return (
         <Icon
             sx={{
@@ -55,7 +56,7 @@ export const StateChip = ({ state }) => {
 }
 
 // A two-bucket legend — the distinction the task list needs: in progress vs done.
-const PROGRESS = ['idle', 'working', 'blocked', 'integrating']
+const PROGRESS = ['idle', 'working', 'retrying', 'blocked', 'integrating']
 const DONE = ['green', 'done']
 
 const LegendGroup = ({ title, keys }) => (

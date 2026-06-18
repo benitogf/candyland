@@ -16,6 +16,7 @@ import { useMode } from '../mode'
 import { PHASES, STATE_META } from '../mock/run'
 import { runLabel } from '../util'
 import { useRuns, useWorkspaces } from '../data/ooo'
+import { useSystemStatus } from '../data/system'
 import { createRun } from '../data/api'
 import { useToast } from '../feedback'
 import { ModeBadge } from '../components/StatusBits'
@@ -63,7 +64,7 @@ const RunCard = ({ run, onOpen, onClear }) => {
     )
 }
 
-const Landing = ({ runs, workspaces, onClear, onOpen, onNew }) => {
+const Landing = ({ runs, workspaces, onClear, onOpen, onNew, reachable }) => {
     const running = runs.filter((r) => !isDoneRun(r))
     const recentDone = runs.filter(isDoneRun).slice(0, RECENT_DONE)
     const visible = [...running, ...recentDone]
@@ -77,9 +78,18 @@ const Landing = ({ runs, workspaces, onClear, onOpen, onNew }) => {
                 <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', py: 3 }}>
                     <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                         <Typography variant="h5" sx={{ fontWeight: 800 }}>Start something new</Typography>
-                        <Typography variant="body2" color="text.secondary">Describe what you want built — we'll guide you through it and hand back one PR.</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                            {reachable
+                                ? "Describe what you want built — we'll guide you through it and hand back one PR."
+                                : "The candyland server is unreachable — start it before you can begin a run."}
+                        </Typography>
                     </Box>
-                    <Button size="large" variant="contained" startIcon={<AddIcon />} onClick={onNew} sx={{ flexShrink: 0 }}>Start a new run</Button>
+                    {/* Guard: don't let the user start a run that can't reach the backend. */}
+                    <Tooltip title={reachable ? '' : 'Server unreachable — start ./candyland first'} disableHoverListener={reachable}>
+                        <Box sx={{ flexShrink: 0 }}>
+                            <Button size="large" variant="contained" startIcon={<AddIcon />} onClick={onNew} disabled={!reachable}>Start a new run</Button>
+                        </Box>
+                    </Tooltip>
                 </CardContent>
             </Card>
 
@@ -113,6 +123,7 @@ const Dashboard = () => {
     const { mode } = useMode()
     const liveRuns = useRuns()
     const workspaces = useWorkspaces()
+    const { reachable } = useSystemStatus()
     const toast = useToast()
     const [dismissed, setDismissed] = useState([])
 
@@ -120,6 +131,10 @@ const Dashboard = () => {
     const isNew = location.pathname === '/new'
 
     const start = async ({ workspace, prompt, title }) => {
+        if (!reachable) {
+            toast('Server unreachable — start ./candyland, then try again.')
+            return
+        }
         try {
             const { id } = await createRun({ mode, workspace, prompt, title })
             navigate(`/run/${id}`)
@@ -133,6 +148,7 @@ const Dashboard = () => {
             <Landing
                 runs={runs}
                 workspaces={workspaces}
+                reachable={reachable}
                 onNew={() => navigate('/new')}
                 onOpen={(id) => navigate(`/run/${id}`)}
                 onClear={(id) => setDismissed((d) => [...d, id])}

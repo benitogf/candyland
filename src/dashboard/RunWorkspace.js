@@ -13,6 +13,7 @@ import LinearProgress from '@mui/material/LinearProgress'
 import Stepper from '@mui/material/Stepper'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
@@ -75,7 +76,7 @@ const OverviewPanel = ({ run }) => (
             {run.agents.length === 0
                 ? <Typography variant="body2" color="text.secondary">No agents spawned yet — still planning.</Typography>
                 : run.agents.map((a) => (
-                    <Card key={a.id} sx={{ pl: 1.75, pr: 1.5, py: 1.25, display: 'flex', alignItems: 'center', gap: 1.25, maxWidth: '100%' }}>
+                    <Card key={a.id} title={a.activity} sx={{ pl: 1.75, pr: 1.5, py: 1.25, display: 'flex', alignItems: 'center', gap: 1.25, maxWidth: '100%' }}>
                         <Typography variant="body2" noWrap>{a.emoji} {a.role}</Typography>
                         <StateChip state={a.state} />
                     </Card>
@@ -180,15 +181,27 @@ const RunControls = ({ run, controls, done }) => {
             ? <Button color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
             : <Chip label="completed" size="small" color="success" variant="outlined" sx={{ flexShrink: 0 }} />
     }
+    const offline = controls.reachable === false
+    const offlineTip = 'Server unreachable — start ./candyland to control this run'
     if (controls.status === 'paused') {
         return (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                 <Chip label="stopped" size="small" color="warning" variant="outlined" />
-                <Button color="primary" variant="contained" startIcon={<ReplayIcon />} onClick={controls.restart}>Restart</Button>
+                <Tooltip title={offline ? offlineTip : ''} disableHoverListener={!offline}>
+                    <Box component="span">
+                        <Button color="primary" variant="contained" startIcon={<ReplayIcon />} disabled={offline} onClick={controls.restart}>Restart</Button>
+                    </Box>
+                </Tooltip>
             </Box>
         )
     }
-    return <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} onClick={controls.stop} sx={{ flexShrink: 0 }}>Stop run</Button>
+    return (
+        <Tooltip title={offline ? offlineTip : ''} disableHoverListener={!offline}>
+            <Box component="span" sx={{ flexShrink: 0 }}>
+                <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} disabled={offline} onClick={controls.stop}>Stop run</Button>
+            </Box>
+        </Tooltip>
+    )
 }
 
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {

@@ -17,7 +17,9 @@ import AgentTerminal from '../components/AgentTerminal'
 
 const sessionStatus = (state) => {
     if (state === 'working' || state === 'integrating') return { label: 'running', color: candy.sky }
-    if (state === 'blocked' || state === 'idle') return { label: 'queued', color: candy.lemon }
+    if (state === 'retrying') return { label: 'retrying', color: '#ffa94d' }
+    if (state === 'blocked') return { label: 'failed', color: candy.lemon }
+    if (state === 'idle') return { label: 'queued', color: candy.lemon }
     return { label: 'exited 0', color: candy.mint }
 }
 

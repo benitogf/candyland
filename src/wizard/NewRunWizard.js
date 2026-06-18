@@ -9,6 +9,7 @@ import Step from '@mui/material/Step'
 import StepLabel from '@mui/material/StepLabel'
 import Stepper from '@mui/material/Stepper'
 import TextField from '@mui/material/TextField'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
@@ -22,6 +23,7 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 import { useMode } from '../mode'
 import { MODES } from '../mock/run'
 import { useWorkspaces } from '../data/ooo'
+import { useSystemStatus } from '../data/system'
 import { suggestTitle } from '../util'
 import CommandInput from '../components/CommandInput'
 import WorkspacesModal from '../components/WorkspacesModal'
@@ -49,6 +51,7 @@ const SelectCard = ({ selected, onClick, accent, children }) => (
 const NewRunWizard = ({ onClose, onStart }) => {
     const { mode, setMode } = useMode()
     const workspaces = useWorkspaces()
+    const { reachable } = useSystemStatus()
     const [step, setStep] = useState(0)
     const [workspace, setWorkspace] = useState('')
     const [prompt, setPrompt] = useState('')
@@ -151,7 +154,13 @@ const NewRunWizard = ({ onClose, onStart }) => {
                     <Box sx={{ flexGrow: 1 }} />
                     {step < STEPS.length - 1
                         ? <Button variant="contained" endIcon={<ArrowForwardIcon />} disabled={!canNext} onClick={next}>Next</Button>
-                        : <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!canNext} onClick={next}>Start run</Button>}
+                        : (
+                            <Tooltip title={reachable ? '' : 'Server unreachable — start ./candyland first'} disableHoverListener={reachable}>
+                                <Box component="span">
+                                    <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!canNext || !reachable} onClick={next}>Start run</Button>
+                                </Box>
+                            </Tooltip>
+                        )}
                 </Box>
             </Box>
 

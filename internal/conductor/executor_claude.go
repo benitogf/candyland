@@ -1,11 +1,9 @@
 package conductor
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 
@@ -117,9 +115,12 @@ func fanOut(ctx context.Context, c *Conductor, id, prompt string) {
 		r.Tasks = []run.Task{}
 	})
 
-	tasks := runAgentProcess(ctx, c, id, "tl", techLeadPrompt(prompt))
+	tasks := runAgentResilient(ctx, c, id, "tl", techLeadPrompt(prompt), true)
 	if len(tasks) == 0 || ctx.Err() != nil {
-		return // no partition emitted (or stopped) — single-agent run
+		// Stopped, or the tech lead failed to produce a partition after retries
+		// (runAgentResilient already recorded r.Error + blocked the agent). Either
+		// way there are no coders to run — never silently report success.
+		return
 	}
 
 	// Write the partition DAG and spawn one coder per task, in parallel.
@@ -139,7 +140,7 @@ func fanOut(ctx context.Context, c *Conductor, id, prompt string) {
 		wg.Add(1)
 		go func(t partitionTask) {
 			defer wg.Done()
-			runAgentProcess(ctx, c, id, t.ID, coderPrompt(t))
+			runAgentResilient(ctx, c, id, t.ID, coderPrompt(t), false)
 			c.Update(id, func(r *run.Run) {
 				// Don't claim success for a coder that failed to start (r.Error) or
 				// was killed mid-flight by Stop/Restart (ctx cancelled) — a SIGKILL
@@ -177,54 +178,24 @@ func coderPrompt(t partitionTask) string {
 		". Files: " + strings.Join(t.Files, ", ") + ". Test: " + t.Test
 }
 
-// runAgentProcess spawns a claude process, maps each stream-json line to the
-// given agent, and returns any partition parsed from a `PARTITION <json>` line.
-func runAgentProcess(ctx context.Context, c *Conductor, id, agentID, prompt string) []partitionTask {
-	cmd := exec.CommandContext(ctx, claudeBin(), "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", "claude-opus-4-8")
-	stdout, err := cmd.StdoutPipe()
-	if err == nil {
-		err = cmd.Start()
-	}
-	if err != nil {
-		msg := "Claude Code failed to start: " + err.Error() + ". Ensure it's installed and authenticated (run `claude` once interactively, or set ANTHROPIC_API_KEY). See Setup for install instructions."
-		c.Update(id, func(r *run.Run) {
-			appendToAgent(r, agentID, run.Event{T: "text", Text: msg}, 0)
-			r.Error = msg
-			setAgentState(r, agentID, "blocked", "could not start")
-		})
-		// Terminal status is owned by the Execute loop (so it doesn't claim PR/100%
-		// on an errored run, and a sibling coder failure doesn't finish the run early).
-		return nil
-	}
-	var partition []partitionTask
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
-	for sc.Scan() {
-		var line streamLine
-		if json.Unmarshal(sc.Bytes(), &line) != nil {
-			continue
-		}
-		if p := mapAgentLine(c, id, agentID, line); p != nil {
-			partition = p
-		}
-	}
-	_ = cmd.Wait()
-	return partition
-}
-
-func mapAgentLine(c *Conductor, id, agentID string, line streamLine) []partitionTask {
-	var parsed []partitionTask
+// mapAgentLine streams one stream-json line into the agent's live ooo state and
+// returns the signals the resilience layer uses to judge compliance: any parsed
+// partition, whether a tool was used (real work), and the latest text (checked
+// for deferral / a question to the user).
+func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, sawTool bool, text string) {
 	switch line.Type {
 	case "assistant":
 		for _, blk := range line.Message.Content {
 			b := blk
 			if b.Type == "text" && b.Text != "" {
 				if p := parsePartition(b.Text); p != nil {
-					parsed = p
+					partition = p
 				}
+				text = b.Text
 				c.Update(id, func(r *run.Run) { appendToAgent(r, agentID, run.Event{T: "text", Text: b.Text}, 0) })
 			}
 			if b.Type == "tool_use" {
+				sawTool = true
 				c.Update(id, func(r *run.Run) {
 					appendToAgent(r, agentID, run.Event{T: "tool", Name: b.Name, Input: truncate(string(b.Input), 200)}, 0)
 				})
@@ -232,11 +203,14 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) []partition
 		}
 	case "result":
 		l := line
+		if l.Result != "" {
+			text = l.Result
+		}
 		c.Update(id, func(r *run.Run) {
 			appendToAgent(r, agentID, run.Event{T: "result", Text: truncate(l.Result, 300)}, l.Usage.OutputTokens/1000)
 		})
 	}
-	return parsed
+	return partition, sawTool, text
 }
 
 // parsePartition extracts the task array from a `PARTITION <json>` line.

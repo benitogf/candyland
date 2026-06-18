@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Card from '@mui/material/Card'
@@ -17,19 +18,20 @@ import FolderIcon from '@mui/icons-material/Folder'
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder'
 
 import { useWorkspaces } from '../data/ooo'
+import { useSystemStatus } from '../data/system'
 import { createWorkspace, deleteWorkspace } from '../data/api'
 import { useToast } from '../feedback'
 
 // Manage the saved folder sets, as a modal opened from the dashboard. Workspaces
 // are persisted in the backend (ooo) — created/deleted via REST, read live.
 
-const WorkspaceCard = ({ ws, onDelete }) => (
+const WorkspaceCard = ({ ws, onDelete, disabled }) => (
     <Card>
         <CardContent>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1 }}>{ws.label}</Typography>
                 <Chip size="small" variant="outlined" label={`${ws.folders.length} folder${ws.folders.length === 1 ? '' : 's'}`} sx={{ height: 20, fontSize: 11 }} />
-                <IconButton size="small" onClick={() => onDelete(ws.id)} aria-label="delete workspace"><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
+                <IconButton size="small" onClick={() => onDelete(ws.id)} disabled={disabled} aria-label="delete workspace"><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
             </Box>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
                 {ws.folders.map((f) => (
@@ -43,7 +45,7 @@ const WorkspaceCard = ({ ws, onDelete }) => (
     </Card>
 )
 
-const NewWorkspaceForm = ({ onCreate }) => {
+const NewWorkspaceForm = ({ onCreate, disabled }) => {
     const [name, setName] = useState('')
     const [folder, setFolder] = useState('')
     const [folders, setFolders] = useState([])
@@ -89,7 +91,7 @@ const NewWorkspaceForm = ({ onCreate }) => {
                     </Box>
                 </Box>
                 <Box>
-                    <Button variant="contained" startIcon={<AddIcon />} disabled={!name.trim() || folders.length === 0} onClick={create}>
+                    <Button variant="contained" startIcon={<AddIcon />} disabled={disabled || !name.trim() || folders.length === 0} onClick={create}>
                         Create workspace
                     </Button>
                 </Box>
@@ -100,6 +102,7 @@ const NewWorkspaceForm = ({ onCreate }) => {
 
 const WorkspacesModal = ({ open, onClose }) => {
     const list = useWorkspaces()
+    const { reachable } = useSystemStatus()
     const toast = useToast()
 
     return (
@@ -112,11 +115,16 @@ const WorkspacesModal = ({ open, onClose }) => {
                 <IconButton onClick={onClose} aria-label="close"><CloseIcon /></IconButton>
             </DialogTitle>
             <DialogContent dividers sx={{ borderColor: 'divider' }}>
-                <NewWorkspaceForm onCreate={(ws) => createWorkspace(ws).catch(() => toast("Couldn't create the workspace — is the server reachable?"))} />
+                {!reachable && (
+                    <Alert severity="error" variant="outlined" sx={{ mb: 2 }}>
+                        Server unreachable — start <code>./candyland</code> to add or remove workspaces.
+                    </Alert>
+                )}
+                <NewWorkspaceForm disabled={!reachable} onCreate={(ws) => createWorkspace(ws).catch(() => toast("Couldn't create the workspace — is the server reachable?"))} />
                 <Divider sx={{ mb: 3 }} />
                 <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 1.5 }}>saved · {list.length}</Typography>
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 2 }}>
-                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} onDelete={(id) => deleteWorkspace(id).catch(() => toast("Couldn't delete the workspace."))} />)}
+                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} disabled={!reachable} onDelete={(id) => deleteWorkspace(id).catch(() => toast("Couldn't delete the workspace."))} />)}
                 </Box>
             </DialogContent>
         </Dialog>

@@ -22,15 +22,16 @@ import { fetchQuestions } from '../data/api'
 // autocomplete and an explicit "build it" go-gate. Ends with onComplete(answers).
 const THINK_MS = 900
 
-const OptionCard = ({ label, selected, multi, onClick }) => (
+const OptionCard = ({ label, selected, multi, onClick, disabled }) => (
     <Card
-        onClick={onClick}
+        onClick={disabled ? undefined : onClick}
         sx={{
-            px: 2, py: 1.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 1.5,
+            px: 2, py: 1.5, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1,
+            display: 'flex', alignItems: 'center', gap: 1.5,
             transition: 'background-color 120ms, box-shadow 120ms',
             boxShadow: (t) => (selected ? `0 0 0 1px ${t.palette.primary.main}` : 'none'),
             backgroundColor: (t) => (selected ? `${t.palette.primary.main}14` : undefined),
-            '&:hover': { backgroundColor: 'rgba(255,255,255,0.04)' },
+            '&:hover': { backgroundColor: disabled ? undefined : 'rgba(255,255,255,0.04)' },
         }}
     >
         {multi
@@ -47,7 +48,7 @@ const Loader = ({ text }) => (
     </Box>
 )
 
-const PlanningFlow = ({ mode, onComplete, onError }) => {
+const PlanningFlow = ({ mode, onComplete, onError, reachable = true }) => {
     const dev = mode === 'developer'
     const [questions, setQuestions] = useState(null)
     const [error, setError] = useState(false)
@@ -109,13 +110,19 @@ const PlanningFlow = ({ mode, onComplete, onError }) => {
     if (questions.length === 0) {
         return (
             <Box sx={{ maxWidth: 640, mx: 'auto', textAlign: 'center', py: 6 }}>
-                <Button variant="contained" startIcon={<RocketLaunchIcon />} onClick={() => onComplete({})}>Start building</Button>
+                {!reachable && (
+                    <Alert severity="error" variant="outlined" sx={{ mb: 2, textAlign: 'left' }}>
+                        Server unreachable — start <Box component="span" sx={{ fontFamily: 'monospace' }}>./candyland</Box> to begin the build.
+                    </Alert>
+                )}
+                <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!reachable} onClick={() => onComplete({})}>Start building</Button>
             </Box>
         )
     }
 
     const isLast = step === questions.length - 1
     const commit = (value) => {
+        if (isLast && !reachable) return // beginning the build needs the server; the banner explains why
         const next = { ...answers, [q.id]: value }
         setAnswers(next)
         if (isLast) onComplete(next)
@@ -133,6 +140,12 @@ const PlanningFlow = ({ mode, onComplete, onError }) => {
                 <Typography variant="overline" color="primary" sx={{ whiteSpace: 'nowrap' }}>Question {step + 1} of {questions.length}</Typography>
                 <LinearProgress variant="determinate" value={(step / questions.length) * 100} sx={{ flexGrow: 1, height: 5, borderRadius: 3 }} />
             </Box>
+
+            {!reachable && (
+                <Alert severity="error" variant="outlined" sx={{ mb: 2 }}>
+                    Server unreachable — start <Box component="span" sx={{ fontFamily: 'monospace' }}>./candyland</Box> to begin the build. You can keep answering; the build unlocks when it&apos;s back.
+                </Alert>
+            )}
 
             {loading ? (
                 <Loader text={step === 0 ? 'Preparing the first question…' : 'Preparing the next question…'} />
@@ -157,7 +170,7 @@ const PlanningFlow = ({ mode, onComplete, onError }) => {
                     ) : (
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
                             {q.options.map((opt) => (
-                                <OptionCard key={opt} label={opt} multi={q.multi} selected={q.multi ? picks.includes(opt) : answers[q.id] === opt} onClick={() => (q.multi ? toggle(opt) : commit(opt))} />
+                                <OptionCard key={opt} label={opt} multi={q.multi} disabled={isLast && !q.multi && !reachable} selected={q.multi ? picks.includes(opt) : answers[q.id] === opt} onClick={() => (q.multi ? toggle(opt) : commit(opt))} />
                             ))}
                         </Box>
                     )}
@@ -167,7 +180,7 @@ const PlanningFlow = ({ mode, onComplete, onError }) => {
                         <Box sx={{ flexGrow: 1 }} />
                         {(dev || q.multi) && (
                             isLast
-                                ? <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!canContinue} onClick={() => commit(dev ? draft.trim() : picks)}>{dev ? 'Looks good — build it' : 'Start building'}</Button>
+                                ? <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!canContinue || !reachable} onClick={() => commit(dev ? draft.trim() : picks)}>{dev ? 'Looks good — build it' : 'Start building'}</Button>
                                 : <Button variant="contained" endIcon={<ArrowForwardIcon />} disabled={!canContinue} onClick={() => commit(dev ? draft.trim() : picks)}>Continue</Button>
                         )}
                     </Box>
