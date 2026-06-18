@@ -8,3 +8,6 @@ dist/
 /candyland
 /candyland.exe
 /candyland-*
+
+# janitor loop scratchpad (local only)
+.janitor/
