@@ -83,7 +83,9 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 			case "restart":
 				cancel()
 				ctx, cancel = context.WithCancel(context.Background())
-				c.Update(id, func(r *run.Run) { r.Status = "running" })
+				// A restart is a fresh re-run — clear any prior error so the new run
+				// can reach completion (the phase/green gates key off r.Error).
+				c.Update(id, func(r *run.Run) { r.Status = "running"; r.Error = "" })
 				done = run1(ctx)
 			}
 		case <-done:
@@ -268,5 +270,11 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	// Cut on a rune boundary so a multi-byte character isn't split into invalid
+	// UTF-8 (which would corrupt the JSON the UI renders).
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
