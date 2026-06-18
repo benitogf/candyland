@@ -21,6 +21,7 @@ import { useWorkspaces } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { createWorkspace, deleteWorkspace } from '../data/api'
 import { useToast } from '../feedback'
+import { slug } from '../util'
 
 // Manage the saved folder sets, as a modal opened from the dashboard. Workspaces
 // are persisted in the backend (ooo) — created/deleted via REST, read live.
@@ -56,7 +57,9 @@ const NewWorkspaceForm = ({ onCreate, disabled }) => {
     }
     const create = () => {
         if (!name.trim() || folders.length === 0) return
-        onCreate({ id: name.trim().toLowerCase().replace(/\s+/g, '-'), label: name.trim(), folders })
+        // Slug the id with the same rule the server uses (src/util.js slug ≡ server
+        // slugify), so a name with punctuation produces a valid, matching ooo key.
+        onCreate({ id: slug(name), label: name.trim(), folders })
         setName(''); setFolders([]); setFolder('')
     }
 
@@ -123,9 +126,13 @@ const WorkspacesModal = ({ open, onClose }) => {
                 <NewWorkspaceForm disabled={!reachable} onCreate={(ws) => createWorkspace(ws).catch(() => toast("Couldn't create the workspace — is the server reachable?"))} />
                 <Divider sx={{ mb: 3 }} />
                 <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 1.5 }}>saved · {list.length}</Typography>
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 2 }}>
-                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} disabled={!reachable} onDelete={(id) => deleteWorkspace(id).catch(() => toast("Couldn't delete the workspace."))} />)}
-                </Box>
+                {list.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">No saved workspaces yet — create one above.</Typography>
+                ) : (
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 2 }}>
+                        {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} disabled={!reachable} onDelete={(id) => deleteWorkspace(id).catch(() => toast("Couldn't delete the workspace."))} />)}
+                    </Box>
+                )}
             </DialogContent>
         </Dialog>
     )

@@ -16,7 +16,8 @@ import { agentInRun, isDone } from '../mock/run'
 // The structural lens: the dependency DAG the conductor schedules from — how the
 // tech lead partitioned the feature into fork-safe slices. Maps to the .plan
 // contract. Kept as a static const so scripts/validate-diagrams.mjs parses it;
-// it mirrors the csv-export deps in mock/run.js.
+// it mirrors the demo csv-export partition in the scripted executor
+// (internal/conductor/executor_scripted.go).
 const DAG = `
 flowchart LR
   tests["🧪 Define failing tests<br/>test eng · done"]:::done
@@ -62,6 +63,11 @@ const TasksPanel = ({ run }) => (
                     </TableRow>
                 </TableHead>
                 <TableBody>
+                    {run.tasks.length === 0 && (
+                        <TableRow>
+                            <TableCell colSpan={5} sx={{ color: 'text.secondary' }}>No tasks partitioned yet — still planning.</TableCell>
+                        </TableRow>
+                    )}
                     {run.tasks.map((t) => {
                         const owner = agentInRun(run, t.owner)
                         const complete = isDone(t.state)

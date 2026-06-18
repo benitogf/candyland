@@ -1,6 +1,5 @@
-// Detritus slash commands surfaced for autocomplete in the prompt input.
-// The full set of user-typable commands; in production this can be fetched from
-// the detritus KB (kb_list) rather than hardcoded.
+// Detritus slash commands surfaced for autocomplete in the prompt input —
+// the set of user-typable commands the input offers.
 export const DETRITUS_COMMANDS = [
     // planning + build
     { cmd: '/plan', desc: 'Analyze requirements and create an implementation plan' },

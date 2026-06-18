@@ -59,7 +59,7 @@ const OverviewPanel = ({ run }) => (
             <Card sx={{ mb: 3 }}>
                 <CardContent>
                     <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 0.5 }}>your request</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{run.prompt}</Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.prompt}</Typography>
                 </CardContent>
             </Card>
         )}
@@ -125,7 +125,7 @@ const SimplePanel = ({ run, done }) => (
             <Card sx={{ mb: 3 }}>
                 <CardContent>
                     <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 0.5 }}>what you asked for</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{run.prompt}</Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.prompt}</Typography>
                 </CardContent>
             </Card>
         )}

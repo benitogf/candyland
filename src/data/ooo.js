@@ -32,7 +32,7 @@ export const useRuns = () => {
 
 // One run (for the workspace), live.
 export const useRun = (id) => {
-    const cache = useOoo(id ? `runs/${id}` : null)
+    const cache = useOoo(id ? `runs/${encodeURIComponent(id)}` : null)
     return cache?.data || null
 }
 

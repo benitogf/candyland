@@ -112,12 +112,14 @@ const NewRunWizard = ({ onClose, onStart }) => {
                             <Typography variant="h4" sx={{ mb: 0.5 }}>Which workspace?</Typography>
                             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>The set of folders this run is allowed to touch.</Typography>
                             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, mb: 2 }}>
-                                {workspaces.map((w) => (
-                                    <SelectCard key={w.id} selected={workspace === w.id} accent={MODES[mode].accent} onClick={() => setWorkspace(w.id)}>
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{w.label}</Typography>
-                                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{w.folders.join(' · ')}</Typography>
-                                    </SelectCard>
-                                ))}
+                                {workspaces.length === 0
+                                    ? <Typography variant="body2" color="text.secondary">No workspaces yet — create one below to choose where this run can work.</Typography>
+                                    : workspaces.map((w) => (
+                                        <SelectCard key={w.id} selected={workspace === w.id} accent={MODES[mode].accent} onClick={() => setWorkspace(w.id)}>
+                                            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{w.label}</Typography>
+                                            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{w.folders.join(' · ')}</Typography>
+                                        </SelectCard>
+                                    ))}
                             </Box>
                             <Button variant="text" startIcon={<FolderIcon />} onClick={() => setWsOpen(true)}>New / manage workspaces</Button>
                         </>

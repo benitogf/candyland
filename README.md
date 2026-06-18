@@ -84,7 +84,10 @@ npm run validate          # mermaid diagrams parse
 npm run validate:layout   # no horizontal scroll / contained overflow (Playwright)
 npm run validate:flows    # planning, autocomplete, progress, terminal (Playwright)
 go build ./...            # backend compiles
+go test ./...             # backend unit tests (conductor resilience, httpapi)
 node scripts/e2e.mjs      # full stack: real binary + live ooo flow (Playwright)
+node scripts/check-system.mjs      # real binary + /api/system platform/deps check
+node scripts/check-workspaces.mjs  # real binary + /api/workspaces CRUD check
 ```
 
 ## Releases
