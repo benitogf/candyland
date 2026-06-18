@@ -9,6 +9,7 @@ import CloseIcon from '@mui/icons-material/Close'
 import { useMode } from '../mode'
 import { useRun } from '../data/ooo'
 import { beginRun, commandRun } from '../data/api'
+import { useToast } from '../feedback'
 import PlanningFlow from '../components/PlanningFlow'
 import RunWorkspace from './RunWorkspace'
 
@@ -16,6 +17,7 @@ import RunWorkspace from './RunWorkspace'
 // While the run is in planning, the Q&A is shown; finishing it begins the build.
 export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
     const { setMode } = useMode()
+    const toast = useToast()
     const run = useRun(id)
 
     // Recolor the app to the run's mode once it's known.
@@ -35,16 +37,22 @@ export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
         )
     }
 
+    const cmdFail = () => toast('Command failed — is the candyland server reachable?')
     const planning = run.status === 'planning'
-        ? <PlanningFlow mode={run.mode} onComplete={(answers) => beginRun(id, answers)} />
+        ? <PlanningFlow
+            mode={run.mode}
+            onComplete={(answers) => beginRun(id, answers).catch(() => toast("Couldn't begin the build — is the server reachable?"))}
+            onError={() => toast("Couldn't load the planning questions — is the server reachable?")}
+        />
         : null
 
+    // Lean, flow-level control surface: Stop and Restart only (no per-agent
+    // control, no resume — see RunControls).
     const controls = {
         status: run.status,
         controllable: true,
-        stop: () => commandRun(id, 'stop'),
-        resume: () => commandRun(id, 'resume'),
-        restart: () => commandRun(id, 'restart'),
+        stop: () => commandRun(id, 'stop').catch(cmdFail),
+        restart: () => commandRun(id, 'restart').catch(cmdFail),
     }
 
     return <RunWorkspace run={run} controls={controls} planning={planning} tab={tab} onClose={onClose} onTab={onTab} />

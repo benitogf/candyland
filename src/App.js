@@ -5,6 +5,7 @@ import { ThemeProvider } from '@mui/material/styles'
 
 import { makeTheme } from './theme'
 import { ModeContext } from './mode'
+import { ToastProvider } from './feedback'
 import Layout from './dashboard/Layout'
 
 // Solo, local tool: no auth gate. The active mode lives here so switching it
@@ -17,9 +18,11 @@ const App = () => {
         <ModeContext.Provider value={{ mode, setMode }}>
             <ThemeProvider theme={theme}>
                 <CssBaseline />
-                <BrowserRouter>
-                    <Layout />
-                </BrowserRouter>
+                <ToastProvider>
+                    <BrowserRouter>
+                        <Layout />
+                    </BrowserRouter>
+                </ToastProvider>
             </ThemeProvider>
         </ModeContext.Provider>
     )

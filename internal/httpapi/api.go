@@ -1,6 +1,6 @@
 // Package httpapi wires the conductor to ooo: it opens the realtime run paths
 // for subscription and exposes REST endpoints the React app calls to create
-// runs, begin the build after planning, send Stop/Resume/Restart, and fetch the
+// runs, begin the build after planning, send Stop/Restart, and fetch the
 // planning questions. No data is hardcoded in the client.
 package httpapi
 
@@ -46,6 +46,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 func Register(server *ooo.Server, c *conductor.Conductor) {
 	server.OpenFilter("runs/*") // enables both the list (runs/*) and item (runs/<id>) reads
 	registerWorkspaces(server)
+	registerSystem(server)
 
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}
@@ -78,7 +79,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
-	// Stop / Resume / Restart.
+	// Stop / Restart.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs/{id}/command",
 		Methods: post,

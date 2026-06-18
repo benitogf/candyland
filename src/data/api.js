@@ -21,12 +21,23 @@ export const createRun = (spec) => post('/runs', spec)
 // Begin the build once planning is done; the planning answers refine the prompt.
 export const beginRun = (id, answers) => post(`/runs/${id}/begin`, { answers })
 
-// Stop | resume | restart.
+// Stop | restart.
 export const commandRun = (id, command) => post(`/runs/${id}/command`, { command })
+
+// System info: platform, dependency state, executor mode, recommendations.
+// Doubles as the backend reachability probe.
+export const fetchSystem = async () => {
+    const res = await fetch(`${base}/system`)
+    if (!res.ok) throw new Error(`system: ${res.status}`)
+    return res.json()
+}
 
 // Workspace CRUD (named folder sets).
 export const createWorkspace = (ws) => post('/workspaces', ws)
-export const deleteWorkspace = (id) => fetch(`${base}/workspaces/${id}`, { method: 'DELETE' })
+export const deleteWorkspace = async (id) => {
+    const res = await fetch(`${base}/workspaces/${id}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error(`delete workspace: ${res.status}`)
+}
 
 // Planning questions for a mode (served by the backend).
 export const fetchQuestions = async (mode) => {

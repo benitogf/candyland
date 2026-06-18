@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import Drawer from '@mui/material/Drawer'
 import Toolbar from '@mui/material/Toolbar'
 
@@ -7,14 +9,18 @@ import Menu from './Menu'
 import Navbar from './Navbar'
 import Footer from './Footer'
 import Router from './Router'
+import SystemModal from '../components/SystemModal'
+import { useSystem } from '../data/system'
 
 const drawerWidth = 248
 
 // The dashboard shell. The nav rail is a permanent drawer on md+, and a
-// temporary (hamburger) drawer on mobile — so small screens get full width and
-// never overflow horizontally.
+// temporary (hamburger) drawer on mobile. Backend reachability + setup status
+// are surfaced as banners and a navbar chip → Setup modal.
 const Layout = () => {
     const [mobileOpen, setMobileOpen] = useState(false)
+    const [sysOpen, setSysOpen] = useState(false)
+    const { system, reachable, refetch } = useSystem()
 
     const drawerPaper = {
         width: drawerWidth, boxSizing: 'border-box',
@@ -23,9 +29,8 @@ const Layout = () => {
 
     return (
         <Box sx={{ display: 'flex', height: '100vh' }}>
-            <Navbar drawerWidth={drawerWidth} onMenu={() => setMobileOpen(true)} />
+            <Navbar drawerWidth={drawerWidth} onMenu={() => setMobileOpen(true)} system={system} reachable={reachable} onOpenSystem={() => setSysOpen(true)} />
 
-            {/* Mobile: temporary overlay drawer */}
             <Drawer
                 variant="temporary"
                 open={mobileOpen}
@@ -36,7 +41,6 @@ const Layout = () => {
                 <Menu onNavigate={() => setMobileOpen(false)} />
             </Drawer>
 
-            {/* Desktop: permanent drawer in the flex flow */}
             <Drawer
                 variant="permanent"
                 sx={{ display: { xs: 'none', md: 'block' }, width: drawerWidth, flexShrink: 0, '& .MuiDrawer-paper': drawerPaper }}
@@ -48,11 +52,23 @@ const Layout = () => {
                 <Toolbar />
                 <Box component="main" sx={{ flexGrow: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                     <Box sx={{ maxWidth: 1180, mx: 'auto', px: { xs: 2, sm: 4 }, py: 4 }}>
+                        {!reachable && (
+                            <Alert severity="error" sx={{ mb: 3 }} action={<Button color="inherit" size="small" onClick={refetch}>Retry</Button>}>
+                                Can't reach the candyland server at <code>localhost:8888</code>. Is it running? Start it with <code>./candyland</code> (or <code>go run .</code>) — see the README "Run" section.
+                            </Alert>
+                        )}
+                        {reachable && system?.simulated && (
+                            <Alert severity="warning" sx={{ mb: 3 }} action={<Button color="inherit" size="small" onClick={() => setSysOpen(true)}>Set up</Button>}>
+                                Demo mode — Claude Code isn't installed, so runs are simulated. Install it to run real agents.
+                            </Alert>
+                        )}
                         <Router />
                     </Box>
                 </Box>
                 <Footer />
             </Box>
+
+            <SystemModal open={sysOpen} onClose={() => setSysOpen(false)} system={system} reachable={reachable} onRetry={refetch} />
         </Box>
     )
 }

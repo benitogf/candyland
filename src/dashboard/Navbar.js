@@ -9,11 +9,20 @@ import MenuIcon from '@mui/icons-material/Menu'
 
 import { getCurrentSection } from './Router'
 
-// Top bar showing the current section, with a hamburger to open the nav on
-// mobile. The pill flags that runs here are simulated until the conductor is wired.
-const Navbar = ({ drawerWidth, onMenu }) => {
+// Top bar: current section, a hamburger on mobile, and a live status chip
+// (reachability + executor mode) that opens the Setup modal.
+const statusChip = (system, reachable) => {
+    if (!reachable) return { label: 'offline', color: 'error' }
+    if (!system) return { label: 'connecting…', color: 'default' }
+    return system.simulated
+        ? { label: `demo · ${system.platform}`, color: 'warning' }
+        : { label: `claude · ${system.platform}`, color: 'success' }
+}
+
+const Navbar = ({ drawerWidth, onMenu, system, reachable, onOpenSystem }) => {
     const location = useLocation()
     const section = getCurrentSection(location.pathname)
+    const chip = statusChip(system, reachable)
 
     return (
         <AppBar
@@ -35,7 +44,7 @@ const Navbar = ({ drawerWidth, onMenu }) => {
                 <Typography variant="h6" noWrap sx={{ flexGrow: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {section}
                 </Typography>
-                <Chip label="demo data" size="small" color="secondary" variant="outlined" sx={{ flexShrink: 0 }} />
+                <Chip label={chip.label} size="small" color={chip.color} variant="outlined" onClick={onOpenSystem} sx={{ flexShrink: 0, cursor: 'pointer' }} />
             </Toolbar>
         </AppBar>
     )

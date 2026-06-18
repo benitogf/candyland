@@ -18,6 +18,7 @@ import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder'
 
 import { useWorkspaces } from '../data/ooo'
 import { createWorkspace, deleteWorkspace } from '../data/api'
+import { useToast } from '../feedback'
 
 // Manage the saved folder sets, as a modal opened from the dashboard. Workspaces
 // are persisted in the backend (ooo) — created/deleted via REST, read live.
@@ -99,6 +100,7 @@ const NewWorkspaceForm = ({ onCreate }) => {
 
 const WorkspacesModal = ({ open, onClose }) => {
     const list = useWorkspaces()
+    const toast = useToast()
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { backgroundImage: 'none' } }}>
@@ -110,11 +112,11 @@ const WorkspacesModal = ({ open, onClose }) => {
                 <IconButton onClick={onClose} aria-label="close"><CloseIcon /></IconButton>
             </DialogTitle>
             <DialogContent dividers sx={{ borderColor: 'divider' }}>
-                <NewWorkspaceForm onCreate={(ws) => createWorkspace(ws)} />
+                <NewWorkspaceForm onCreate={(ws) => createWorkspace(ws).catch(() => toast("Couldn't create the workspace — is the server reachable?"))} />
                 <Divider sx={{ mb: 3 }} />
                 <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 1.5 }}>saved · {list.length}</Typography>
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 2 }}>
-                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} onDelete={(id) => deleteWorkspace(id)} />)}
+                    {list.map((ws) => <WorkspaceCard key={ws.id} ws={ws} onDelete={(id) => deleteWorkspace(id).catch(() => toast("Couldn't delete the workspace."))} />)}
                 </Box>
             </DialogContent>
         </Dialog>

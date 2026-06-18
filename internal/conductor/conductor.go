@@ -19,7 +19,8 @@ import (
 // Executor drives a run from planning to PR, calling Update to publish state.
 type Executor interface {
 	// Execute blocks until the run is done or the control channel says stop.
-	// It must honor commands ("stop"|"resume"|"restart") on control.
+	// Candyland keeps a lean, flow-level control surface: it must honor "stop"
+	// and "restart" on control (no resume — a stopped run is restarted).
 	Execute(c *Conductor, id string, control <-chan string)
 	Name() string
 }
@@ -152,11 +153,17 @@ func (c *Conductor) Begin(id string, answers map[string]any) {
 		ex = &ScriptedExecutor{}
 	}
 	extra := formatAnswers(answers)
+	// A scripted run that wasn't explicitly forced means real claude is missing —
+	// tell the user it's a demo and where to enable real agents.
+	simulated := ex.Name() == "scripted" && os.Getenv("CANDYLAND_EXECUTOR") != "scripted"
 	c.Update(id, func(r *run.Run) {
 		r.Status = "running"
 		r.Executor = ex.Name()
 		if extra != "" {
 			r.Prompt = strings.TrimSpace(r.Prompt + "\n\n" + extra)
+		}
+		if simulated {
+			r.Note = "Simulated run — Claude Code isn't installed, so this is a demo. See Setup to install it and run real agents."
 		}
 	})
 	go ex.Execute(c, id, rt.control)
@@ -174,7 +181,7 @@ func formatAnswers(answers map[string]any) string {
 	return "Planning answers:\n" + strings.Join(parts, "\n")
 }
 
-// Command forwards stop|resume|restart to the run's executor.
+// Command forwards stop|restart to the run's executor.
 func (c *Conductor) Command(id, cmd string) bool {
 	c.mu.Lock()
 	rt := c.runs[id]

@@ -1,4 +1,5 @@
 import React from 'react'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Card from '@mui/material/Card'
@@ -12,11 +13,9 @@ import LinearProgress from '@mui/material/LinearProgress'
 import Stepper from '@mui/material/Stepper'
 import Tab from '@mui/material/Tab'
 import Tabs from '@mui/material/Tabs'
-import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
-import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import ReplayIcon from '@mui/icons-material/Replay'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
@@ -167,7 +166,8 @@ const SimplePanel = ({ run, done }) => (
     </Box>
 )
 
-// ── Header controls — Stop / Resume / Restart, gated by status ──────────────
+// ── Header controls — Stop / Restart, gated by status. Candyland keeps a lean,
+//    flow-level control surface (no per-agent control, no resume). ────────────
 const RunControls = ({ run, controls, done }) => {
     if (!controls.controllable) {
         return done && run.prUrl
@@ -175,17 +175,16 @@ const RunControls = ({ run, controls, done }) => {
             : <Chip label="snapshot" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
     }
     if (controls.status === 'done') {
+        if (run.error) return <Chip label="failed" size="small" color="error" variant="outlined" sx={{ flexShrink: 0 }} />
         return run.prUrl
             ? <Button color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
             : <Chip label="completed" size="small" color="success" variant="outlined" sx={{ flexShrink: 0 }} />
     }
     if (controls.status === 'paused') {
         return (
-            <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
-                <Tooltip title="Re-spawns each agent with --resume <session_id>. In-progress file edits are not auto-rolled-back.">
-                    <Button color="primary" variant="contained" startIcon={<PlayArrowIcon />} onClick={controls.resume}>Resume</Button>
-                </Tooltip>
-                <Button color="inherit" variant="text" startIcon={<ReplayIcon />} onClick={controls.restart}>Restart</Button>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+                <Chip label="stopped" size="small" color="warning" variant="outlined" />
+                <Button color="primary" variant="contained" startIcon={<ReplayIcon />} onClick={controls.restart}>Restart</Button>
             </Box>
         )
     }
@@ -256,6 +255,17 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                     <Box sx={{ maxWidth: 1180, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                         <Typography variant="overline" color="text.disabled" sx={{ flexShrink: 0 }}>legend</Typography>
                         <StateLegend />
+                    </Box>
+                </Box>
+            )}
+
+            {/* Run-level advisory (error / simulated note) — visible across tabs */}
+            {(run.error || run.note) && (
+                <Box sx={{ px: { xs: 2, sm: 4 }, pt: 1.5 }}>
+                    <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
+                        {run.error
+                            ? <Alert severity="error" variant="outlined">{run.error}</Alert>
+                            : <Alert severity="info" variant="outlined">{run.note}</Alert>}
                     </Box>
                 </Box>
             )}

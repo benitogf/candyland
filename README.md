@@ -35,13 +35,40 @@ React UI  ──ooo-client (WebSocket)──▶  ooo realtime state  ◀── c
   available, so the UI always shows genuine, moving ooo state.
 - Override with `CANDYLAND_EXECUTOR=claude|scripted`.
 
-## Run
+## Platforms
+
+Runs on **Linux, macOS, WSL, and Windows** — a single self-contained binary per
+OS/arch. The app detects the platform at runtime and reports it (plus dependency
+status and install commands) in **Setup** (the status chip in the top bar).
+
+Dependencies:
+- **Claude Code** (`claude`) — required for *real* runs. Without it the app still
+  works in **simulated** mode (a faithful demo); the UI says so and offers the
+  install command for your platform. Install: `curl -fsSL https://claude.ai/install.sh | bash`
+  (Linux/macOS/WSL) or `irm https://claude.ai/install.ps1 | iex` (Windows).
+- **git** — for worktrees and opening PRs.
+
+If the server isn't running, the UI shows a clear banner with start instructions
+rather than failing silently; REST/connection errors surface as toasts.
+
+## Install (released binary)
+
+```bash
+# Linux / macOS / WSL
+curl -fsSL https://raw.githubusercontent.com/benitogf/candyland/main/install.sh | sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/benitogf/candyland/main/install.ps1 | iex
+```
+
+## Run (from source)
 
 ```bash
 npm install
 npm run build          # vite → ./build (embedded by the Go binary)
 go run .               # UI on http://localhost:8080, realtime+API on :8888
 ```
+
+Force a mode with `CANDYLAND_EXECUTOR=claude|scripted`.
 
 Dev (UI hot-reload against the backend):
 
@@ -62,9 +89,20 @@ node scripts/e2e.mjs      # full stack: real binary + live ooo flow (Playwright)
 
 ## Releases
 
-Pushing a `v*` tag builds standalone single-binary releases (backend + embedded
-UI) for linux/darwin/windows (amd64 + arm64) via
-[`.github/workflows/release.yml`](.github/workflows/release.yml).
+Same flow as detritus — a manual bump/tag/release you trigger from a prompt
+(just ask Claude to "release candyland X.Y.Z") or directly:
+
+```bash
+scripts/release.sh 0.1.0   # from main, clean tree → tags v0.1.0 and pushes
+```
+
+The `v*` tag triggers the workflow, which builds the standalone single binaries
+(backend + embedded UI, version injected via `-ldflags`) for
+linux/darwin/windows (amd64 + arm64) and publishes the GitHub Release that
+`install.sh` / `install.ps1` pull from. The workflow currently lives at
+[`ci/release.yml`](ci/release.yml) — activate it once per
+[`ci/README.md`](ci/README.md) (the CLI token that opened these PRs lacks the
+`workflow` scope to push under `.github/workflows/`).
 
 ## Stack
 

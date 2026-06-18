@@ -91,12 +91,14 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 		case <-done:
 			cr, _ := c.Get(id)
 			if cr.Status == "paused" {
-				continue // controllable; await resume/restart
+				continue // stopped; await restart
 			}
 			c.Update(id, func(r *run.Run) {
 				r.Status = "done"
-				r.Phase = len(run.Phases) - 1
-				r.Progress = 1
+				if r.Error == "" { // a clean finish reaches PR; an errored run stays where it stopped
+					r.Phase = len(run.Phases) - 1
+					r.Progress = 1
+				}
 			})
 			cancel()
 			return
@@ -139,6 +141,12 @@ func fanOut(ctx context.Context, c *Conductor, id, prompt string) {
 			defer wg.Done()
 			runAgentProcess(ctx, c, id, t.ID, coderPrompt(t))
 			c.Update(id, func(r *run.Run) {
+				// Don't claim success for a coder that failed to start (r.Error) or
+				// was killed mid-flight by Stop/Restart (ctx cancelled) — a SIGKILL
+				// isn't a start error, so guard on ctx too or aborted work shows green.
+				if r.Error != "" || ctx.Err() != nil {
+					return
+				}
 				setAgentState(r, t.ID, "green", "done")
 				setTaskState(r, t.ID, "green")
 			})
@@ -149,6 +157,9 @@ func fanOut(ctx context.Context, c *Conductor, id, prompt string) {
 		return
 	}
 	c.Update(id, func(r *run.Run) {
+		if r.Error != "" {
+			return // a coder couldn't start — leave the error terminal to the Execute loop
+		}
 		r.Phase = len(run.Phases) - 2 // Review
 		setAgentState(r, "tl", "done", "integrated")
 	})
@@ -171,8 +182,18 @@ func coderPrompt(t partitionTask) string {
 func runAgentProcess(ctx context.Context, c *Conductor, id, agentID, prompt string) []partitionTask {
 	cmd := exec.CommandContext(ctx, claudeBin(), "-p", prompt, "--output-format", "stream-json", "--verbose", "--model", "claude-opus-4-8")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil || cmd.Start() != nil {
-		c.Update(id, func(r *run.Run) { appendToAgent(r, agentID, run.Event{T: "text", Text: "failed to start"}, 0) })
+	if err == nil {
+		err = cmd.Start()
+	}
+	if err != nil {
+		msg := "Claude Code failed to start: " + err.Error() + ". Ensure it's installed and authenticated (run `claude` once interactively, or set ANTHROPIC_API_KEY). See Setup for install instructions."
+		c.Update(id, func(r *run.Run) {
+			appendToAgent(r, agentID, run.Event{T: "text", Text: msg}, 0)
+			r.Error = msg
+			setAgentState(r, agentID, "blocked", "could not start")
+		})
+		// Terminal status is owned by the Execute loop (so it doesn't claim PR/100%
+		// on an errored run, and a sibling coder failure doesn't finish the run early).
 		return nil
 	}
 	var partition []partitionTask

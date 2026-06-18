@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Card from '@mui/material/Card'
@@ -46,23 +47,33 @@ const Loader = ({ text }) => (
     </Box>
 )
 
-const PlanningFlow = ({ mode, onComplete }) => {
+const PlanningFlow = ({ mode, onComplete, onError }) => {
     const dev = mode === 'developer'
     const [questions, setQuestions] = useState(null)
+    const [error, setError] = useState(false)
+    const [reload, setReload] = useState(0)
     const [step, setStep] = useState(0)
     const [answers, setAnswers] = useState({})
     const [draft, setDraft] = useState('')
     const [picks, setPicks] = useState([])
     const [loading, setLoading] = useState(true)
 
-    // Fetch the questions for this mode from the backend.
+    // Fetch the questions for this mode from the backend. A failure (server
+    // unreachable / error) surfaces an actionable retry — never a silent empty
+    // flow that looks like a legitimate no-questions result.
     useEffect(() => {
         let live = true
+        setError(false)
+        setQuestions(null)
         fetchQuestions(mode)
             .then((qs) => { if (live) setQuestions(qs) })
-            .catch(() => { if (live) setQuestions([]) })
+            .catch(() => {
+                if (!live) return
+                setError(true)
+                if (onError) onError()
+            })
         return () => { live = false }
-    }, [mode])
+    }, [mode, reload]) // eslint-disable-line react-hooks/exhaustive-deps
 
     const q = questions ? questions[step] : null
 
@@ -82,6 +93,18 @@ const PlanningFlow = ({ mode, onComplete }) => {
         setPicks(Array.isArray(a) ? a : [])
     }, [step, questions]) // eslint-disable-line react-hooks/exhaustive-deps
 
+    if (error) {
+        return (
+            <Box sx={{ maxWidth: 640, mx: 'auto', py: 6 }}>
+                <Alert
+                    severity="error"
+                    action={<Button color="inherit" size="small" onClick={() => setReload((n) => n + 1)}>Retry</Button>}
+                >
+                    Couldn&apos;t load the planning questions — is the candyland server reachable? Start it with <Box component="span" sx={{ fontFamily: 'monospace' }}>./candyland</Box>, then retry.
+                </Alert>
+            </Box>
+        )
+    }
     if (!questions) return <Loader text="Preparing your questions…" />
     if (questions.length === 0) {
         return (

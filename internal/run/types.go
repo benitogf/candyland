@@ -54,6 +54,8 @@ type Run struct {
 	Phase        int     `json:"phase"`     // index into Plan..PR
 	Progress     float64 `json:"progress"`  // 0..1
 	StatusLine   string  `json:"statusLine,omitempty"`
+	Note         string  `json:"note,omitempty"`  // advisory shown in the UI (e.g. simulated run, error)
+	Error        string  `json:"error,omitempty"` // set when a run hits an unrecoverable error
 	PrURL        string  `json:"prUrl,omitempty"`
 	TokensUsed   int     `json:"tokensUsed"`
 	TokensBudget int     `json:"tokensBudget"`

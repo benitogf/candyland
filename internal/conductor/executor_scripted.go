@@ -189,10 +189,7 @@ func (e *ScriptedExecutor) Execute(c *Conductor, id string, control <-chan strin
 			case "stop":
 				running = false
 				c.Update(id, func(r *run.Run) { r.Status = "paused" })
-			case "resume":
-				running = true
-				c.Update(id, func(r *run.Run) { r.Status = "running" })
-			case "restart":
+			case "restart": // lean control surface: a stopped run is restarted, not resumed
 				elapsed = 0
 				running = true
 				c.Update(id, func(r *run.Run) { r.Status = "running" })

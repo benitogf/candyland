@@ -17,6 +17,7 @@ import { PHASES, STATE_META } from '../mock/run'
 import { runLabel } from '../util'
 import { useRuns, useWorkspaces } from '../data/ooo'
 import { createRun } from '../data/api'
+import { useToast } from '../feedback'
 import { ModeBadge } from '../components/StatusBits'
 import NewRunWizard from '../wizard/NewRunWizard'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
@@ -112,14 +113,19 @@ const Dashboard = () => {
     const { mode } = useMode()
     const liveRuns = useRuns()
     const workspaces = useWorkspaces()
+    const toast = useToast()
     const [dismissed, setDismissed] = useState([])
 
     const runs = liveRuns.filter((r) => !dismissed.includes(r.id))
     const isNew = location.pathname === '/new'
 
     const start = async ({ workspace, prompt, title }) => {
-        const { id } = await createRun({ mode, workspace, prompt, title })
-        navigate(`/run/${id}`)
+        try {
+            const { id } = await createRun({ mode, workspace, prompt, title })
+            navigate(`/run/${id}`)
+        } catch {
+            toast("Couldn't start the run — is the candyland server reachable? Check the status chip.")
+        }
     }
 
     return (

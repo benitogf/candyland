@@ -17,6 +17,7 @@ import (
 	"github.com/benitogf/candyland/internal/conductor"
 	"github.com/benitogf/candyland/internal/httpapi"
 	"github.com/benitogf/candyland/internal/spa"
+	"github.com/benitogf/candyland/internal/version"
 	"github.com/benitogf/ko"
 	"github.com/benitogf/ooo"
 	"github.com/benitogf/ooo/storage"
@@ -35,6 +36,7 @@ var (
 
 func main() {
 	flag.Parse()
+	log.Printf("candyland %s", version.Version)
 
 	server := &ooo.Server{
 		ReadTimeout:  20 * time.Minute,
