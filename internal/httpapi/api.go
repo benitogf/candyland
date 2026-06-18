@@ -6,6 +6,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/benitogf/candyland/internal/conductor"
@@ -73,7 +75,11 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 			var body struct {
 				Answers map[string]any `json:"answers"`
 			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
+			// Tolerate an empty body (no answers); reject a malformed one.
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			c.Begin(mux.Vars(r)["id"], body.Answers)
 			w.WriteHeader(http.StatusNoContent)
 		},
@@ -87,8 +93,21 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 			var body struct {
 				Command string `json:"command"`
 			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			c.Command(mux.Vars(r)["id"], body.Command)
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			// Lean control surface: only stop/restart are valid.
+			if body.Command != "stop" && body.Command != "restart" {
+				http.Error(w, "unknown command: "+body.Command, http.StatusBadRequest)
+				return
+			}
+			// Command reports whether it reached a live executor; a stop/restart to
+			// an unknown or already-finished run is a conflict, not a success.
+			if !c.Command(mux.Vars(r)["id"], body.Command) {
+				http.Error(w, "run not found or not running", http.StatusConflict)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		},
 	})
@@ -98,12 +117,16 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		Path:    "/api/questions",
 		Methods: get,
 		Handler: func(w http.ResponseWriter, r *http.Request) {
-			mode := r.URL.Query().Get("mode")
-			qs, ok := questions[mode]
-			if !ok {
-				qs = questions["non-developer"]
-			}
-			writeJSON(w, qs)
+			writeJSON(w, questionsFor(r.URL.Query().Get("mode")))
 		},
 	})
+}
+
+// questionsFor returns the planning questions for a mode, falling back to the
+// non-developer set for an unknown or empty mode.
+func questionsFor(mode string) []Question {
+	if qs, ok := questions[mode]; ok {
+		return qs
+	}
+	return questions["non-developer"]
 }

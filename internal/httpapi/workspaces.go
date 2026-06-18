@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -35,9 +36,12 @@ func slugify(s string) string {
 func setWorkspace(server *ooo.Server, ws run.Workspace) {
 	b, err := json.Marshal(ws)
 	if err != nil {
+		log.Printf("candyland: marshal workspace %s: %v", ws.ID, err)
 		return
 	}
-	_, _ = server.Storage.Set("workspaces/"+ws.ID, json.RawMessage(b))
+	if _, err := server.Storage.Set("workspaces/"+ws.ID, json.RawMessage(b)); err != nil {
+		log.Printf("candyland: persist workspace %s: %v", ws.ID, err)
+	}
 }
 
 // SeedWorkspaces writes the defaults once (only if the path is empty). Must run
@@ -85,7 +89,12 @@ func registerWorkspaces(server *ooo.Server) {
 		Path:    "/api/workspaces/{id}",
 		Methods: ooo.Methods{"DELETE": ooo.MethodSpec{}},
 		Handler: func(w http.ResponseWriter, r *http.Request) {
-			_ = server.Storage.Del("workspaces/" + mux.Vars(r)["id"])
+			id := mux.Vars(r)["id"]
+			if err := server.Storage.Del("workspaces/" + id); err != nil {
+				// Best-effort delete; the response stays 204 (the client reads the
+				// live list), but a failed delete must not vanish silently.
+				log.Printf("candyland: delete workspace %s: %v", id, err)
+			}
 			w.WriteHeader(http.StatusNoContent)
 		},
 	})
