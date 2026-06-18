@@ -283,5 +283,5 @@ func failMessage(agentID string, isTechLead bool, why string, attempts int) stri
 		who = "The tech lead"
 	}
 	return who + " could not complete after " + strconv.Itoa(attempts) + " attempts (" + why + "). " +
-		"This usually means the task needs to be split smaller or stated more concretely — refine the prompt, then Restart."
+		"This usually means the task needs to be split smaller or stated more concretely — refine the prompt and start a new run."
 }

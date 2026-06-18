@@ -21,7 +21,7 @@ type Agent struct {
 	Role     string  `json:"role"`
 	Emoji    string  `json:"emoji"`
 	Task     string  `json:"task"`
-	State    string  `json:"state"` // idle|working|blocked|integrating|green|done
+	State    string  `json:"state"` // idle|working|retrying|blocked|integrating|green|done
 	Activity string  `json:"activity"`
 	Tokens   int     `json:"tokens"`
 	Budget   int     `json:"budget"`
