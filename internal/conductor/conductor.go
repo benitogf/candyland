@@ -7,6 +7,7 @@ package conductor
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -68,9 +69,14 @@ func (c *Conductor) publish(r run.Run) {
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
+		log.Printf("candyland: marshal run %s: %v", r.ID, err)
 		return
 	}
-	_, _ = c.server.Storage.Set("runs/"+r.ID, json.RawMessage(b))
+	// publish is the only write path for run state; a dropped write means the
+	// live UI silently stops advancing — surface it (the server is otherwise Silenced).
+	if _, err := c.server.Storage.Set("runs/"+r.ID, json.RawMessage(b)); err != nil {
+		log.Printf("candyland: publish run %s: %v", r.ID, err)
+	}
 }
 
 // Update mutates a run under lock, recomputes derived fields, and publishes it.
@@ -146,6 +152,17 @@ func (c *Conductor) Begin(id string, answers map[string]any) {
 	if rt == nil {
 		return
 	}
+	// Idempotent start: only a run still in planning may begin. Atomically
+	// check-and-set under rt.mu so a double POST (double-click / retry) can't
+	// spawn a second executor goroutine racing on the same control channel.
+	rt.mu.Lock()
+	if rt.r.Status != "planning" {
+		rt.mu.Unlock()
+		return
+	}
+	rt.r.Status = "running"
+	rt.mu.Unlock()
+
 	var ex Executor
 	if hasClaude {
 		ex = &ClaudeExecutor{}
