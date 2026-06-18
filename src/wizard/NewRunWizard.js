@@ -75,7 +75,7 @@ const NewRunWizard = ({ onClose, onStart }) => {
     const suggested = suggestTitle(prompt)
 
     return (
-        <Dialog fullScreen open onClose={onClose} PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
+        <Dialog fullScreen open onClose={onClose} aria-label="Start a new run" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             {/* Header */}
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, py: 2 }}>
                 <Box sx={{ maxWidth: 720, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>

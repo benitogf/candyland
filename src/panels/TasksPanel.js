@@ -16,8 +16,8 @@ import { agentInRun, isDone } from '../mock/run'
 // The structural lens: the dependency DAG the conductor schedules from — how the
 // tech lead partitioned the feature into fork-safe slices. Maps to the .plan
 // contract. Kept as a static const so scripts/validate-diagrams.mjs parses it;
-// it mirrors the demo csv-export partition in the scripted executor
-// (internal/conductor/executor_scripted.go).
+// it is an illustrative csv-export partition — close to, but not 1:1 with, the
+// scripted executor's demo tasks (internal/conductor/executor_scripted.go).
 const DAG = `
 flowchart LR
   tests["🧪 Define failing tests<br/>test eng · done"]:::done

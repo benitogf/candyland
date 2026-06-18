@@ -27,7 +27,7 @@ export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
 
     if (!run) {
         return (
-            <Dialog fullScreen open onClose={onClose} PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none' } }}>
+            <Dialog fullScreen open onClose={onClose} aria-label="Connecting to the run" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none' } }}>
                 <Box sx={{ display: 'flex', justifyContent: 'flex-end', p: 1 }}>
                     <IconButton onClick={onClose} aria-label="close"><CloseIcon /></IconButton>
                 </Box>

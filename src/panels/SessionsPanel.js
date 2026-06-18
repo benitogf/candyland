@@ -95,7 +95,7 @@ const SessionsPanel = ({ run }) => {
                 <SessionDetail agent={selected} lines={lines} onExpand={() => setExpanded(true)} />
             </Box>
 
-            <Dialog fullScreen open={expanded} onClose={() => setExpanded(false)} PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
+            <Dialog fullScreen open={expanded} onClose={() => setExpanded(false)} aria-label="Raw session output" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}>
                     <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0 }} noWrap>{selected.emoji} {selected.role} · raw stream-json</Typography>
                     <IconButton onClick={() => setExpanded(false)} aria-label="close"><CloseIcon /></IconButton>

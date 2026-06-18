@@ -217,7 +217,7 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
     const progressPct = Math.round(100 * (run.progress ?? (run.phase / (PHASES.length - 1))))
 
     return (
-        <Dialog fullScreen open onClose={onClose} PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
+        <Dialog fullScreen open onClose={onClose} aria-label="Run workspace" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             {/* Header — aligned to the body column */}
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2 }}>
                 <Box sx={{ maxWidth: 1180, mx: 'auto' }}>

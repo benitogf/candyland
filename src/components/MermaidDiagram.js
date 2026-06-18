@@ -26,6 +26,13 @@ const MermaidDiagram = ({ chart }) => {
     useEffect(() => {
         let active = true
         const id = `candy-mmd-${seq++}`
+        // On a render failure mermaid throws before removing the temp node it
+        // appended to <body> (id `d<id>`); clean it up so failed/re-renders don't
+        // leak orphan DOM nodes.
+        const cleanupOrphan = () => {
+            document.getElementById('d' + id)?.remove()
+            document.getElementById(id)?.remove()
+        }
         mermaid
             .render(id, chart.trim())
             .then(({ svg }) => {
@@ -35,10 +42,12 @@ const MermaidDiagram = ({ chart }) => {
                 }
             })
             .catch((e) => {
+                cleanupOrphan()
                 if (active) setError(e?.message || String(e))
             })
         return () => {
             active = false
+            cleanupOrphan()
         }
     }, [chart])
 

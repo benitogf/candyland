@@ -31,7 +31,7 @@ const RunSwitcher = ({ current }) => {
 
     useEffect(() => {
         const onKey = (e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+            if ((e.metaKey || e.ctrlKey) && e.key && e.key.toLowerCase() === 'k') {
                 e.preventDefault()
                 setAnchor((a) => (a ? null : document.getElementById('run-switcher-btn')))
             }

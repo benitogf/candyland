@@ -81,13 +81,23 @@ const CommandInput = ({ value, onChange, multiline = false, minRows, placeholder
                 fullWidth={fullWidth}
                 size={size}
                 autoFocus={autoFocus}
+                inputProps={{
+                    role: 'combobox',
+                    'aria-expanded': open,
+                    'aria-controls': 'cmd-autocomplete-listbox',
+                    'aria-autocomplete': 'list',
+                    'aria-activedescendant': open && matches[hi] ? `cmd-opt-${hi}` : undefined,
+                }}
             />
             <Popper open={open} anchorEl={anchorRef.current} placement="bottom-start" style={{ zIndex: 1500, width: anchorRef.current?.clientWidth }}>
                 <Paper sx={{ mt: 0.5, maxHeight: 260, overflowY: 'auto', border: '1px solid', borderColor: 'divider', backgroundImage: 'none' }}>
-                    <MenuList dense disablePadding>
+                    <MenuList dense disablePadding role="listbox" id="cmd-autocomplete-listbox">
                         {matches.map((c, i) => (
                             <MenuItem
                                 key={c.cmd}
+                                id={`cmd-opt-${i}`}
+                                role="option"
+                                aria-selected={i === hi}
                                 selected={i === hi}
                                 onMouseDown={(e) => { e.preventDefault(); insert(c.cmd) }}
                                 sx={{ alignItems: 'flex-start', py: 0.75 }}

@@ -88,7 +88,7 @@ const NewWorkspaceForm = ({ onCreate, disabled }) => {
                                 <Box key={f} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                     <FolderIcon sx={{ fontSize: 15, color: 'text.secondary' }} />
                                     <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', flexGrow: 1 }}>{f}</Typography>
-                                    <IconButton size="small" onClick={() => setFolders(folders.filter((x) => x !== f))}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+                                    <IconButton size="small" aria-label="remove folder" onClick={() => setFolders(folders.filter((x) => x !== f))}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
                                 </Box>
                             ))}
                     </Box>
