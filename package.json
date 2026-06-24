@@ -1,0 +1,35 @@
+{
+    "name": "candyland",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Solo agent-orchestration dashboard — conducts headless Claude Code sessions that reuse existing skills.",
+    "dependencies": {
+        "@emotion/react": "^11.13.5",
+        "@emotion/styled": "^11.13.5",
+        "@mui/icons-material": "^7.3.5",
+        "@mui/material": "^7.3.5",
+        "@xterm/addon-fit": "^0.11.0",
+        "@xterm/xterm": "^6.0.0",
+        "mermaid": "^11.4.1",
+        "ooo-client": "^1.0.0",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0",
+        "react-router-dom": "^7.9.6"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-react": "^5.1.1",
+        "jsdom": "^29.1.1",
+        "playwright": "^1.61.0",
+        "vite": "^7.2.4"
+    },
+    "scripts": {
+        "start": "vite",
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview",
+        "validate": "node scripts/validate-diagrams.mjs",
+        "validate:layout": "node scripts/validate-layout.mjs",
+        "validate:flows": "node scripts/validate-flows.mjs"
+    }
+}
