@@ -2,7 +2,6 @@ package conductor
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -16,8 +15,8 @@ import (
 const OrchestratorID = "conductor"
 
 // StartBus registers the coordination bus (Realization B) on the conductor's
-// ooo server — the task-graph + cursor filters and the re-plan reactor — and
-// stores it so per-agent inboxes can be registered at spawn. Must be called
+// ooo server — the task-graph + cursor filters and the coordination reactor —
+// and stores it so per-agent inboxes can be registered at spawn. Must be called
 // before server.Start (filters register before the listener binds). The bus is
 // a back-channel beside the stdout loop, which is untouched. No-op without a
 // server (serverless tests).
@@ -28,8 +27,11 @@ func (c *Conductor) StartBus() {
 	b := bus.NewBus(OrchestratorID, bus.CursorReader(c.server))
 	b.RegisterGlobal(c.server)
 	b.RegisterReactor(c.server, func(srv *ooo.Server, ev bus.Envelope) {
-		// Re-plan: acknowledge the worker's proposal with a directive it consumes
-		// next turn, then auto-unblock any nodes whose deps are now done.
+		// Acknowledge the worker's proposal with a directive it consumes next turn,
+		// then re-evaluate the graph — auto-unblock any nodes whose deps are now
+		// done. This is coordination, not re-planning: the actual re-plan (the tech
+		// lead re-emitting a partition when a coder's split fails) is driven by the
+		// stdout loop; this back-channel only acknowledges and unblocks.
 		_ = b.PushDirective(srv, ev.From, "noted: "+ev.Body)
 		b.AutoUnblock(srv)
 	})
@@ -82,11 +84,29 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	if err != nil {
 		return ""
 	}
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("candyland-mcp-%s-%s.json", runID, agentID))
+	dir := busConfigDir(runID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, agentID+".json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return ""
 	}
 	return path
+}
+
+// busConfigDir is the per-run directory holding the spawned agents'
+// --mcp-config files. Per-run so cleanupBusConfigs can remove them all at once
+// when the run ends (the configs must outlive each claude spawn, so they can't
+// be removed eagerly).
+func busConfigDir(runID string) string {
+	return filepath.Join(os.TempDir(), "candyland-mcp-"+runID)
+}
+
+// cleanupBusConfigs removes a run's --mcp-config files once it is finished (no
+// further coder spawns). Idempotent and best-effort.
+func (c *Conductor) cleanupBusConfigs(runID string) {
+	_ = os.RemoveAll(busConfigDir(runID))
 }
 
 // publishGraphNodes mirrors the tech-lead's partition into the bus task-graph

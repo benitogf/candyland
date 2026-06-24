@@ -22,6 +22,7 @@ else
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"implementing"}]}}'
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"f"}}]}}'
   echo "work by $$" > "candyland_$$.txt"
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"TEST {\"pass\":2,\"fail\":0}"}]}}'
   echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2000}}'
 fi
 `
@@ -63,6 +64,25 @@ func TestClaudeFanOut(t *testing.T) {
 	}
 	if r.TasksGreen != 2 {
 		t.Errorf("tasksGreen=%d want 2", r.TasksGreen)
+	}
+	// The coder's `TEST {json}` line must flow through parseTest → the agent's test
+	// event (the real producer path the audit's per-task pass/fail is derived from —
+	// not just the unit fixture). Each coder emitted TEST {"pass":2,"fail":0}.
+	for _, aid := range []string{"a", "b"} {
+		var pass, fail, n int
+		for _, ev := range byID[aid].Events {
+			if ev.T == "test" {
+				n++
+				pass += ev.Pass
+				fail += ev.Fail
+			}
+		}
+		if n == 0 {
+			t.Errorf("coder %q emitted no test event — the TEST-line producer path is dead", aid)
+		}
+		if pass != 2 || fail != 0 {
+			t.Errorf("coder %q test counts = %d pass/%d fail, want 2/0", aid, pass, fail)
+		}
 	}
 	// A clean run opens a real PR (the stub gh returns the URL).
 	if r.PrURL == "" {

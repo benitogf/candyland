@@ -249,12 +249,13 @@ func (b *Bus) RegisterAgent(server *ooo.Server, agentID string) {
 	server.ReadListFilter(glob, b.InboxReadFilter())
 }
 
-// --- re-planning reaction (the conductor's in-process orchestration hook) ---
+// --- coordination reaction (the conductor's in-process orchestration hook) ---
 
-// EventHandler reacts to a committed worker event — the conductor's re-plan hook.
+// EventHandler reacts to a committed worker event — the conductor's coordination
+// hook (acknowledge + auto-unblock; not re-planning, which is stdout-driven).
 type EventHandler func(server *ooo.Server, ev Envelope)
 
-// RegisterReactor wires the re-plan reaction to the global storage-level
+// RegisterReactor wires the coordination reaction to the global storage-level
 // AfterWrite hook: when any write lands the conductor checks whether it was a
 // worker event (graph/events/*) and, if so, invokes handler for each event
 // newer than the last processed (advancing by seq). It uses the global hook —
@@ -296,13 +297,15 @@ func (b *Bus) RegisterReactor(server *ooo.Server, handler EventHandler) {
 }
 
 // PushDirective delivers a directive to an agent's inbox (orchestrator →
-// worker), in-process. In-process writes bypass the write filters (those gate
-// the untrusted HTTP path workers use), so the conductor stamps the seq itself
-// from the shared monotonic counter — without it the inbox read filter
-// (seq>cursor) would drop the directive. The worker consumes it next comms_inbox.
+// worker), in-process. In-process writes still run the registered WriteFilters
+// (the same InboxWriteFilter the untrusted HTTP path hits — being in-process
+// only waives Static mode's route-required check, not the filters), so this must
+// satisfy that filter: From must be set and To must match the inbox owner. The
+// filter assigns the monotonic seq, so we don't stamp one here. The worker
+// consumes the directive (seq>cursor) on its next comms_inbox.
 func (b *Bus) PushDirective(server *ooo.Server, to, body string) error {
 	_, err := ooo.Push(server, InboxGlob(to), Envelope{
-		From: b.orchestrator, To: to, Type: MsgDirective, Body: body, Seq: b.nextSeq(),
+		From: b.orchestrator, To: to, Type: MsgDirective, Body: body,
 	})
 	return err
 }
@@ -362,8 +365,9 @@ func depsDone(deps []string, done map[string]bool) bool {
 
 // CommitNode writes or updates a task-graph node as the orchestrator (the
 // single writer). Used to publish the partition into the ledger and to update
-// node status; in-process, so it bypasses the orchestrator-only write filter
-// that gates the untrusted HTTP path.
+// node status. In-process writes still run the GraphNodesWriteFilter (the
+// orchestrator-only gate), which this satisfies by setting From=orchestrator —
+// the same rule that rejects a worker's direct node write on the HTTP path.
 func (b *Bus) CommitNode(server *ooo.Server, n GraphNode) error {
 	if n.Status == "" {
 		n.Status = NodePending

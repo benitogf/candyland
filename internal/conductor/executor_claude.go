@@ -95,6 +95,7 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 				// run): kill the process tree and exit the goroutine. The conductor
 				// has already reset the run, so we publish nothing here.
 				cancel()
+				c.cleanupBusConfigs(id) // a re-planned run regenerates these on its next spawn
 				return
 			}
 		case <-done:
@@ -116,6 +117,11 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 			if fin, _ := c.Get(id); fin.Error == "" {
 				log.Printf("candyland: run %s done — %s", id, orDefault(fin.PrURL, "(no PR opened)"))
 			}
+			// Record the queryable audit now that the run's status is terminal
+			// ("done", with Error set on a failure). A paused/stopped run took the
+			// continue above and is not audited — it isn't a completed run.
+			c.writeAudit(id)
+			c.cleanupBusConfigs(id) // no more coder spawns — drop the --mcp-config files
 			cancel()
 			return
 		}
@@ -132,9 +138,6 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	if !ok {
 		return
 	}
-	// Record a queryable audit of the run's final state on every completion
-	// path (success, terminal failure, or stop).
-	defer c.writeAudit(id)
 
 	// Resolve the workspace to a git repo. The first folder is the repo the run
 	// branches and opens its PR in; the rest are extra context (--add-dir). These
@@ -470,7 +473,10 @@ func techLeadPrompt(prompt, feedback string) string {
 func coderPrompt(t partitionTask) string {
 	return "Implement this fork-safe task until its defining test is green: " + t.Title +
 		". Files: " + strings.Join(t.Files, ", ") + ". Test: " + t.Test +
-		". Make the changes with tools — do not just describe them."
+		". Make the changes with tools — do not just describe them." +
+		" When you run the defining test, report the result as one line beginning with `TEST ` " +
+		`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
+		"), so the run records real verification counts."
 }
 
 // resolveConflict has the tech lead reconcile a merge git couldn't auto-merge.

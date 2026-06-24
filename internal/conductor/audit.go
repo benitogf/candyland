@@ -10,9 +10,11 @@ import (
 
 // writeAudit derives a queryable audit record from a run's final state and
 // stores it at ooo key audits/<id> (reusing ko/ooo — no new store), then offers
-// it to the central-server sink seam. Nil-guarded like publish so the serverless
+// it to the central-server sink seam. Called from Execute once the run reaches a
+// terminal status ("done", with Error set on a failure) — a paused/stopped run
+// is not audited (it isn't complete). Nil-guarded like publish so the serverless
 // test conductor is unaffected. Per-task pass/fail come from the agents' test
-// events (the t:"test" stream emissions).
+// events (the t:"test" stream emissions parsed from each coder's `TEST {json}`).
 func (c *Conductor) writeAudit(id string) {
 	if c.server == nil {
 		return
