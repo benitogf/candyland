@@ -1,4 +1,4 @@
-package conductor
+package bus
 
 import (
 	"encoding/json"

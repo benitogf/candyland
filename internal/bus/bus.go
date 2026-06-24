@@ -1,4 +1,4 @@
-package conductor
+package bus
 
 import (
 	"encoding/json"
@@ -37,16 +37,36 @@ const (
 
 // Bus key namespaces (ooo glob keys; one glob, at the end — ValidateGlob).
 const (
-	graphNodesGlob  = "graph/nodes/*"  // the durable task ledger (orchestrator single-writer)
-	graphEventsGlob = "graph/events/*" // append-only proposal/mutation log (anyone appends)
+	GraphNodesGlob  = "graph/nodes/*"  // the durable task ledger (orchestrator single-writer)
+	GraphEventsGlob = "graph/events/*" // append-only proposal/mutation log (anyone appends)
 )
 
 // InboxGlob is the per-recipient inbox list path. Registered per agent at spawn
 // (the recipient is a fixed segment so the single trailing glob is valid).
 func InboxGlob(agentID string) string { return "inbox/" + agentID + "/*" }
 
+// GraphNodeKey is the concrete (non-glob) key of one task-graph node.
+func GraphNodeKey(id string) string { return "graph/nodes/" + id }
+
 // CursorKey holds an agent's last-consumed seq.
 func CursorKey(agentID string) string { return "cursor/" + agentID }
+
+// Cursor is an agent's since-cursor (last-consumed seq).
+type Cursor struct {
+	Seq int64 `json:"seq"`
+}
+
+// CursorReader builds the cursor lookup the inbox read filter uses, reading
+// cursor/<agentID> from the conductor's own server in-process (0 if unset).
+func CursorReader(server *ooo.Server) func(agentID string) int64 {
+	return func(agentID string) int64 {
+		m, err := ooo.Get[Cursor](server, CursorKey(agentID))
+		if err != nil {
+			return 0
+		}
+		return m.Data.Seq
+	}
+}
 
 // Envelope is one coordination message (core/coordination protocol).
 type Envelope struct {
@@ -204,9 +224,17 @@ func (b *Bus) GraphNodesReadFilter() ooo.ApplyList {
 // RegisterGlobal registers the run-wide bus filters (the task-graph ledger and
 // the proposal log) on the conductor's existing ooo server. Call once per run.
 func (b *Bus) RegisterGlobal(server *ooo.Server) {
-	server.WriteFilter(graphNodesGlob, b.GraphNodesWriteFilter())
-	server.WriteFilter(graphEventsGlob, b.GraphEventsWriteFilter())
-	server.ReadListFilter(graphNodesGlob, b.GraphNodesReadFilter())
+	server.WriteFilter(GraphNodesGlob, b.GraphNodesWriteFilter())
+	server.ReadListFilter(GraphNodesGlob, b.GraphNodesReadFilter())
+	server.WriteFilter(GraphEventsGlob, b.GraphEventsWriteFilter())
+	// The conductor folds the append-only event log in-process; expose it
+	// unscoped (needed because the conductor runs Static: deny-by-default).
+	server.ReadListFilter(GraphEventsGlob, func(key string, objs []meta.Object) ([]meta.Object, error) {
+		return objs, nil
+	})
+	// cursor/<agentId> read+write must be permitted under Static mode (the
+	// inbox read filter reads it; comms_inbox advances it).
+	server.OpenFilter("cursor/*")
 }
 
 // RegisterAgent registers an agent's per-inbox filters. The recipient id is a
