@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/benitogf/ooo"
@@ -244,4 +246,105 @@ func (b *Bus) RegisterAgent(server *ooo.Server, agentID string) {
 	glob := InboxGlob(agentID)
 	server.WriteFilter(glob, b.InboxWriteFilter())
 	server.ReadListFilter(glob, b.InboxReadFilter())
+}
+
+// --- re-planning reaction (the conductor's in-process orchestration hook) ---
+
+// EventHandler reacts to a committed worker event — the conductor's re-plan hook.
+type EventHandler func(server *ooo.Server, ev Envelope)
+
+// RegisterReactor wires the re-plan reaction: an AfterWriteFilter on
+// graph/events/* fires the instant a worker write lands and invokes handler for
+// each event newer than the last one processed (the Notify receives the glob,
+// not the minted key, so the reactor reads the log and advances by seq). It runs
+// synchronously, in-process; the conductor's stdout loop is untouched. The
+// handler must not write graph/events (it would recurse).
+func (b *Bus) RegisterReactor(server *ooo.Server, handler EventHandler) {
+	var mu sync.Mutex
+	var lastSeq int64
+	server.AfterWriteFilter(GraphEventsGlob, func(key string) {
+		mu.Lock()
+		defer mu.Unlock()
+		objs, err := server.Storage.GetList(GraphEventsGlob)
+		if err != nil {
+			return
+		}
+		fresh := make([]Envelope, 0, len(objs))
+		for _, o := range objs {
+			var e Envelope
+			if json.Unmarshal(o.Data, &e) == nil && e.Seq > lastSeq {
+				fresh = append(fresh, e)
+			}
+		}
+		sort.Slice(fresh, func(i, j int) bool { return fresh[i].Seq < fresh[j].Seq })
+		for _, e := range fresh {
+			lastSeq = e.Seq
+			handler(server, e)
+		}
+	})
+}
+
+// PushDirective delivers a directive to an agent's inbox (orchestrator →
+// worker), in-process. In-process writes bypass the write filters (those gate
+// the untrusted HTTP path workers use), so the conductor stamps the seq itself
+// from the shared monotonic counter — without it the inbox read filter
+// (seq>cursor) would drop the directive. The worker consumes it next comms_inbox.
+func (b *Bus) PushDirective(server *ooo.Server, to, body string) error {
+	_, err := ooo.Push(server, InboxGlob(to), Envelope{
+		From: b.orchestrator, To: to, Type: MsgDirective, Body: body, Seq: b.nextSeq(),
+	})
+	return err
+}
+
+// ReadNodes returns the FULL task-graph ledger (including done nodes) by reading
+// raw storage — bypassing the agent-facing non-done read filter, since the
+// orchestrator reasons over the complete graph (e.g. to know which deps are done).
+func (b *Bus) ReadNodes(server *ooo.Server) []GraphNode {
+	objs, err := server.Storage.GetList(GraphNodesGlob)
+	if err != nil {
+		return nil
+	}
+	out := make([]GraphNode, 0, len(objs))
+	for _, o := range objs {
+		var n GraphNode
+		if json.Unmarshal(o.Data, &n) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// AutoUnblock flips every blocked node whose dependencies are all done to
+// pending (committing the change as the orchestrator), so dependents auto-unblock
+// on completion. Returns the ids it unblocked.
+func (b *Bus) AutoUnblock(server *ooo.Server) []string {
+	nodes := b.ReadNodes(server)
+	done := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if n.Status == NodeDone {
+			done[n.ID] = true
+		}
+	}
+	var unblocked []string
+	for _, n := range nodes {
+		if n.Status != NodeBlocked || !depsDone(n.Deps, done) {
+			continue
+		}
+		n.Status = NodePending
+		n.From = b.orchestrator
+		n.Version++
+		if err := ooo.Set(server, GraphNodeKey(n.ID), n); err == nil {
+			unblocked = append(unblocked, n.ID)
+		}
+	}
+	return unblocked
+}
+
+func depsDone(deps []string, done map[string]bool) bool {
+	for _, d := range deps {
+		if !done[d] {
+			return false
+		}
+	}
+	return true
 }
