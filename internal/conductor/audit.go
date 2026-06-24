@@ -44,10 +44,13 @@ func (c *Conductor) writeAudit(id string) {
 			if a.ID != t.ID {
 				continue
 			}
+			// The LAST test emission is the verification outcome: a coder reports
+			// `TEST {json}` for its defining test, and a re-run after a fix
+			// supersedes the earlier result. Take the last, don't sum (summing
+			// would double-count re-runs).
 			for _, ev := range a.Events {
 				if ev.T == "test" {
-					ta.Pass += ev.Pass
-					ta.Fail += ev.Fail
+					ta.Pass, ta.Fail = ev.Pass, ev.Fail
 				}
 			}
 		}

@@ -51,8 +51,8 @@ func TestWriteAuditDerivesQueryableRecord(t *testing.T) {
 		// TokensUsed is derived (recompute sums agent tokens) → 2800 + 1400 = 4200.
 		r.Agents = []run.Agent{
 			{ID: "t1", Tokens: 2800, Events: []run.Event{
-				{T: "test", Pass: 5, Fail: 1},
-				{T: "test", Pass: 3, Fail: 0}, // accumulates across re-runs
+				{T: "test", Pass: 1, Fail: 2}, // a failing first run...
+				{T: "test", Pass: 5, Fail: 0}, // ...superseded by the green re-run (last wins)
 			}},
 			{ID: "t2", Tokens: 1400, Events: []run.Event{{T: "test", Pass: 7, Fail: 0}}},
 		}
@@ -78,8 +78,8 @@ func TestWriteAuditDerivesQueryableRecord(t *testing.T) {
 	for _, ta := range a.Tasks {
 		byID[ta.ID] = ta
 	}
-	if got := byID["t1"]; got.Pass != 8 || got.Fail != 1 || got.State != "green" {
-		t.Errorf("t1 audit should sum its test events (pass=8 fail=1 green), got %+v", got)
+	if got := byID["t1"]; got.Pass != 5 || got.Fail != 0 || got.State != "green" {
+		t.Errorf("t1 audit should take its LAST test event (pass=5 fail=0 green, the green re-run supersedes the failing first run), got %+v", got)
 	}
 	if got := byID["t2"]; got.Pass != 7 || got.Fail != 0 {
 		t.Errorf("t2 audit wrong, got %+v", got)
