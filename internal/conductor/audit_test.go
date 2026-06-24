@@ -3,6 +3,7 @@ package conductor
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/benitogf/candyland/internal/run"
@@ -90,4 +91,30 @@ func TestWriteAuditDerivesQueryableRecord(t *testing.T) {
 func TestWriteAuditNoServerIsNoop(t *testing.T) {
 	c := New(nil)
 	c.writeAudit("missing") // must not panic
+}
+
+// A run that failed before partitioning (no tasks) must still audit with
+// tasks:[] — never tasks:null — since the UI reads the shape with no null guard.
+func TestWriteAuditTaskLessRunMarshalsEmptyArray(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	srv.OpenFilter("audits/*")
+	srv.OpenFilter("runs/*")
+	c := New(srv)
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	id := c.Create(run.Spec{Prompt: "bad workspace"})
+	c.Update(id, func(r *run.Run) { r.Status = "done"; r.Error = "workspace has no git repo" })
+	c.writeAudit(id)
+
+	obj, err := st.Get("audits/" + id)
+	if err != nil {
+		t.Fatalf("audit not stored: %v", err)
+	}
+	if !strings.Contains(string(obj.Data), `"tasks":[]`) {
+		t.Errorf("task-less audit must serialize tasks:[] not null; got %s", obj.Data)
+	}
 }

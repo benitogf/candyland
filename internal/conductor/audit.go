@@ -2,6 +2,7 @@ package conductor
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"time"
 
@@ -24,12 +25,17 @@ func (c *Conductor) writeAudit(id string) {
 		return
 	}
 	audit := run.Audit{
-		RunID:   id,
-		Status:  r.Status,
-		Phase:   r.Phase,
-		Tokens:  r.TokensUsed,
-		PrURL:   r.PrURL,
-		Error:   r.Error,
+		RunID:  id,
+		Status: r.Status,
+		Phase:  r.Phase,
+		Tokens: r.TokensUsed,
+		PrURL:  r.PrURL,
+		Error:  r.Error,
+		// Non-nil so a run that failed before partitioning (no tasks) serializes
+		// as "tasks":[] not "tasks":null — the UI reads this shape with no
+		// client-side null guard (see run/types.go), matching how the conductor
+		// keeps Run.Agents/Tasks non-nil for the same reason.
+		Tasks:   make([]run.TaskAudit, 0, len(r.Tasks)),
 		EndedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	for _, t := range r.Tasks {
@@ -69,6 +75,8 @@ func (c *Conductor) postAudit(a run.Audit) {
 		return // local-first: no central sink configured
 	}
 	// Seam: POST `a` (JSON) to sink. Intentionally a one-function boundary —
-	// central analytics sync is a separate, future deliverable.
-	_ = a
+	// central analytics sync is a separate, future deliverable. Until it exists,
+	// surface the configured-but-inert sink so an operator who set the env var
+	// isn't left wondering why nothing arrives (the audit is kept locally).
+	log.Printf("candyland: CANDYLAND_AUDIT_SINK=%q is set but the central audit sink is not implemented yet; audit %s kept locally only", sink, a.RunID)
 }
