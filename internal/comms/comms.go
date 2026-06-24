@@ -7,6 +7,7 @@ package comms
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -47,6 +48,14 @@ func (c *Client) Send(to, msgType, body, conversationID, correlationID string) e
 
 // Inbox returns this agent's new messages (the server scopes to seq>cursor),
 // then advances the cursor so the next call returns only newer ones.
+//
+// Each agent has exactly one bus client — the spawned comms-mcp process — and an
+// MCP server handles its tool calls serially, so comms_inbox is the single,
+// sequential writer of this agent's cursor: the read-then-advance has no
+// concurrent reader to race, and maxSeq only grows. Delivery is at-least-once:
+// if the cursor write fails the messages are still returned (and re-delivered
+// next call), and the failure is logged rather than silently dropped so a
+// persistently-failing advance is visible instead of a silent re-delivery loop.
 func (c *Client) Inbox() ([]bus.Envelope, error) {
 	metas, err := io.RemoteGetList[bus.Envelope](c.cfg, bus.InboxGlob(c.self))
 	if err != nil {
@@ -61,7 +70,9 @@ func (c *Client) Inbox() ([]bus.Envelope, error) {
 		}
 	}
 	if maxSeq > 0 {
-		_ = io.RemoteSet(c.cfg, bus.CursorKey(c.self), bus.Cursor{Seq: maxSeq})
+		if err := io.RemoteSet(c.cfg, bus.CursorKey(c.self), bus.Cursor{Seq: maxSeq}); err != nil {
+			log.Printf("candyland comms: agent %q cursor advance to %d failed: %v (messages re-delivered next inbox)", c.self, maxSeq, err)
+		}
 	}
 	return out, nil
 }
