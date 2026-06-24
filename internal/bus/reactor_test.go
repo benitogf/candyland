@@ -29,8 +29,8 @@ func startServer(t *testing.T, orchestrator string, agents ...string) (*ooo.Serv
 	return srv, b, func() { srv.Close(os.Interrupt) }
 }
 
-// CPB4: a worker write to graph/events triggers the AfterWriteFilter reactor,
-// which writes a directive the worker consumes next turn.
+// CPB4: a worker write to graph/events triggers the coordination reactor (the
+// global AfterWrite hook), which writes a directive the worker consumes next turn.
 func TestReactorWritesDirectiveOnWorkerEvent(t *testing.T) {
 	// Register everything (filters + reactor) BEFORE Start — like the conductor's
 	// StartBus, which runs before server.Start binds the listener.
@@ -53,8 +53,8 @@ func TestReactorWritesDirectiveOnWorkerEvent(t *testing.T) {
 	defer srv.Close(os.Interrupt)
 
 	// A worker proposes over HTTP (like a real coder via graph_propose) — the
-	// write filter assigns its seq and the AfterWriteFilter reactor fires
-	// (asynchronously, off the storage lock), pushing a directive to the inbox.
+	// write filter assigns its seq and the coordination reactor (global AfterWrite
+	// hook) fires asynchronously, off the storage lock, pushing a directive to the inbox.
 	cfg := io.RemoteConfig{Host: srv.Address, Client: &http.Client{}}
 	if err := io.RemotePush(cfg, GraphEventsGlob, Envelope{From: "worker", Type: MsgTaskMutation, Body: "split t1"}); err != nil {
 		t.Fatalf("worker event: %v", err)

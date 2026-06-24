@@ -88,8 +88,13 @@ func (c *Client) GraphPropose(mutation string) error {
 }
 
 // GraphCommit writes a node to the durable ledger. Only the orchestrator may do
-// this; the server rejects it otherwise.
+// this: it fails fast client-side when self isn't the orchestrator (avoiding a
+// doomed round-trip), and the server's GraphNodesWriteFilter is the actual gate
+// that rejects any non-orchestrator write.
 func (c *Client) GraphCommit(n bus.GraphNode) error {
+	if c.self != c.orchestrator {
+		return fmt.Errorf("graph_commit: only the orchestrator %q may commit nodes, not %q", c.orchestrator, c.self)
+	}
 	n.From = c.self
 	return io.RemoteSet(c.cfg, bus.GraphNodeKey(n.ID), n)
 }

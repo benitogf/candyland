@@ -2,6 +2,7 @@ package comms
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/benitogf/candyland/internal/bus"
@@ -9,6 +10,20 @@ import (
 	"github.com/benitogf/ooo/storage"
 	"github.com/gorilla/mux"
 )
+
+// A non-orchestrator client refuses to commit a node client-side, before any
+// network call (the bus addr here is unreachable — the guard must short-circuit
+// it). The server-side filter is the real gate; this is the fail-fast.
+func TestGraphCommitClientSideGuard(t *testing.T) {
+	coder := NewClient("127.0.0.1:1", "bob", "tech-lead") // self != orchestrator; addr unroutable
+	err := coder.GraphCommit(bus.GraphNode{ID: "t1"})
+	if err == nil {
+		t.Fatal("a non-orchestrator GraphCommit must fail client-side")
+	}
+	if !strings.Contains(err.Error(), "only the orchestrator") {
+		t.Errorf("expected a client-side orchestrator guard error, got %v", err)
+	}
+}
 
 // startBus stands up an embedded ooo server with the coordination filters
 // registered for the given agents, started on an ephemeral port. Returns the
