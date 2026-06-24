@@ -132,6 +132,9 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	if !ok {
 		return
 	}
+	// Record a queryable audit of the run's final state on every completion
+	// path (success, terminal failure, or stop).
+	defer c.writeAudit(id)
 
 	// Resolve the workspace to a git repo. The first folder is the repo the run
 	// branches and opens its PR in; the rest are extra context (--add-dir). These
@@ -535,6 +538,11 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 				if p := parsePartition(b.Text); p != nil {
 					partition = p
 				}
+				if pass, fail, ok := parseTest(b.Text); ok {
+					c.Update(id, func(r *run.Run) {
+						appendToAgent(r, agentID, run.Event{T: "test", Pass: pass, Fail: fail}, 0)
+					})
+				}
 				text = b.Text
 				c.Update(id, func(r *run.Run) { appendToAgent(r, agentID, run.Event{T: "text", Text: b.Text}, 0) })
 			}
@@ -570,6 +578,27 @@ func parsePartition(text string) []partitionTask {
 		}
 	}
 	return nil
+}
+
+// parseTest extracts a verification result from a `TEST <json>` line emitted by
+// an agent (e.g. `TEST {"pass":12,"fail":0}`), mirroring parsePartition. The
+// last such line on the agent's stream wins. ok is false when no TEST line is
+// present, so a plain text block is left untouched.
+func parseTest(text string) (pass, fail int, ok bool) {
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "TEST ") {
+			continue
+		}
+		var res struct {
+			Pass int `json:"pass"`
+			Fail int `json:"fail"`
+		}
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "TEST ")), &res) == nil {
+			pass, fail, ok = res.Pass, res.Fail, true
+		}
+	}
+	return pass, fail, ok
 }
 
 func setAgentState(r *run.Run, agentID, state, activity string) {

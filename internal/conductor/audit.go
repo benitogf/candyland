@@ -1,0 +1,72 @@
+package conductor
+
+import (
+	"encoding/json"
+	"os"
+	"time"
+
+	"github.com/benitogf/candyland/internal/run"
+)
+
+// writeAudit derives a queryable audit record from a run's final state and
+// stores it at ooo key audits/<id> (reusing ko/ooo — no new store), then offers
+// it to the central-server sink seam. Nil-guarded like publish so the serverless
+// test conductor is unaffected. Per-task pass/fail come from the agents' test
+// events (the t:"test" stream emissions).
+func (c *Conductor) writeAudit(id string) {
+	if c.server == nil {
+		return
+	}
+	r, ok := c.Get(id)
+	if !ok {
+		return
+	}
+	audit := run.Audit{
+		RunID:   id,
+		Status:  r.Status,
+		Phase:   r.Phase,
+		Tokens:  r.TokensUsed,
+		PrURL:   r.PrURL,
+		Error:   r.Error,
+		EndedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	for _, t := range r.Tasks {
+		ta := run.TaskAudit{ID: t.ID, State: t.State}
+		for _, a := range r.Agents {
+			if a.ID != t.ID {
+				continue
+			}
+			for _, ev := range a.Events {
+				if ev.T == "test" {
+					ta.Pass += ev.Pass
+					ta.Fail += ev.Fail
+				}
+			}
+		}
+		audit.Tasks = append(audit.Tasks, ta)
+	}
+
+	data, err := json.Marshal(audit)
+	if err != nil {
+		return
+	}
+	if _, err := c.server.Storage.Set("audits/"+id, data); err != nil {
+		return
+	}
+	c.postAudit(audit)
+}
+
+// postAudit is the central-server sync seam: the audit is always kept locally
+// (audits/<id> in ooo); when CANDYLAND_AUDIT_SINK names a central analytics
+// server, a future build POSTs the record there for cross-run results analysis.
+// Built local-first — a no-op until a sink is configured, so nothing depends on
+// a central server existing.
+func (c *Conductor) postAudit(a run.Audit) {
+	sink := os.Getenv("CANDYLAND_AUDIT_SINK")
+	if sink == "" {
+		return // local-first: no central sink configured
+	}
+	// Seam: POST `a` (JSON) to sink. Intentionally a one-function boundary —
+	// central analytics sync is a separate, future deliverable.
+	_ = a
+}
