@@ -70,7 +70,7 @@ func main() {
 	// Register the coordination bus (Realization B) before Start — filters must
 	// be registered before the listener binds. A back-channel beside the stdout
 	// loop; per-agent inboxes are registered at spawn.
-	conductor.StartBus(server)
+	cond.StartBus()
 
 	// Serve the embedded SPA on its own port; the client connects ooo-client to
 	// the realtime port for live state.

@@ -253,35 +253,45 @@ func (b *Bus) RegisterAgent(server *ooo.Server, agentID string) {
 // EventHandler reacts to a committed worker event — the conductor's re-plan hook.
 type EventHandler func(server *ooo.Server, ev Envelope)
 
-// RegisterReactor wires the re-plan reaction: an AfterWriteFilter on
-// graph/events/* fires the instant a worker write lands and invokes handler for
-// each event newer than the last one processed (the Notify receives the glob,
-// not the minted key, so the reactor reads the log and advances by seq). It runs
-// synchronously, in-process; the conductor's stdout loop is untouched. The
-// handler must not write graph/events (it would recurse).
+// RegisterReactor wires the re-plan reaction to the global storage-level
+// AfterWrite hook: when any write lands the conductor checks whether it was a
+// worker event (graph/events/*) and, if so, invokes handler for each event
+// newer than the last processed (advancing by seq). It uses the global hook —
+// not a path AfterWriteFilter — because a path-filter's pool preallocation at
+// Start blocks the per-agent inbox filters that are registered later, at spawn.
+// The work runs in a goroutine: AfterWrite fires under the storage write lock,
+// so the reactor's own writes must not run inline or they would deadlock the
+// server (the directive is consumed on the worker's next turn regardless).
+// Goroutines serialize on the cursor mutex; the handler must not write
+// graph/events. Must be set before server.Start. The stdout loop is untouched.
 func (b *Bus) RegisterReactor(server *ooo.Server, handler EventHandler) {
 	var mu sync.Mutex
 	var lastSeq int64
-	server.AfterWriteFilter(GraphEventsGlob, func(key string) {
-		mu.Lock()
-		defer mu.Unlock()
-		objs, err := server.Storage.GetList(GraphEventsGlob)
-		if err != nil {
+	server.AfterWrite = func(key string) {
+		if !strings.HasPrefix(key, "graph/events/") {
 			return
 		}
-		fresh := make([]Envelope, 0, len(objs))
-		for _, o := range objs {
-			var e Envelope
-			if json.Unmarshal(o.Data, &e) == nil && e.Seq > lastSeq {
-				fresh = append(fresh, e)
+		go func() {
+			mu.Lock()
+			defer mu.Unlock()
+			objs, err := server.Storage.GetList(GraphEventsGlob)
+			if err != nil {
+				return
 			}
-		}
-		sort.Slice(fresh, func(i, j int) bool { return fresh[i].Seq < fresh[j].Seq })
-		for _, e := range fresh {
-			lastSeq = e.Seq
-			handler(server, e)
-		}
-	})
+			fresh := make([]Envelope, 0, len(objs))
+			for _, o := range objs {
+				var e Envelope
+				if json.Unmarshal(o.Data, &e) == nil && e.Seq > lastSeq {
+					fresh = append(fresh, e)
+				}
+			}
+			sort.Slice(fresh, func(i, j int) bool { return fresh[i].Seq < fresh[j].Seq })
+			for _, e := range fresh {
+				lastSeq = e.Seq
+				handler(server, e)
+			}
+		}()
+	}
 }
 
 // PushDirective delivers a directive to an agent's inbox (orchestrator →

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
 	"github.com/benitogf/ooo"
 )
@@ -48,6 +49,10 @@ type Conductor struct {
 	// persisted workspace from ooo; tests override it to point a run at a
 	// throwaway git repo without standing up storage.
 	folders func(wsID string) ([]string, error)
+	// bus is the coordination back-channel (Realization B), set by StartBus.
+	// nil when no bus is wired (e.g. serverless tests).
+	bus       *bus.Bus
+	busAgents map[string]bool // agent ids whose inbox filters are registered
 }
 
 // New builds a conductor bound to an ooo server. Every run is driven by the real
@@ -55,8 +60,9 @@ type Conductor struct {
 // run fails honestly (see resilience.go) rather than falling back to a demo.
 func New(server *ooo.Server) *Conductor {
 	c := &Conductor{
-		server: server,
-		runs:   map[string]*runtime{},
+		server:    server,
+		runs:      map[string]*runtime{},
+		busAgents: map[string]bool{},
 	}
 	c.folders = c.storageFolders
 	return c

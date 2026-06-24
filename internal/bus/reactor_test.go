@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/benitogf/ooo"
 	"github.com/benitogf/ooo/io"
@@ -38,8 +39,13 @@ func TestReactorWritesDirectiveOnWorkerEvent(t *testing.T) {
 	b := NewBus("conductor", CursorReader(srv))
 	b.RegisterGlobal(srv)
 	b.RegisterAgent(srv, "worker")
+	done := make(chan struct{}, 1)
 	b.RegisterReactor(srv, func(s *ooo.Server, ev Envelope) {
 		_ = b.PushDirective(s, ev.From, "noted: "+ev.Body)
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 	})
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatalf("start: %v", err)
@@ -48,10 +54,15 @@ func TestReactorWritesDirectiveOnWorkerEvent(t *testing.T) {
 
 	// A worker proposes over HTTP (like a real coder via graph_propose) — the
 	// write filter assigns its seq and the AfterWriteFilter reactor fires
-	// synchronously, pushing a directive to the worker's inbox.
+	// (asynchronously, off the storage lock), pushing a directive to the inbox.
 	cfg := io.RemoteConfig{Host: srv.Address, Client: &http.Client{}}
 	if err := io.RemotePush(cfg, GraphEventsGlob, Envelope{From: "worker", Type: MsgTaskMutation, Body: "split t1"}); err != nil {
 		t.Fatalf("worker event: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reactor did not fire within 2s")
 	}
 
 	msgs, err := io.RemoteGetList[Envelope](cfg, InboxGlob("worker"))
