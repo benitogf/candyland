@@ -1,0 +1,57 @@
+import { useEffect, useState } from 'react'
+import oooClient from 'ooo-client'
+
+import { domain, ssl } from '../config'
+
+// Live ooo subscriptions. Each hook opens a WebSocket to a realtime key and
+// re-renders on every update — this is how the UI reads run state. No polling,
+// no client-side mock; the conductor is the single source of truth.
+const useOoo = (key) => {
+    const [cache, setCache] = useState(null)
+    useEffect(() => {
+        if (!key) return undefined
+        const conn = oooClient(`${domain}/${key}`, ssl)
+        // ooo-client applies JSON-patches in place, so conn.cache keeps the same
+        // reference across updates — clone so React sees a new value and re-renders.
+        const update = () => setCache(conn.cache == null ? null : JSON.parse(JSON.stringify(conn.cache)))
+        conn.onopen = update
+        conn.onmessage = update
+        return () => conn.close()
+    }, [key])
+    return cache
+}
+
+// Normalize a run for the UI: agents/tasks are always arrays, so panels can
+// .map/.length them safely no matter what the backend (or older persisted data)
+// sent — a null there would otherwise crash the whole view.
+const normalizeRun = (r) => (r ? { ...r, agents: r.agents || [], tasks: r.tasks || [] } : null)
+
+// All runs (for the dashboard), newest first. ooo lists ascending by key, so we
+// sort by the run's sequence id (r1, r2, …) descending.
+const seq = (r) => parseInt(String(r.id).replace(/\D/g, ''), 10) || 0
+export const useRuns = () => {
+    const cache = useOoo('runs/*')
+    if (!Array.isArray(cache)) return []
+    return cache.map((e) => e?.data).filter(Boolean).map(normalizeRun).sort((a, b) => seq(b) - seq(a))
+}
+
+// One run (for the workspace), live.
+export const useRun = (id) => {
+    const cache = useOoo(id ? `runs/${encodeURIComponent(id)}` : null)
+    return normalizeRun(cache?.data || null)
+}
+
+// Saved workspaces (named folder sets), live from the backend — INCLUDING
+// soft-deleted ones, so the Tasks history can still show a deleted workspace's
+// name (struck-through). Pickers use useActiveWorkspaces instead.
+export const useWorkspaces = () => {
+    const cache = useOoo('workspaces/*')
+    if (!Array.isArray(cache)) return []
+    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => (a.label || '').localeCompare(b.label || ''))
+}
+
+// Active (non-deleted) workspaces — what a new or edited run can actually point
+// at. A soft-deleted workspace is hidden here but kept in useWorkspaces.
+export const useActiveWorkspaces = () => useWorkspaces().filter((w) => !w.deleted)
+
+export const workspaceById = (list, id) => (list || []).find((w) => w.id === id) || null
