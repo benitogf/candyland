@@ -195,7 +195,10 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		}
 		feedback = res.replan
 		if attempt == replans {
+			// K=3 escalation cap reached: give up rather than thrash quota, and
+			// escalate the still-open task-graph nodes to blocked.
 			fail(ctx, c, id, "tl", fmt.Sprintf("Couldn't find a working task split after %d attempts. Last problem: %s", replans, feedback))
+			c.escalateOpenNodes(fmt.Sprintf("no working task split after %d attempts: %s", replans, feedback))
 			return
 		}
 	}
@@ -287,6 +290,9 @@ func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch
 		}
 		setAgentState(r, "tl", "integrating", "coordinating coders")
 	})
+	// Publish the partition into the coordination task-graph (bus) so coders can
+	// graph_read the open work and the conductor can auto-unblock / escalate.
+	c.publishGraphNodes(tasks)
 
 	// ── Coders: one per task, each in its own worktree off base, in parallel. ──
 	runCoders(ctx, c, id, repo, base, wtRoot, tasks, extra)

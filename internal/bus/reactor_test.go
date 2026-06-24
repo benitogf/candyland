@@ -77,6 +77,31 @@ func TestReactorWritesDirectiveOnWorkerEvent(t *testing.T) {
 	}
 }
 
+// CPB6: a stuck node escalates to blocked with a recorded reason (the K=3 cap's
+// terminal disposition — no further retries).
+func TestEscalateMarksBlocked(t *testing.T) {
+	srv, b, stop := startServer(t, "conductor")
+	defer stop()
+	if err := b.CommitNode(srv, GraphNode{ID: "t1", Title: "export", Status: NodePending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Escalate(srv, "t1", "no working split after 3 attempts"); err != nil {
+		t.Fatal(err)
+	}
+	var got GraphNode
+	for _, n := range b.ReadNodes(srv) {
+		if n.ID == "t1" {
+			got = n
+		}
+	}
+	if got.Status != NodeBlocked {
+		t.Errorf("escalated node should be blocked, got %q", got.Status)
+	}
+	if got.Reason == "" {
+		t.Error("escalation should record a reason on the blocked node")
+	}
+}
+
 // CPB4: a blocked node whose deps are all done auto-unblocks to pending.
 func TestAutoUnblockOnDepsDone(t *testing.T) {
 	srv, b, stop := startServer(t, "conductor")

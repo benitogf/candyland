@@ -89,6 +89,38 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	return path
 }
 
+// publishGraphNodes mirrors the tech-lead's partition into the bus task-graph
+// ledger so coders can graph_read the open work and the conductor can
+// auto-unblock / escalate real nodes. No-op without a bus.
+func (c *Conductor) publishGraphNodes(tasks []partitionTask) {
+	c.mu.Lock()
+	b := c.bus
+	c.mu.Unlock()
+	if b == nil || c.server == nil {
+		return
+	}
+	for _, t := range tasks {
+		_ = b.CommitNode(c.server, bus.GraphNode{ID: t.ID, Title: t.Title, Status: bus.NodePending, Deps: t.Deps})
+	}
+}
+
+// escalateOpenNodes marks every still-open node blocked — the terminal
+// disposition of the K=3 escalation cap when the conductor gives up on a run
+// (no further retries, so no quota thrash). No-op without a bus.
+func (c *Conductor) escalateOpenNodes(reason string) {
+	c.mu.Lock()
+	b := c.bus
+	c.mu.Unlock()
+	if b == nil || c.server == nil {
+		return
+	}
+	for _, n := range b.ReadNodes(c.server) {
+		if n.Status != bus.NodeDone && n.Status != bus.NodeBlocked {
+			_ = b.Escalate(c.server, n.ID, reason)
+		}
+	}
+}
+
 // registerBusAgent registers an agent's inbox filters exactly once.
 func (c *Conductor) registerBusAgent(agentID string) {
 	c.mu.Lock()

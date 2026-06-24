@@ -74,3 +74,40 @@ func TestBusMCPConfigNoBus(t *testing.T) {
 		t.Errorf("expected no config without a bus, got %q", got)
 	}
 }
+
+// CPB6: the retry cap is K=3 (no quota thrash).
+func TestEscalationCapIsThree(t *testing.T) {
+	if maxReplans() != 3 || maxAttempts() != 3 {
+		t.Errorf("K must be 3 to bound quota, got replans=%d attempts=%d", maxReplans(), maxAttempts())
+	}
+}
+
+// CPB6: when the conductor gives up, the still-open nodes escalate to blocked
+// (done nodes are left alone).
+func TestEscalateOpenNodesBlocksOpenOnly(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	c.publishGraphNodes([]partitionTask{{ID: "t1", Title: "one"}, {ID: "t2", Title: "two"}})
+	if err := c.bus.CommitNode(srv, bus.GraphNode{ID: "t1", Status: bus.NodeDone}); err != nil {
+		t.Fatal(err)
+	}
+	c.escalateOpenNodes("no working split after 3 attempts")
+
+	byID := map[string]bus.GraphNode{}
+	for _, n := range c.bus.ReadNodes(srv) {
+		byID[n.ID] = n
+	}
+	if byID["t1"].Status != bus.NodeDone {
+		t.Errorf("done node t1 must not be escalated, got %q", byID["t1"].Status)
+	}
+	if byID["t2"].Status != bus.NodeBlocked || byID["t2"].Reason == "" {
+		t.Errorf("open node t2 should be blocked with a reason, got %q (%q)", byID["t2"].Status, byID["t2"].Reason)
+	}
+}

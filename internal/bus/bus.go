@@ -93,6 +93,7 @@ type GraphNode struct {
 	Deps     []string `json:"deps,omitempty"`
 	Priority int      `json:"priority,omitempty"`
 	Version  int      `json:"version"`
+	Reason   string   `json:"reason,omitempty"` // why a node is blocked (escalation)
 	From     string   `json:"from,omitempty"`
 }
 
@@ -357,4 +358,33 @@ func depsDone(deps []string, done map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// CommitNode writes or updates a task-graph node as the orchestrator (the
+// single writer). Used to publish the partition into the ledger and to update
+// node status; in-process, so it bypasses the orchestrator-only write filter
+// that gates the untrusted HTTP path.
+func (b *Bus) CommitNode(server *ooo.Server, n GraphNode) error {
+	if n.Status == "" {
+		n.Status = NodePending
+	}
+	n.From = b.orchestrator
+	n.Version++
+	return ooo.Set(server, GraphNodeKey(n.ID), n)
+}
+
+// Escalate marks a stuck node blocked with a reason — the K=3 escalation cap's
+// terminal disposition. Once blocked there are no further retries, so the cap
+// prevents quota thrash. No-op if the node doesn't exist.
+func (b *Bus) Escalate(server *ooo.Server, nodeID, reason string) error {
+	m, err := ooo.Get[GraphNode](server, GraphNodeKey(nodeID))
+	if err != nil {
+		return err
+	}
+	n := m.Data
+	n.Status = NodeBlocked
+	n.Reason = reason
+	n.From = b.orchestrator
+	n.Version++
+	return ooo.Set(server, GraphNodeKey(nodeID), n)
 }
