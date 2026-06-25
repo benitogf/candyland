@@ -62,6 +62,21 @@ func TestControlLaunchAndStatus(t *testing.T) {
 	if len(got.Folders) != 1 || got.Folders[0] != folder {
 		t.Errorf("run must carry its launch folders, got %v", got.Folders)
 	}
+
+	// The trigger surfaces an honest terminal failure: a non-git launch folder
+	// can't be branched, so the run fails (not a silent hang) and run_status
+	// reports the error end-to-end through the control path.
+	var failed run.Run
+	for range 100 {
+		failed, _ = cl.Status(id)
+		if failed.Error != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if failed.Error == "" {
+		t.Error("a run launched into a non-git folder should fail honestly with an error visible via run_status")
+	}
 }
 
 // run_status / stop_run on an unknown run surface the API's not-found error
