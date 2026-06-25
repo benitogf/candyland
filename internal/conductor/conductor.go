@@ -428,7 +428,7 @@ func (c *Conductor) Restart(id string) bool {
 	return true
 }
 
-// Edit changes a run's task (mode/workspace/prompt/title) in place and resets it
+// Edit changes a run's task (mode/folders/prompt/title) in place and resets it
 // to planning — clearing the previous result and INVALIDATING the cached planning
 // questions so they regenerate from the new prompt. The run keeps its id (and its
 // row in the Tasks history); the UI's planning flow then re-asks the (new)
