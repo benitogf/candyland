@@ -127,6 +127,12 @@ func (c *Conductor) Update(id string, mutate func(*run.Run)) {
 // the run is still persisted). Without this, controls like Restart/Edit would
 // 409 on any run that outlived the process that started it. Returns nil only when
 // the run isn't in memory AND isn't in storage.
+//
+// The cancelled flag is rehydrated from the persisted status: it's the in-memory
+// guard that keeps a cancelled run terminal (Edit/Restart refuse it, Update drops
+// late writes), and it's lost on restart. Without restoring it, a cancelled run
+// rehydrated for an Edit/Restart would slip past those guards and be resurrected,
+// undoing ReconcileOrphans keeping it terminal.
 func (c *Conductor) tracked(id string) *runtime {
 	c.mu.Lock()
 	rt := c.runs[id]
@@ -145,7 +151,7 @@ func (c *Conductor) tracked(id string) *runtime {
 	if err := json.Unmarshal(obj.Data, &r); err != nil {
 		return nil
 	}
-	rt = &runtime{r: r, control: newControl()}
+	rt = &runtime{r: r, control: newControl(), cancelled: r.Status == "cancelled"}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if existing := c.runs[id]; existing != nil {

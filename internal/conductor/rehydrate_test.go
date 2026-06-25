@@ -110,3 +110,44 @@ func TestReconcileOrphansClosesPhantomsKeepsTerminal(t *testing.T) {
 		t.Errorf("finished run must keep its own terminal record: status=%q error=%q", r.Status, r.Error)
 	}
 }
+
+// A cancelled run is terminal: Edit and Restart must refuse it. The refusal keys
+// off the in-memory cancelled flag, which is lost on restart — so after a restart
+// (run only in storage, not in the map) the flag must be rehydrated from the
+// persisted status, or the run gets resurrected. Pairs with ReconcileOrphans
+// keeping the run cancelled across the same restart.
+func TestCancelledRunNotResurrectedAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	c := New(srv)
+
+	// A cancelled run as a prior process left it: persisted, not in the live map.
+	r := run.Run{ID: "c1", Status: "cancelled", Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	b, _ := json.Marshal(r)
+	if _, err := st.Set("runs/c1", b); err != nil {
+		t.Fatalf("persist cancelled run: %v", err)
+	}
+	if _, ok := c.Get("c1"); ok {
+		t.Fatal("precondition: c1 must not be tracked in memory yet")
+	}
+
+	if c.Edit("c1", run.Spec{Mode: "developer", Prompt: "sneak it back", Folders: []string{"/tmp"}}) {
+		t.Error("Edit must refuse a cancelled run rehydrated after restart")
+	}
+	if c.Restart("c1") {
+		t.Error("Restart must refuse a cancelled run rehydrated after restart")
+	}
+	if got, _ := c.Get("c1"); got.Status != "cancelled" {
+		t.Errorf("cancelled run must stay cancelled, got %q", got.Status)
+	}
+}
