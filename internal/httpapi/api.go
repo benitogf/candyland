@@ -32,7 +32,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}
 
-	// Create a run from the wizard (mode/workspace/prompt/title).
+	// Create a run (mode/folders/prompt/title) — from the web UI or the trigger MCP.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs",
 		Methods: post,
@@ -43,6 +43,23 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				return
 			}
 			writeJSON(w, map[string]string{"id": c.Create(spec)})
+		},
+	})
+
+	// Read a single run's current snapshot (the trigger MCP's run_status reads
+	// this; the web UI uses the ooo subscription instead). Served from storage so
+	// it works for finished/untracked runs too.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/runs/{id}",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			obj, err := server.Storage.Get("runs/" + mux.Vars(r)["id"])
+			if err != nil {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(obj.Data)
 		},
 	})
 
