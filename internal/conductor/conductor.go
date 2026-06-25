@@ -190,7 +190,8 @@ func cloneRun(r run.Run) run.Run {
 // "planning"/"running" phantoms in the live dashboard. Candyland doesn't resume
 // runs, so each is closed with an explanatory error (a clean record of what
 // happened, not a fake completion). Must run AFTER server.Start() (storage is
-// live only then); completed runs are left untouched as genuine history.
+// live only then); runs already in a terminal state (done or cancelled) are
+// left untouched as genuine history.
 func (c *Conductor) ReconcileOrphans() {
 	if c.server == nil {
 		return
@@ -209,7 +210,10 @@ func (c *Conductor) ReconcileOrphans() {
 			continue
 		}
 		var r run.Run
-		if json.Unmarshal(obj.Data, &r) != nil || r.Status == "done" {
+		// A cancelled run is already a terminal genuine record (Cancel persists
+		// Status=="cancelled" with no Error); rewriting it to "done"/Interrupted
+		// would corrupt the user's deliberate-cancel history on restart.
+		if json.Unmarshal(obj.Data, &r) != nil || r.Status == "done" || r.Status == "cancelled" {
 			continue
 		}
 		r.Status = "done"

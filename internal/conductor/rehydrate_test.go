@@ -55,3 +55,58 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 		t.Error("tracked should return nil for a run that's neither tracked nor stored")
 	}
 }
+
+// On restart ReconcileOrphans closes out non-terminal phantom runs (no executor
+// survives a process) but must leave terminal history intact — a deliberately
+// cancelled run is genuine history, not a phantom, so rewriting it to
+// "done"/Interrupted would corrupt what the user actually did.
+func TestReconcileOrphansClosesPhantomsKeepsTerminal(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	c := New(srv)
+
+	seed := func(id, status, errStr string) {
+		r := run.Run{ID: id, Status: status, Error: errStr, Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+		b, _ := json.Marshal(r)
+		if _, err := st.Set("runs/"+id, b); err != nil {
+			t.Fatalf("persist run %s: %v", id, err)
+		}
+	}
+	read := func(id string) run.Run {
+		obj, err := st.Get("runs/" + id)
+		if err != nil {
+			t.Fatalf("read run %s: %v", id, err)
+		}
+		var r run.Run
+		if err := json.Unmarshal(obj.Data, &r); err != nil {
+			t.Fatalf("unmarshal run %s: %v", id, err)
+		}
+		return r
+	}
+
+	seed("phantom", "running", "")     // left mid-flight by a dead process
+	seed("cancelled", "cancelled", "") // deliberately cancelled — terminal history
+	seed("finished", "done", "boom")   // already terminal with its own error
+
+	c.ReconcileOrphans()
+
+	if r := read("phantom"); r.Status != "done" || r.Error == "" {
+		t.Errorf("phantom running run should be closed out: status=%q error=%q", r.Status, r.Error)
+	}
+	if r := read("cancelled"); r.Status != "cancelled" || r.Error != "" {
+		t.Errorf("cancelled run must stay cancelled with no synthesized error: status=%q error=%q", r.Status, r.Error)
+	}
+	if r := read("finished"); r.Status != "done" || r.Error != "boom" {
+		t.Errorf("finished run must keep its own terminal record: status=%q error=%q", r.Status, r.Error)
+	}
+}

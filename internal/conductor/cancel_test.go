@@ -98,6 +98,11 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// Cancelling the re-run must also tear down its worktrees (the run is now
+	// untracked, so the deliveryConductor teardown drain won't cover it).
+	if _, err := os.Stat(wtRoot); !os.IsNotExist(err) {
+		t.Errorf("cancel after edit-rerun did not clean up worktrees at %s", wtRoot)
+	}
 }
 
 // The progress bar must actually MOVE during a run, not sit at 0 until the end.
