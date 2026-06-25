@@ -17,8 +17,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/benitogf/candyland/internal/run"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -41,11 +44,81 @@ func NewClient(addr string) *Client {
 	return &Client{base: addr, http: &http.Client{}}
 }
 
-// Launch creates a run from the supplied folders + prompt and begins it
-// immediately. It skips the web-UI planning Q&A: the plan is settled upstream in
-// the editor session (/plan + truthseeker), so the run goes straight to build.
-// Returns the run id.
+// ping reports whether the sidecar is up and answering at base. Short timeout so
+// the "is it running?" check is snappy.
+func (c *Client) ping() bool {
+	cl := &http.Client{Timeout: 1500 * time.Millisecond}
+	res, err := cl.Get(c.base + "/api/system")
+	if err != nil {
+		return false
+	}
+	_ = res.Body.Close()
+	return res.StatusCode == http.StatusOK
+}
+
+// ensureUp guarantees the sidecar is running before we delegate to it: it
+// health-checks first, and only if that fails does it start the sidecar
+// (detached, so it outlives this control-mcp tool call), then HANDSHAKES —
+// polling /api/system until the server actually answers — before returning. If
+// the sidecar never comes up it returns an honest error rather than letting the
+// caller fire a request into a dead port. This is the candyland binary itself in
+// server mode (no subcommand), bound to the host:port the control client targets.
+func (c *Client) ensureUp() error {
+	if c.ping() {
+		return nil // already running — reuse the persistent local sidecar
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate candyland binary: %w", err)
+	}
+	host, port := hostPort(c.base)
+	args := []string{}
+	if host != "" {
+		args = append(args, "--host", host)
+	}
+	if port != "" {
+		args = append(args, "--port", port)
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil // a daemon, not attached to this process's I/O
+	detachSysProc(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start candyland sidecar: %w", err)
+	}
+	_ = cmd.Process.Release() // hand it off — it runs independently of control-mcp
+
+	// Handshake: wait for the server to bind + answer before delegating.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if c.ping() {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("candyland sidecar started but did not become ready at %s within 20s", c.base)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+// hostPort splits c.base (an http origin) into host + port for spawning the
+// server bound where the client expects it.
+func hostPort(base string) (string, string) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", ""
+	}
+	return u.Hostname(), u.Port()
+}
+
+// Launch ensures the sidecar is up (starting + handshaking it if needed), then
+// creates a run from the supplied folders + prompt and begins it immediately. It
+// skips the web-UI planning Q&A: the plan is settled upstream in the editor
+// session (/plan + truthseeker), so the run goes straight to build. Returns the
+// run id.
 func (c *Client) Launch(spec run.Spec) (string, error) {
+	if err := c.ensureUp(); err != nil {
+		return "", err
+	}
 	body, _ := json.Marshal(spec)
 	res, err := c.http.Post(c.base+"/api/runs", "application/json", bytes.NewReader(body))
 	if err != nil {

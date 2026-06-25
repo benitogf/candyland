@@ -79,6 +79,26 @@ func TestControlLaunchAndStatus(t *testing.T) {
 	}
 }
 
+// The resilience handshake: ping detects a live sidecar, and ensureUp returns
+// immediately (no spawn) when one is already running. (The down→spawn path
+// starts the real candyland binary, so it's exercised by the live MCP, not here
+// where os.Executable() is the test binary.)
+func TestPingAndEnsureUpWhenRunning(t *testing.T) {
+	cl, stop := sidecar(t)
+	defer stop()
+
+	if !cl.ping() {
+		t.Error("ping should detect the running sidecar")
+	}
+	if err := cl.ensureUp(); err != nil {
+		t.Errorf("ensureUp should be a no-op when the sidecar is already up, got %v", err)
+	}
+	// A dead address pings false (so ensureUp would proceed to start one).
+	if NewClient("127.0.0.1:1").ping() {
+		t.Error("ping should be false for an unreachable address")
+	}
+}
+
 // run_status / stop_run on an unknown run surface the API's not-found error
 // rather than reporting success — the client must not silently swallow it.
 func TestControlUnknownRunErrors(t *testing.T) {
