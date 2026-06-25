@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/benitogf/candyland/internal/run"
@@ -32,14 +33,21 @@ import (
 type Client struct {
 	base string
 	http *http.Client
+	mu   sync.Mutex // serializes ensureUp so concurrent launches don't double-spawn
 }
 
 // NewClient builds a control client for the sidecar at addr (host:port or a full
-// origin); a bare host:port is assumed http.
+// origin); a bare host:port is assumed http. A bare host with no port defaults to
+// candyland's :8888, so ping() and the spawned server agree on where to bind and
+// reach (otherwise a portless addr pings :80 while the server binds its default).
 func NewClient(addr string) *Client {
 	addr = strings.TrimRight(addr, "/")
 	if !strings.Contains(addr, "://") {
 		addr = "http://" + addr
+	}
+	if u, err := url.Parse(addr); err == nil && u.Port() == "" {
+		u.Host = u.Hostname() + ":8888"
+		addr = u.String()
 	}
 	return &Client{base: addr, http: &http.Client{}}
 }
@@ -64,6 +72,8 @@ func (c *Client) ping() bool {
 // caller fire a request into a dead port. This is the candyland binary itself in
 // server mode (no subcommand), bound to the host:port the control client targets.
 func (c *Client) ensureUp() error {
+	c.mu.Lock() // serialize: concurrent launches must not each spawn a sidecar
+	defer c.mu.Unlock()
 	if c.ping() {
 		return nil // already running — reuse the persistent local sidecar
 	}
@@ -94,7 +104,7 @@ func (c *Client) ensureUp() error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("candyland sidecar started but did not become ready at %s within 20s", c.base)
+			return fmt.Errorf("candyland sidecar did not become ready at %s within 20s (is another process using that port?)", c.base)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}

@@ -118,13 +118,11 @@ Same flow as detritus — a manual bump/tag/release you trigger from a prompt
 scripts/release.sh 0.1.0   # from main, clean tree → tags v0.1.0 and pushes
 ```
 
-The `v*` tag triggers the workflow, which builds the standalone single binaries
-(backend + embedded UI, version injected via `-ldflags`) for
-linux/darwin/windows (amd64 + arm64) and publishes the GitHub Release that
-`install.sh` / `install.ps1` pull from. The workflow currently lives at
-[`ci/release.yml`](ci/release.yml) — activate it once per
-[`ci/README.md`](ci/README.md) (the CLI token that opened these PRs lacks the
-`workflow` scope to push under `.github/workflows/`).
+The `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds the standalone single binaries (backend + embedded UI, version
+injected via `-ldflags`) for linux/darwin/windows (amd64 + arm64) and publishes
+the GitHub Release. The detritus installer pulls the matching binary for the
+platform and installs candyland beside detritus.
 
 ## Stack
 
