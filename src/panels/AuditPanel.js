@@ -20,7 +20,7 @@ import { StateChip } from '../components/StatusBits'
 
 // The verification audit — the queryable record the conductor writes to
 // audits/<id> when a run reaches a terminal state (status, phase, per-task
-// pass/fail summed from the agents' TEST emissions, tokens, PR). Read-only:
+// pass/fail from each agent's last TEST emission, tokens, PR). Read-only:
 // candyland observes, it does not re-derive. Null until the run finishes.
 const AuditPanel = ({ run }) => {
     const audit = useAudit(run.id)
