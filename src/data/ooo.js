@@ -35,23 +35,15 @@ export const useRuns = () => {
     return cache.map((e) => e?.data).filter(Boolean).map(normalizeRun).sort((a, b) => seq(b) - seq(a))
 }
 
-// One run (for the workspace), live.
+// One run, live.
 export const useRun = (id) => {
     const cache = useOoo(id ? `runs/${encodeURIComponent(id)}` : null)
     return normalizeRun(cache?.data || null)
 }
 
-// Saved workspaces (named folder sets), live from the backend — INCLUDING
-// soft-deleted ones, so the Tasks history can still show a deleted workspace's
-// name (struck-through). Pickers use useActiveWorkspaces instead.
-export const useWorkspaces = () => {
-    const cache = useOoo('workspaces/*')
-    if (!Array.isArray(cache)) return []
-    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => (a.label || '').localeCompare(b.label || ''))
+// One run's audit record (the verification timeline), live from audits/<id>.
+// Null until the run reaches a terminal state and the conductor writes it.
+export const useAudit = (id) => {
+    const cache = useOoo(id ? `audits/${encodeURIComponent(id)}` : null)
+    return cache?.data || null
 }
-
-// Active (non-deleted) workspaces — what a new or edited run can actually point
-// at. A soft-deleted workspace is hidden here but kept in useWorkspaces.
-export const useActiveWorkspaces = () => useWorkspaces().filter((w) => !w.deleted)
-
-export const workspaceById = (list, id) => (list || []).find((w) => w.id === id) || null

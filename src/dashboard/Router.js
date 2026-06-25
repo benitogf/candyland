@@ -9,8 +9,9 @@ import Tasks from '../pages/Tasks'
 import HowItWorks from '../pages/HowItWorks'
 
 // The whole product is one dashboard. Opening a run is a route-driven full-screen
-// workspace that overlays the dashboard (/run/:id/:tab); workspaces are managed
-// in a modal from the dashboard. Tasks is the full run history; spec is the docs.
+// view that overlays the dashboard (/run/:id/:tab). Tasks is the full run
+// history; spec is the docs. Runs are launched from the editor (the candyland
+// MCP) or from the dashboard's secondary "start one here".
 export const navItems = [
     { path: '/', label: 'Dashboard', icon: DashboardIcon, match: (p) => p === '/' || p.startsWith('/run') },
     { path: '/tasks', label: 'Tasks', icon: HistoryIcon, match: (p) => p.startsWith('/tasks') },

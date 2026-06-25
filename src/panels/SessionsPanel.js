@@ -12,8 +12,8 @@ import CloseIcon from '@mui/icons-material/Close'
 import { candy } from '../config'
 import AgentTerminal from '../components/AgentTerminal'
 
-// The raw lens: each headless process, its command, and its unparsed stream-json
-// rendered in a real terminal — with an expand-to-fullscreen option for room.
+// The raw lens: each headless agent, its real identity, and its unparsed
+// stream-json rendered in a real terminal — expand to fullscreen for room.
 
 const sessionStatus = (state) => {
     if (state === 'working' || state === 'integrating') return { label: 'running', color: candy.sky }
@@ -36,16 +36,16 @@ const rawLine = (ev) => {
     }
 }
 
-const spawnCmd = (agent) => `env -C ${agent.worktree.replace(/[()]/g, '')} claude -p "${agent.task || agent.activity}" \\
-  --model claude-${agent.model} --effort high \\
-  --output-format stream-json --strict-mcp-config \\
-  --mcp-config '{"mcpServers":{"detritus":{"command":"detritus"}}}'`
+// A truthful identity line from the agent's real fields — no fabricated pid or
+// spawn command (canned content is a mock; the conductor owns the real launch).
+const identity = (agent) => [agent.id, agent.model && `claude-${agent.model}`, agent.worktree]
+    .filter(Boolean).join(' · ')
 
 const SessionDetail = ({ agent, lines, onExpand }) => (
     <Box sx={{ minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, flexShrink: 0 }}>{agent.emoji} {agent.role}</Typography>
         <Box component="pre" sx={{ m: 0, mb: 2, p: 1.5, borderRadius: 1, fontSize: 11.5, lineHeight: 1.6, color: '#9b8fc0', backgroundColor: '#050506', border: '1px solid', borderColor: 'divider', overflowX: 'auto', whiteSpace: 'pre', flexShrink: 0 }}>
-            {spawnCmd(agent)}
+            {identity(agent)}
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, flexShrink: 0 }}>
             <Typography variant="overline" color="secondary">raw stream-json · {lines.length} lines</Typography>
@@ -69,11 +69,11 @@ const SessionsPanel = ({ run }) => {
     return (
         <Box sx={{ height: { md: '100%' }, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, flexShrink: 0 }}>
-                the raw lens — each headless process, its command, and its unparsed stream-json. Expand for room.
+                the raw lens — each headless agent, its real identity, and its unparsed stream-json. Expand for room.
             </Typography>
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '300px minmax(0, 1fr)' }, gap: 3, flex: { md: 1 }, minHeight: 0 }}>
                 <Box sx={{ display: 'flex', flexDirection: { xs: 'row', md: 'column' }, gap: 1, minWidth: 0, minHeight: 0, overflowY: { md: 'auto' }, overflowX: { xs: 'auto', md: 'visible' }, pr: { md: 0.5 }, pb: { xs: 1, md: 0 }, flexShrink: 0, maxHeight: { xs: 120, md: 'none' } }}>
-                    {run.agents.map((a, i) => {
+                    {run.agents.map((a) => {
                         const st = sessionStatus(a.state)
                         const sel = a.id === selected.id
                         return (
@@ -85,7 +85,7 @@ const SessionsPanel = ({ run }) => {
                                         <Typography variant="caption" sx={{ color: st.color, fontFamily: 'monospace', flexShrink: 0 }}>{st.label}</Typography>
                                     </Box>
                                     <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', fontFamily: 'monospace', fontSize: 11 }}>
-                                        pid {48211 + i} · {a.tokens}k tok · {a.elapsed}
+                                        {a.id} · {a.tokens}k tok · {a.elapsed}
                                     </Typography>
                                 </CardContent>
                             </Card>

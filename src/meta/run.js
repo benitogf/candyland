@@ -1,7 +1,7 @@
 // UI config + helpers shared across the app. Run DATA is no longer here — it
 // comes live from the ooo backend (see src/data/ooo.js). This module only holds
-// presentation config (phases, state metadata, modes, workspaces) and small
-// pure helpers that operate on a run object.
+// presentation config (phases, state metadata, modes) and small pure helpers
+// that operate on a run object.
 import { candy } from '../config'
 
 export const PHASES = ['Plan', 'Build', 'Integrate', 'Review', 'PR']
@@ -26,9 +26,6 @@ export const MODES = {
     developer: { label: 'Developer', tagline: 'open Q&A · full live detail — agents, tasks, raw logs', accent: candy.sky },
     'non-developer': { label: 'Non-developer', tagline: 'multiple-choice · a simple progress view, we handle the rest', accent: candy.pink },
 }
-
-// Workspaces now live in the backend (ooo) — see src/data/ooo.js useWorkspaces /
-// workspaceById. They are no longer client config.
 
 // Find an agent within a run object (run comes from live ooo state).
 export const agentInRun = (run, id) => (run ? (run.agents || []).find((a) => a.id === id) || null : null)

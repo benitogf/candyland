@@ -10,7 +10,7 @@ import ListItemText from '@mui/material/ListItemText'
 import { navItems } from './Router'
 
 // Left navigation rail. The product is one dashboard; opening a run overlays a
-// route-driven workspace, so the rail only needs the dashboard and the spec.
+// route-driven full-screen view, so the rail only needs the dashboard and the spec.
 const Menu = ({ onNavigate }) => {
     const location = useLocation()
     const navigate = useNavigate()
