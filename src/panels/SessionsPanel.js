@@ -28,10 +28,8 @@ const rawLine = (ev) => {
         case 'system': return `{"type":"system","subtype":"init","session":"${ev.text}"}`
         case 'text': return `{"type":"assistant","message":{"content":[{"type":"text","text":${JSON.stringify(ev.text)}}]}}`
         case 'tool': return `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"${ev.name}","input":${JSON.stringify({ target: ev.input })}}]}}`
-        case 'emit': return `{"type":"assistant","message":{"content":[{"type":"text","text":${JSON.stringify('PARTITION ' + ev.text + ' :: ' + (ev.detail || ''))}}]}}`
         case 'test': return `{"type":"user","message":{"content":[{"type":"tool_result","content":${JSON.stringify(ev.text + ' -> ' + ev.pass + ' pass, ' + ev.fail + ' fail')}}]}}`
         case 'result': return `{"type":"result","subtype":"success","result":${JSON.stringify(ev.text)}}`
-        case 'cursor': return `... stream open - ${ev.text}`
         default: return ''
     }
 }
@@ -85,7 +83,7 @@ const SessionsPanel = ({ run }) => {
                                         <Typography variant="caption" sx={{ color: st.color, fontFamily: 'monospace', flexShrink: 0 }}>{st.label}</Typography>
                                     </Box>
                                     <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', fontFamily: 'monospace', fontSize: 11 }}>
-                                        {a.id} · {a.tokens}k tok · {a.elapsed}
+                                        {a.id} · {a.tokens}k tok
                                     </Typography>
                                 </CardContent>
                             </Card>

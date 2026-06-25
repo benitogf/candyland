@@ -26,25 +26,15 @@ const EventLine = ({ ev }) => {
             </Box>
         )
     }
-    if (ev.t === 'emit') {
-        return (
-            <Box sx={{ ...mono, color: candy.lemon, my: 0.75 }}>
-                ⇧ emit · <Box component="span" sx={{ color: '#f4ecff' }}>{ev.text}</Box>
-                {ev.detail && <Box sx={{ color: 'text.secondary', pl: 2 }}>{ev.detail}</Box>}
-            </Box>
-        )
-    }
     if (ev.t === 'test') {
         const ok = ev.fail === 0
         return (
             <Box sx={{ ...mono, color: ok ? '#7bdc6a' : candy.lemon, my: 0.75 }}>
                 {ok ? '✓' : '✗'} {ev.text} — <b>{ev.pass} pass</b>{ev.fail ? `, ${ev.fail} fail` : ''}
-                {ev.note && <Box component="span" sx={{ color: 'text.secondary' }}>  · {ev.note}</Box>}
             </Box>
         )
     }
     if (ev.t === 'result') return <Box sx={{ ...mono, color: candy.pink, mt: 1 }}>■ {ev.text}</Box>
-    if (ev.t === 'cursor') return <Box sx={{ ...mono, color: 'text.secondary', mt: 1, fontStyle: 'italic' }}>▍ {ev.text}…</Box>
     return null
 }
 
@@ -75,7 +65,7 @@ const AgentDetail = ({ agent }) => (
                 <Typography variant="h6" component="span">{agent.emoji}</Typography>
                 <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                     <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2 }} noWrap>{agent.role}</Typography>
-                    <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', fontFamily: 'monospace' }}>{agent.worktree} · {agent.model} · {agent.elapsed}</Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', fontFamily: 'monospace' }}>{agent.worktree} · {agent.model}</Typography>
                 </Box>
                 <Box sx={{ flexShrink: 0 }}><StateChip state={agent.state} /></Box>
             </Box>

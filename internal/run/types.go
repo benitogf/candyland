@@ -5,14 +5,12 @@ package run
 
 // Event is one parsed stream-json line from an agent process.
 type Event struct {
-	T      string `json:"t"` // system|text|tool|emit|test|result|cursor
-	Text   string `json:"text,omitempty"`
-	Name   string `json:"name,omitempty"`   // tool name
-	Input  string `json:"input,omitempty"`  // tool input summary
-	Detail string `json:"detail,omitempty"` // emit detail
-	Pass   int    `json:"pass,omitempty"`
-	Fail   int    `json:"fail,omitempty"`
-	Note   string `json:"note,omitempty"`
+	T     string `json:"t"` // system|text|tool|test|result
+	Text  string `json:"text,omitempty"`
+	Name  string `json:"name,omitempty"`  // tool name
+	Input string `json:"input,omitempty"` // tool input summary
+	Pass  int    `json:"pass,omitempty"`
+	Fail  int    `json:"fail,omitempty"`
 }
 
 // Agent is one spawned worker (a headless claude process).
@@ -27,7 +25,6 @@ type Agent struct {
 	Budget   int     `json:"budget"`
 	Worktree string  `json:"worktree"`
 	Model    string  `json:"model"`
-	Elapsed  string  `json:"elapsed"`
 	Events   []Event `json:"events"`
 }
 
@@ -55,7 +52,6 @@ type Run struct {
 	Phase        int      `json:"phase"`              // index into Plan..PR
 	Progress     float64  `json:"progress"`           // 0..1
 	StatusLine   string   `json:"statusLine,omitempty"`
-	Note         string   `json:"note,omitempty"`  // optional informational advisory shown in the UI
 	Error        string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
 	PrURL        string   `json:"prUrl,omitempty"`
 	TokensUsed   int      `json:"tokensUsed"`

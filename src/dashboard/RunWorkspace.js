@@ -312,13 +312,11 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                 </Box>
             )}
 
-            {/* Run-level advisory (error, or an informational note) — visible across tabs */}
-            {(run.error || run.note) && (
+            {/* Run-level error advisory — visible across tabs */}
+            {run.error && (
                 <Box sx={{ px: { xs: 2, sm: 4 }, pt: 1.5 }}>
                     <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
-                        {run.error
-                            ? <Alert severity="error" variant="outlined">{run.error}</Alert>
-                            : <Alert severity="info" variant="outlined">{run.note}</Alert>}
+                        <Alert severity="error" variant="outlined">{run.error}</Alert>
                     </Box>
                 </Box>
             )}
