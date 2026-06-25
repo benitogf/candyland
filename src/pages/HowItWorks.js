@@ -24,7 +24,7 @@ import { useMode } from '../mode'
 
 const ARCHITECTURE = `
 flowchart TB
-  U["🧑‍💻 You — create a session · converse · review the PR"]:::you
+  U["🧑‍💻 You — launch from your editor · monitor · review the PR"]:::you
 
   subgraph DASH["🍬 Candyland dashboard"]
     direction LR
@@ -49,7 +49,7 @@ flowchart TB
 
   PR["🌳 one feature branch → one PR"]
 
-  U <-->|"interactive I/O · plan + review"| DASH
+  U <-->|"launch · monitor · review"| DASH
   DASH <-->|"WebSocket · ooo client"| EVT
   EVT --- CO
   CO -->|"settled plan"| TL
@@ -262,8 +262,8 @@ const mapping = [
 ]
 
 const steps = [
-    { label: 'Create a session and state a goal', body: 'Open a session in the dashboard and say what you want. Developers get open Q&A (/plan-style); everyone else gets the executive multiple-choice intake (dream).' },
-    { label: 'Plan interactively, right here', body: 'The conductor asks questions in the session — open Q&A in developer mode, multiple-choice in non-developer mode. You answer in the dashboard until scope is settled.' },
+    { label: 'Launch from your editor', body: 'In your Claude Code session, settle the work with /plan, then call the candyland MCP\'s launch_run to start a run in your current folder. No workspace setup — the run uses the folder you\'re in. (You can also start one from the dashboard by naming the repo.)' },
+    { label: 'Candyland takes it from here', body: 'The conductor spawns the tech lead and coders and streams their live state to the dashboard — you watch, audit, and stop here while your editor session stays free. A run started from the dashboard answers its planning questions here first.' },
     { label: 'The tech lead takes over', body: 'For each feature, a tech lead partitions the work by file/module and a test engineer writes the failing tests that define each task.' },
     { label: 'Coders run in parallel', body: 'Backend and frontend coders work simultaneously, each in its own worktree, each making its tests green. You watch them flow on the Board.' },
     { label: 'The tech lead integrates', body: 'It pulls the worktrees together sequentially, resolves conflicts, re-runs the tests, and runs a self-review until the diff reads clean.' },
@@ -310,10 +310,10 @@ const DeveloperGuide = () => (
                 Conduct many agents. Watch all of it. 🍬
             </Typography>
             <Typography variant="h6" color="text.secondary" sx={{ fontWeight: 400, maxWidth: 840 }}>
-                Candyland is a solo orchestration dashboard. You open a session and plan a goal interactively —
-                in your preferred mode; a tech lead then splits each feature across focused coders running in
-                parallel, integrates their work, and shows everything live — so you stop juggling sessions by
-                hand and review one finished PR instead.
+                Candyland is a solo orchestration sidecar. You launch a run from your editor (the candyland MCP);
+                a tech lead then splits each feature across focused coders running in parallel, integrates their
+                work, and candyland shows everything live — so you stop juggling sessions by hand, watch and audit
+                the build here, and review one finished PR instead.
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2, fontStyle: 'italic' }}>
                 This page is the blueprint we build against. Candyland is the dashboard; every agent behavior
@@ -412,7 +412,7 @@ const DeveloperGuide = () => (
         <Section
             kicker="goal in, one PR out"
             title="The whole loop, start to finish — inside the dashboard"
-            intro="It doesn't stop at a plan. You create a session and answer questions until scope is settled; then the same session shows the tech lead partition the work, the coders build it in parallel, the tech lead integrate and self-review, and one PR open for you to review — all live."
+            intro="It doesn't stop at a plan. You settle scope in your editor (or answer the dashboard wizard's questions); then candyland shows the tech lead partition the work, the coders build it in parallel, the tech lead integrate and self-review, and one PR open for you to review — all live."
         >
             <DiagramCard caption="One session, end to end: plan interactively, watch the parallel build, review one PR. Developer mode waits for your go before building; non-developer mode runs autonomously.">
                 <MermaidDiagram chart={JOURNEY} />
@@ -557,7 +557,7 @@ const DeveloperGuide = () => (
         <Section
             kicker="built on what you already have"
             title="How it maps to your stack"
-            intro="Candyland is the dashboard — it creates sessions, mediates your interactive I/O, spawns each agent as a process it watches, and visualizes state. It contains no agent logic of its own: every behavior below is a detritus skill it invokes via kb_get."
+            intro="Candyland is the sidecar — you launch a run from your editor, and it spawns each agent as a process it watches, then visualizes state for you to monitor, audit, and stop. It contains no agent logic of its own: every behavior below is a detritus skill it invokes via kb_get."
         >
             <Card>
                 <Table size="small">
