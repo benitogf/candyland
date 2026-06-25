@@ -95,6 +95,7 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 				// run): kill the process tree and exit the goroutine. The conductor
 				// has already reset the run, so we publish nothing here.
 				cancel()
+				c.cleanupBusConfigs(id) // a re-planned run regenerates these on its next spawn
 				return
 			}
 		case <-done:
@@ -116,6 +117,11 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 			if fin, _ := c.Get(id); fin.Error == "" {
 				log.Printf("candyland: run %s done — %s", id, orDefault(fin.PrURL, "(no PR opened)"))
 			}
+			// Record the queryable audit now that the run's status is terminal
+			// ("done", with Error set on a failure). A paused/stopped run took the
+			// continue above and is not audited — it isn't a completed run.
+			c.writeAudit(id)
+			c.cleanupBusConfigs(id) // no more coder spawns — drop the --mcp-config files
 			cancel()
 			return
 		}
@@ -195,7 +201,10 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		}
 		feedback = res.replan
 		if attempt == replans {
+			// K=3 escalation cap reached: give up rather than thrash quota, and
+			// escalate the still-open task-graph nodes to blocked.
 			fail(ctx, c, id, "tl", fmt.Sprintf("Couldn't find a working task split after %d attempts. Last problem: %s", replans, feedback))
+			c.escalateOpenNodes(fmt.Sprintf("no working task split after %d attempts: %s", replans, feedback))
 			return
 		}
 	}
@@ -287,6 +296,9 @@ func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch
 		}
 		setAgentState(r, "tl", "integrating", "coordinating coders")
 	})
+	// Publish the partition into the coordination task-graph (bus) so coders can
+	// graph_read the open work and the conductor can auto-unblock / escalate.
+	c.publishGraphNodes(tasks)
 
 	// ── Coders: one per task, each in its own worktree off base, in parallel. ──
 	runCoders(ctx, c, id, repo, base, wtRoot, tasks, extra)
@@ -461,7 +473,10 @@ func techLeadPrompt(prompt, feedback string) string {
 func coderPrompt(t partitionTask) string {
 	return "Implement this fork-safe task until its defining test is green: " + t.Title +
 		". Files: " + strings.Join(t.Files, ", ") + ". Test: " + t.Test +
-		". Make the changes with tools — do not just describe them."
+		". Make the changes with tools — do not just describe them." +
+		" When you run the defining test, report the result as one line beginning with `TEST ` " +
+		`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
+		"), so the run records real verification counts."
 }
 
 // resolveConflict has the tech lead reconcile a merge git couldn't auto-merge.
@@ -529,6 +544,11 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 				if p := parsePartition(b.Text); p != nil {
 					partition = p
 				}
+				if pass, fail, ok := parseTest(b.Text); ok {
+					c.Update(id, func(r *run.Run) {
+						appendToAgent(r, agentID, run.Event{T: "test", Pass: pass, Fail: fail}, 0)
+					})
+				}
 				text = b.Text
 				c.Update(id, func(r *run.Run) { appendToAgent(r, agentID, run.Event{T: "text", Text: b.Text}, 0) })
 			}
@@ -564,6 +584,27 @@ func parsePartition(text string) []partitionTask {
 		}
 	}
 	return nil
+}
+
+// parseTest extracts a verification result from a `TEST <json>` line emitted by
+// an agent (e.g. `TEST {"pass":12,"fail":0}`), mirroring parsePartition. The
+// last such line on the agent's stream wins. ok is false when no TEST line is
+// present, so a plain text block is left untouched.
+func parseTest(text string) (pass, fail int, ok bool) {
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "TEST ") {
+			continue
+		}
+		var res struct {
+			Pass int `json:"pass"`
+			Fail int `json:"fail"`
+		}
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "TEST ")), &res) == nil {
+			pass, fail, ok = res.Pass, res.Fail, true
+		}
+	}
+	return pass, fail, ok
 }
 
 func setAgentState(r *run.Run, agentID, state, activity string) {

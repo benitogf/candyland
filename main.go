@@ -6,14 +6,17 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
+	"github.com/benitogf/candyland/internal/comms"
 	"github.com/benitogf/candyland/internal/conductor"
 	"github.com/benitogf/candyland/internal/httpapi"
 	"github.com/benitogf/candyland/internal/spa"
@@ -22,6 +25,7 @@ import (
 	"github.com/benitogf/ooo"
 	"github.com/benitogf/ooo/storage"
 	"github.com/gorilla/mux"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 //go:embed all:build
@@ -36,6 +40,14 @@ var (
 )
 
 func main() {
+	// Hidden subcommand: the per-coder coordination-bus MCP server, launched by
+	// the conductor via --mcp-config. It bridges a claude coder to the
+	// conductor's ooo bus (the comms_*/graph_* tools as io.Remote* clients).
+	if len(os.Args) > 1 && os.Args[1] == "comms-mcp" {
+		runCommsMCP()
+		return
+	}
+
 	flag.Parse()
 	log.Printf("candyland %s", version.Version)
 
@@ -55,6 +67,10 @@ func main() {
 
 	cond := conductor.New(server)
 	httpapi.Register(server, cond)
+	// Register the coordination bus (Realization B) before Start — filters must
+	// be registered before the listener binds. A back-channel beside the stdout
+	// loop; per-agent inboxes are registered at spawn.
+	cond.StartBus()
 
 	// Serve the embedded SPA on its own port; the client connects ooo-client to
 	// the realtime port for live state.
@@ -76,4 +92,21 @@ func main() {
 	log.Printf("candyland API → http://%s:%d (bound to %s; use --host 0.0.0.0 to expose on the network)", *host, *port, *host)
 	cond.ReconcileOrphans() // storage is live only after Start; close out phantom runs from a prior process
 	server.WaitClose()
+}
+
+// runCommsMCP serves the per-coder coordination-bus MCP over stdio. The
+// conductor passes the bus address + this agent's identity via env when it
+// generates the --mcp-config; identity rides in the payload `from`.
+func runCommsMCP() {
+	addr := os.Getenv("CANDYLAND_BUS_ADDR")
+	self := os.Getenv("CANDYLAND_AGENT_ID")
+	orchestrator := os.Getenv("CANDYLAND_ORCHESTRATOR")
+	if addr == "" || self == "" {
+		log.Fatal("comms-mcp: CANDYLAND_BUS_ADDR and CANDYLAND_AGENT_ID are required")
+	}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "candyland-comms", Version: version.Version}, nil)
+	comms.RegisterTools(srv, comms.NewClient(addr, self, orchestrator))
+	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Fatalf("comms-mcp: %v", err)
+	}
 }

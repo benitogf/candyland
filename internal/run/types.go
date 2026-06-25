@@ -69,6 +69,28 @@ type Run struct {
 	Executor     string  `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
 }
 
+// Audit is the queryable record of a completed run, derived from its final
+// state and stored at ooo key audits/<id> — local-first, with a documented
+// central-server sync seam (conductor.postAudit).
+type Audit struct {
+	RunID   string      `json:"runId"`
+	Status  string      `json:"status"`
+	Phase   int         `json:"phase"`
+	Tasks   []TaskAudit `json:"tasks"`
+	Tokens  int         `json:"tokens"`
+	PrURL   string      `json:"prUrl,omitempty"`
+	Error   string      `json:"error,omitempty"`
+	EndedAt string      `json:"endedAt"`
+}
+
+// TaskAudit is one task's verification outcome in an Audit.
+type TaskAudit struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Pass  int    `json:"pass"`
+	Fail  int    `json:"fail"`
+}
+
 // Spec is the create-run request from the wizard.
 type Spec struct {
 	Mode      string `json:"mode"`

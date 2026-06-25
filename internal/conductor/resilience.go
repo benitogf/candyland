@@ -129,6 +129,11 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	for _, d := range extraDirs {
 		args = append(args, "--add-dir", d)
 	}
+	// Coordination bus: give the agent the comms_*/graph_* MCP tools wired to
+	// the conductor's ooo bus as this agentID (no-op when no bus is running).
+	if cfg := c.busMCPConfig(id, agentID); cfg != "" {
+		args = append(args, "--mcp-config", cfg)
+	}
 	cmd := exec.Command(claudeBin(), args...)
 	cmd.Dir = workdir
 	cmd.Env = claudeEnv()
