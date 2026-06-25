@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -198,6 +199,11 @@ func cloneRun(r run.Run) run.Run {
 // happened, not a fake completion). Must run AFTER server.Start() (storage is
 // live only then); runs already in a terminal state (done or cancelled) are
 // left untouched as genuine history.
+//
+// It also seeds the run-id sequence past the highest persisted id: seq is
+// in-memory and resets to 0 on restart, so without this the first post-restart
+// Create would mint "r1" again and Storage.Set (an upsert) would overwrite a
+// prior run's record — silent history loss.
 func (c *Conductor) ReconcileOrphans() {
 	if c.server == nil {
 		return
@@ -207,9 +213,17 @@ func (c *Conductor) ReconcileOrphans() {
 		log.Printf("candyland: reconcile runs: %v", err)
 		return
 	}
+	maxSeq := 0
 	for _, k := range keys {
 		if !strings.HasPrefix(k, "runs/") {
 			continue
+		}
+		// Track the highest "r<N>" id across ALL runs (including terminal ones,
+		// which the status checks below skip) so the seed can't reuse a live id.
+		if rest := strings.TrimPrefix(k, "runs/"); strings.HasPrefix(rest, "r") {
+			if n, err := strconv.Atoi(rest[1:]); err == nil && n > maxSeq {
+				maxSeq = n
+			}
 		}
 		obj, err := c.server.Storage.Get(k)
 		if err != nil {
@@ -234,6 +248,11 @@ func (c *Conductor) ReconcileOrphans() {
 			log.Printf("candyland: reconcile run %s: %v", r.ID, err)
 		}
 	}
+	c.mu.Lock()
+	if maxSeq > c.seq {
+		c.seq = maxSeq // next Create mints r<maxSeq+1>, never an existing id
+	}
+	c.mu.Unlock()
 }
 
 // Create registers a new run (status: planning) and publishes it. The build

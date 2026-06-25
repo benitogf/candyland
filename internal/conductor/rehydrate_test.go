@@ -151,3 +151,54 @@ func TestCancelledRunNotResurrectedAfterRestart(t *testing.T) {
 		t.Errorf("cancelled run must stay cancelled, got %q", got.Status)
 	}
 }
+
+// seq is in-memory and resets to 0 on restart. ReconcileOrphans must seed it past
+// the highest persisted run id, or the first post-restart Create mints an id that
+// already exists and Storage.Set (upsert) overwrites that run's record — silent
+// history loss.
+func TestReconcileSeedsSeqPastPersistedRuns(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	// Two runs a prior process left behind (one terminal, one a higher-numbered
+	// cancelled run — both must be counted even though the status checks skip them).
+	for _, seed := range []run.Run{
+		{ID: "r1", Status: "done", Mode: "developer", Prompt: "first", Agents: []run.Agent{}, Tasks: []run.Task{}},
+		{ID: "r5", Status: "cancelled", Mode: "developer", Prompt: "fifth", Agents: []run.Agent{}, Tasks: []run.Task{}},
+	} {
+		b, _ := json.Marshal(seed)
+		if _, err := st.Set("runs/"+seed.ID, b); err != nil {
+			t.Fatalf("persist %s: %v", seed.ID, err)
+		}
+	}
+
+	c := New(srv)
+	c.ReconcileOrphans()
+
+	// The next Create must skip past r5, not reuse r1.
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "new", Folders: []string{"/tmp"}})
+	if id != "r6" {
+		t.Errorf("post-restart Create reused/collided an id: got %q, want r6", id)
+	}
+	// The prior runs' records are intact (not overwritten).
+	obj, err := st.Get("runs/r1")
+	if err != nil {
+		t.Fatalf("r1 record missing after reconcile+create: %v", err)
+	}
+	var r run.Run
+	if err := json.Unmarshal(obj.Data, &r); err != nil {
+		t.Fatalf("unmarshal r1: %v", err)
+	}
+	if r.Prompt != "first" {
+		t.Errorf("r1 was overwritten: prompt=%q", r.Prompt)
+	}
+}
