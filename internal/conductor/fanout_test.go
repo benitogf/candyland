@@ -29,7 +29,7 @@ fi
 
 func TestClaudeFanOut(t *testing.T) {
 	c, repo := deliveryConductor(t, fanOutClaude)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "add a CSV export"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -121,7 +121,7 @@ fi
 
 func TestIntegrationConflictResolved(t *testing.T) {
 	c, repo := deliveryConductor(t, conflictResolvedClaude)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -173,7 +173,7 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 	c, _ := deliveryConductor(t, conflictUnresolvableClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")  // one resolution attempt per integrate
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "2") // reassess once, then give an honest failure
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -269,7 +269,7 @@ func TestCoderFailureTriggersReplan(t *testing.T) {
 	c, repo := deliveryConductor(t, coderFailReplanClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // the impossible coder fails in one attempt
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -292,7 +292,7 @@ func TestReplanRecoversFromBadSplit(t *testing.T) {
 	c, repo := deliveryConductor(t, replanRecoverClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)

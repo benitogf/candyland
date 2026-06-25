@@ -45,10 +45,10 @@ type Conductor struct {
 	mu     sync.Mutex
 	runs   map[string]*runtime
 	seq    int
-	// folders resolves a workspace id to its folders. Defaults to reading the
-	// persisted workspace from ooo; tests override it to point a run at a
-	// throwaway git repo without standing up storage.
-	folders func(wsID string) ([]string, error)
+	// folders resolves a run's working folders. Defaults to the folders the run
+	// was launched with (Spec.Folders, carried on the Run); tests override it to
+	// point a run at a throwaway git repo.
+	folders func(r run.Run) ([]string, error)
 	// bus is the coordination back-channel (Realization B), set by StartBus.
 	// nil when no bus is wired (e.g. serverless tests).
 	bus       *bus.Bus
@@ -64,27 +64,18 @@ func New(server *ooo.Server) *Conductor {
 		runs:      map[string]*runtime{},
 		busAgents: map[string]bool{},
 	}
-	c.folders = c.storageFolders
+	c.folders = runFolders
 	return c
 }
 
-// storageFolders reads a workspace's folders from ooo (the production resolver).
-func (c *Conductor) storageFolders(wsID string) ([]string, error) {
-	if c.server == nil {
-		return nil, fmt.Errorf("no workspace storage")
+// runFolders resolves a run's working folders from the run itself — they were
+// supplied at launch (Spec.Folders → Run.Folders). No workspace lookup: the
+// launcher (the VSCode session's cwd) owns the folder set.
+func runFolders(r run.Run) ([]string, error) {
+	if len(r.Folders) == 0 {
+		return nil, fmt.Errorf("run has no folders (the launcher must supply at least the git repo)")
 	}
-	obj, err := c.server.Storage.Get("workspaces/" + wsID)
-	if err != nil {
-		return nil, fmt.Errorf("workspace %q not found", wsID)
-	}
-	var ws run.Workspace
-	if err := json.Unmarshal(obj.Data, &ws); err != nil {
-		return nil, fmt.Errorf("workspace %q is unreadable: %w", wsID, err)
-	}
-	if len(ws.Folders) == 0 {
-		return nil, fmt.Errorf("workspace %q has no folders", wsID)
-	}
-	return ws.Folders, nil
+	return r.Folders, nil
 }
 
 // publish writes the run object to ooo (key runs/<id>); subscribers update live.
@@ -180,32 +171,6 @@ func (c *Conductor) Get(id string) (run.Run, bool) {
 	return cloneRun(rt.r), true
 }
 
-// BlockingRuns returns the active runs (planning|running|paused) that reference
-// the workspace — the runs that make deleting it unsafe. These are exactly the
-// non-terminal runs, which always live in the in-memory map (a restart reconciles
-// any persisted non-terminal run to done, so there are no stale actives in ooo).
-func (c *Conductor) BlockingRuns(wsID string) []run.Run {
-	c.mu.Lock()
-	rts := make([]*runtime, 0, len(c.runs))
-	for _, rt := range c.runs {
-		rts = append(rts, rt)
-	}
-	c.mu.Unlock()
-
-	var blocking []run.Run
-	for _, rt := range rts {
-		rt.mu.Lock()
-		r := cloneRun(rt.r)
-		cancelled := rt.cancelled
-		rt.mu.Unlock()
-		active := r.Status == "planning" || r.Status == "running" || r.Status == "paused"
-		if r.Workspace == wsID && active && !cancelled {
-			blocking = append(blocking, r)
-		}
-	}
-	return blocking
-}
-
 // cloneRun deep-copies the slices that get mutated in place so a returned run is
 // safe to read without holding rt.mu.
 func cloneRun(r run.Run) run.Run {
@@ -270,11 +235,11 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.mu.Unlock()
 
 	r := run.Run{
-		ID:        id,
-		Title:     spec.Title,
-		Prompt:    spec.Prompt,
-		Mode:      spec.Mode,
-		Workspace: spec.Workspace,
+		ID:      id,
+		Title:   spec.Title,
+		Prompt:  spec.Prompt,
+		Mode:    spec.Mode,
+		Folders: spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
 		Branch:       "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id,
@@ -290,7 +255,7 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.runs[id] = rt
 	c.mu.Unlock()
 	c.publish(r)
-	log.Printf("candyland: run %s created (%s, workspace %q)", id, orEmpty(r.Mode, "?"), r.Workspace)
+	log.Printf("candyland: run %s created (%s, folders %v)", id, orEmpty(r.Mode, "?"), r.Folders)
 	return id
 }
 
@@ -491,7 +456,7 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 		}
 	}
 	rt.r.Mode = spec.Mode
-	rt.r.Workspace = spec.Workspace
+	rt.r.Folders = spec.Folders
 	rt.r.Prompt = spec.Prompt
 	rt.r.Title = spec.Title
 	rt.r.Branch = "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id

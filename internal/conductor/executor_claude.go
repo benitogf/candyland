@@ -14,17 +14,17 @@ import (
 )
 
 // ClaudeExecutor runs REAL headless claude processes and turns their work into a
-// pull request. It resolves the run's workspace to a git repo, runs the tech lead
-// (which emits a structured PARTITION per the detritus roles/tech-lead
-// convention) in an isolated worktree, then spawns ONE coder per fork-safe task —
-// each in its OWN git worktree so they run in parallel without colliding. Their
-// commits are merged into the run branch in an integration worktree, which is
-// pushed and turned into a single PR. Because every agent and the integration run
-// in throwaway worktrees off the primary repo, the user's existing checkout of
-// that repo is never switched or dirtied — the run's work lands on a dedicated
-// branch. (The workspace's other folders are passed as --add-dir context the
-// agent may also read and edit; a workspace is the set of folders a run may
-// touch.) Stop kills every process; Restart re-runs from a clean slate.
+// pull request. It resolves the run's folders (supplied at launch) to a git repo,
+// runs the tech lead (which emits a structured PARTITION per the detritus
+// roles/tech-lead convention) in an isolated worktree, then spawns ONE coder per
+// fork-safe task — each in its OWN git worktree so they run in parallel without
+// colliding. Their commits are merged into the run branch in an integration
+// worktree, which is pushed and turned into a single PR. Because every agent and
+// the integration run in throwaway worktrees off the primary repo, the user's
+// existing checkout of that repo is never switched or dirtied — the run's work
+// lands on a dedicated branch. (The run's other folders are passed as --add-dir
+// context the agent may also read and edit.) Stop kills every process; Restart
+// re-runs from a clean slate.
 type ClaudeExecutor struct{}
 
 func (e *ClaudeExecutor) Name() string { return "claude" }
@@ -139,17 +139,18 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return
 	}
 
-	// Resolve the workspace to a git repo. The first folder is the repo the run
-	// branches and opens its PR in; the rest are extra context (--add-dir). These
-	// are ENVIRONMENTAL prerequisites — re-splitting the work can't fix a missing
-	// repo, so a failure here is honest and terminal, not a reason to re-plan.
-	folders, err := c.folders(r.Workspace)
+	// Resolve the run's working folders (supplied at launch). The first folder is
+	// the repo the run branches and opens its PR in; the rest are extra context
+	// (--add-dir). These are ENVIRONMENTAL prerequisites — re-splitting the work
+	// can't fix a missing repo, so a failure here is honest and terminal, not a
+	// reason to re-plan.
+	folders, err := c.folders(r)
 	if err != nil {
-		fail(ctx, c, id, "tl", "Couldn't resolve the workspace: "+err.Error()+". Pick a workspace whose first folder is a git repository.")
+		fail(ctx, c, id, "tl", "Couldn't resolve the run's folders: "+err.Error()+". Launch with at least one folder whose first entry is a git repository.")
 		return
 	}
 	if len(folders) == 0 {
-		fail(ctx, c, id, "tl", "The workspace has no folders. Add at least one (the first is the git repository the run works in).")
+		fail(ctx, c, id, "tl", "The run has no folders. Launch it with at least one (the first is the git repository the run works in).")
 		return
 	}
 	repo := expandHome(folders[0])
@@ -158,7 +159,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		extra = append(extra, expandHome(f))
 	}
 	if !isGitRepo(ctx, repo) {
-		fail(ctx, c, id, "tl", "The workspace's first folder isn't a git repository: "+repo+". A run branches and opens its PR there.")
+		fail(ctx, c, id, "tl", "The run's first folder isn't a git repository: "+repo+". A run branches and opens its PR there.")
 		return
 	}
 	base, err := currentBranch(ctx, repo)

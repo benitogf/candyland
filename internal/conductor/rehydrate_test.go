@@ -33,7 +33,7 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 
 	// Persist a finished+failed run directly, as a prior process would have, with
 	// NO entry in the in-memory map.
-	r := run.Run{ID: "r9", Status: "done", Error: "boom", Mode: "developer", Workspace: "ws", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	r := run.Run{ID: "r9", Status: "done", Error: "boom", Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
 	b, _ := json.Marshal(r)
 	if _, err := st.Set("runs/r9", b); err != nil {
 		t.Fatalf("persist run: %v", err)
@@ -47,7 +47,7 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 		t.Fatal("tracked should rehydrate a persisted run that isn't in memory")
 	}
 	got, ok := c.Get("r9")
-	if !ok || got.Prompt != "x" || got.Workspace != "ws" {
+	if !ok || got.Prompt != "x" {
 		t.Errorf("rehydrated run wrong/missing: ok=%v %+v", ok, got)
 	}
 	// …and an unknown run is still nil (not in memory, not in storage).

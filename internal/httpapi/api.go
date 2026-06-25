@@ -26,7 +26,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 func Register(server *ooo.Server, c *conductor.Conductor) {
 	server.OpenFilter("runs/*")   // enables both the list (runs/*) and item (runs/<id>) reads
 	server.OpenFilter("audits/*") // per-run verification audits (audits/* list + audits/<id> item)
-	registerWorkspaces(server, c)
 	registerSystem(server)
 	registerFS(server)
 
@@ -126,8 +125,8 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if strings.TrimSpace(spec.Prompt) == "" || strings.TrimSpace(spec.Workspace) == "" {
-				http.Error(w, "a prompt and a workspace are required", http.StatusBadRequest)
+			if strings.TrimSpace(spec.Prompt) == "" || len(spec.Folders) == 0 {
+				http.Error(w, "a prompt and at least one folder are required", http.StatusBadRequest)
 				return
 			}
 			if !c.Edit(mux.Vars(r)["id"], spec) {

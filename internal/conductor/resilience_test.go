@@ -78,7 +78,7 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 	writeFakeClaude(t, claudeScript)
 	writeFakeGh(t)
 	c := New(nil)
-	c.folders = func(string) ([]string, error) { return []string{repo}, nil }
+	c.folders = func(run.Run) ([]string, error) { return []string{repo}, nil }
 	return c, repo
 }
 
@@ -118,7 +118,7 @@ func TestRetryRecoversNonCompliantAgent(t *testing.T) {
 	c, _ := deliveryConductor(t, flakyThenCompliant)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "3")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "add a CSV export"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -177,7 +177,7 @@ func TestStallFailsHonestly(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "4000")
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 12*time.Second)
@@ -245,7 +245,7 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 	c, _ := deliveryConductor(t, exitWithStderr)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
@@ -282,7 +282,7 @@ func TestRestartRecoversFailedRun(t *testing.T) {
 	t.Setenv("CANDYLAND_TEST_MARKER", filepath.Join(t.TempDir(), "marker"))
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // fail fast on the first run
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
@@ -309,7 +309,7 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000") // don't let the stall watchdog fire during the test
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	// Wait until the coder is spawned and in flight, then stop the run.
