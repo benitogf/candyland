@@ -160,7 +160,7 @@ const SimplePanel = ({ run, done }) => (
                         <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Your change is ready to review ✅</Typography>
                         <Typography variant="body2" color="text.secondary">We opened one pull request. Reviewing and merging are your call.</Typography>
                     </Box>
-                    <Button variant="outlined" color="secondary" endIcon={<OpenInNewIcon />}>Review the PR</Button>
+                    <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" variant="outlined" color="secondary" endIcon={<OpenInNewIcon />}>Review the PR</Button>
                 </CardContent>
             </Card>
         ) : run.status === 'cancelled' ? (
@@ -199,7 +199,7 @@ const RunControls = ({ run, controls, done, onEdit }) => {
 
     if (!controls.controllable) {
         return done && run.prUrl
-            ? <Button color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
+            ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
             : <Chip label="snapshot" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
     }
     if (controls.status === 'cancelled') {
@@ -211,7 +211,7 @@ const RunControls = ({ run, controls, done, onEdit }) => {
                 {run.error
                     ? <><Chip label="failed" size="small" color="error" variant="outlined" /><RestartButton label="Restart" /></>
                     : run.prUrl
-                        ? <Button color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
+                        ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
                         : <Chip label="completed" size="small" color="success" variant="outlined" />}
                 <EditButton />
             </Box>
