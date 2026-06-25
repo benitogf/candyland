@@ -246,7 +246,7 @@ func (c *Conductor) Create(spec run.Spec) string {
 		Folders: spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
-		Branch:       "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id,
+		Branch:       runBranch(spec, id),
 		Status:       "planning",
 		Phase:        0,
 		TokensBudget: 900,
@@ -463,7 +463,7 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 	rt.r.Folders = spec.Folders
 	rt.r.Prompt = spec.Prompt
 	rt.r.Title = spec.Title
-	rt.r.Branch = "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id
+	rt.r.Branch = runBranch(spec, id)
 	rt.r.Status = "planning"
 	rt.r.Error = ""
 	rt.r.PrURL = ""
@@ -533,4 +533,12 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// runBranch derives a run's git branch from its spec + id. The id suffix keeps
+// two runs from the same prompt from colliding on the branch (and so on the
+// push / PR head). Create and Edit must derive it identically — keep this the
+// single definition of the format.
+func runBranch(spec run.Spec, id string) string {
+	return "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id
 }
