@@ -590,6 +590,19 @@ func parsePartition(text string) []partitionTask {
 		}
 		var tasks []partitionTask
 		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "PARTITION ")), &tasks) == nil && len(tasks) > 0 {
+			// A task id becomes a worktree path component and a git branch ref, and
+			// dep references are matched against task ids by the bus auto-unblock.
+			// The id comes from the (local) tech-lead model, so normalize every id
+			// and dep through the same slug: a malformed id can't escape the
+			// worktree root or break ref creation, and ids stay consistent with the
+			// deps that reference them. Realistic ids (a, backend, csv-export) are
+			// unchanged by slug.
+			for i := range tasks {
+				tasks[i].ID = slug(tasks[i].ID)
+				for j := range tasks[i].Deps {
+					tasks[i].Deps[j] = slug(tasks[i].Deps[j])
+				}
+			}
 			return tasks
 		}
 	}
