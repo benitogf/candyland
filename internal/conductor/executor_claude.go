@@ -76,16 +76,26 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := run1(ctx)
+	// stopped tracks whether THIS executor was stopped, so the <-done branch
+	// decides park-vs-finish from its own state — not by re-reading the shared
+	// run status. Stop cancels ctx (which closes done); if we instead read
+	// c.Get(id).Status there, a concurrent Edit→Begin re-plan that flips the
+	// status away from "paused" before we read it makes us wrongly take the
+	// finish branch and mark the run "done" — and a racing Begin then sees
+	// "done" (not "planning") and never spawns the re-run's executor.
+	stopped := false
 	for {
 		select {
 		case cmd := <-control:
 			switch cmd {
 			case "stop":
 				cancel()
+				stopped = true
 				c.Update(id, func(r *run.Run) { r.Status = "paused" })
 			case "restart":
 				cancel()
 				ctx, cancel = context.WithCancel(context.Background())
+				stopped = false // a fresh re-run — the next <-done is a real completion
 				// A restart is a fresh re-run — clear any prior error so the new run
 				// can reach completion (the phase/green gates key off r.Error).
 				c.Update(id, func(r *run.Run) { r.Status = "running"; r.Error = "" })
@@ -99,8 +109,7 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 				return
 			}
 		case <-done:
-			cr, _ := c.Get(id)
-			if cr.Status == "paused" {
+			if stopped {
 				// Stopped — park on the control channel only. Setting done to nil
 				// stops this select from spinning on the now-closed done channel
 				// (a busy loop); a restart installs a fresh done below.

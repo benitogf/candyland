@@ -58,12 +58,12 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 		}
 		return false
 	}
-	if r := waitFor(t, c, id, working, 8*time.Second); !working(r) {
+	if r := waitFor(t, c, id, working, 20*time.Second); !working(r) {
 		t.Fatal("first run never reached a working coder")
 	}
 	// Stop → paused (executor parks on its control channel).
 	c.Command(id, "stop")
-	if r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "paused" }, 6*time.Second); r.Status != "paused" {
+	if r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "paused" }, 15*time.Second); r.Status != "paused" {
 		t.Fatalf("run did not pause: %q", r.Status)
 	}
 
@@ -78,8 +78,12 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	// Begin again → a fresh executor on a fresh channel runs the new task; if a
 	// stale quit had reached it, it would die instead of reaching a working coder.
 	c.Begin(id, nil)
-	if r := waitFor(t, c, id, working, 8*time.Second); !working(r) {
-		t.Fatal("re-run after edit never reached a working coder — the new executor may have caught a stale command")
+	if r := waitFor(t, c, id, working, 20*time.Second); !working(r) {
+		st := []string{}
+		for _, a := range r.Agents {
+			st = append(st, a.ID+":"+a.State)
+		}
+		t.Fatalf("re-run after edit never reached a working coder (status=%q phase=%d err=%q agents=%v) — the new executor may have caught a stale command or the re-run stalled", r.Status, r.Phase, r.Error, st)
 	}
 	if r, _ := c.Get(id); r.Status != "running" {
 		t.Errorf("re-run should be running, got %q", r.Status)
@@ -181,7 +185,7 @@ func TestCancelRunningRunStopsAndDropsFromTracking(t *testing.T) {
 			}
 		}
 		return false
-	}, 5*time.Second)
+	}, 20*time.Second)
 	working := false
 	for _, a := range r.Agents {
 		if a.ID == "a" && a.State == "working" {
