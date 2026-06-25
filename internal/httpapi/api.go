@@ -41,6 +41,10 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if strings.TrimSpace(spec.Prompt) == "" || len(spec.Folders) == 0 {
+				http.Error(w, "a prompt and at least one folder are required", http.StatusBadRequest)
+				return
+			}
 			writeJSON(w, map[string]string{"id": c.Create(spec)})
 		},
 	})

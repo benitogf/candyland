@@ -104,7 +104,7 @@ func (c *Client) ensureUp() error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("candyland sidecar did not become ready at %s within 20s (is another process using that port?)", c.base)
+			return fmt.Errorf("candyland sidecar did not become ready at %s within 20s (it may have failed to start, or another process is bound to that port)", c.base)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -148,7 +148,9 @@ func (c *Client) Launch(spec run.Spec) (string, error) {
 		return "", fmt.Errorf("create run: empty id")
 	}
 	if err := c.post("/api/runs/"+out.ID+"/begin", nil); err != nil {
-		return out.ID, fmt.Errorf("begin run: %w", err)
+		// Name the orphaned run in the error: it was created but never started, so
+		// the operator can see/stop it (run_status/stop_run take this id).
+		return out.ID, fmt.Errorf("begin run %s: %w", out.ID, err)
 	}
 	return out.ID, nil
 }

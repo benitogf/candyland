@@ -23,11 +23,17 @@ React UI  ──ooo-client (WebSocket)──▶  ooo realtime state  ◀── c
                                                        push → open one PR
 ```
 
+- **Entry points:** the headline flow launches a run from a VSCode Claude Code
+  session via the candyland MCP's `launch_run` (the plan is settled upstream in the
+  editor, so the run goes straight to build); the dashboard's guided wizard is a
+  secondary, standalone way to start one. Either way the conductor drives it and the
+  UI is where you monitor, audit, and stop.
 - The **conductor** (`internal/conductor`) creates runs and drives them with the
   **claude executor**, publishing every state change to ooo (`runs/<id>`). The UI
   subscribes — there is **no mock and no demo mode**; the backend is the single
   source of truth and a run only ever reflects real agent work.
-- The **claude executor** resolves the run's workspace to its repo, creates a run
+- The **claude executor** resolves the run's folders to its repo (the first folder
+  is the repository), creates a run
   branch, spawns real headless `claude -p … --output-format stream-json` processes
   (a tech lead partitions the work; one coder per fork-safe task runs in its own
   git worktree), maps their events into live run state, integrates the worktrees,
@@ -99,15 +105,15 @@ live Claude model behavior is left to a real run:
 ```bash
 go build -o /tmp/candyland .
 CANDYLAND_BIN=/tmp/candyland node scripts/check-system.mjs       # /api/system platform/deps
-CANDYLAND_BIN=/tmp/candyland node scripts/check-workspaces.mjs   # workspace create/read/delete + folder validation
 CANDYLAND_BIN=/tmp/candyland node scripts/check-history.mjs      # cancel keeps a run as "cancelled"; clear archives (kept in history)
 CANDYLAND_BIN=/tmp/candyland node scripts/e2e.mjs                # full delivery: run → partition → worktrees → integrate → push → PR
 CANDYLAND_BIN=/tmp/candyland node scripts/validate-flows.mjs     # browser: pick a folder, generated questions, cancel, clear, Tasks history (Playwright)
 ```
 
 To exercise a **real** run end to end, build the binary, make sure `claude`, `git`, and
-`gh` are installed and authenticated, and start a run from the UI against a workspace
-pointing at one of your repositories.
+`gh` are installed and authenticated, and start a run — from a VSCode Claude Code
+session via the `launch_run` MCP, or from the dashboard — naming one of your
+repositories as the run's folder.
 
 ## Releases
 
