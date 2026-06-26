@@ -41,6 +41,7 @@ const (
 const (
 	GraphNodesGlob  = "graph/nodes/*"  // the durable task ledger (orchestrator single-writer)
 	GraphEventsGlob = "graph/events/*" // append-only proposal/mutation log (anyone appends)
+	BriefGlob       = "brief/*"        // per-agent initial context (orchestrator-written, agent-read)
 )
 
 // InboxGlob is the per-recipient inbox list path. Registered per agent at spawn
@@ -49,6 +50,9 @@ func InboxGlob(agentID string) string { return "inbox/" + agentID + "/*" }
 
 // GraphNodeKey is the concrete (non-glob) key of one task-graph node.
 func GraphNodeKey(id string) string { return "graph/nodes/" + id }
+
+// BriefKey is the concrete (non-glob) key of one agent's brief.
+func BriefKey(agentID string) string { return "brief/" + agentID }
 
 // CursorKey holds an agent's last-consumed seq.
 func CursorKey(agentID string) string { return "cursor/" + agentID }
@@ -95,6 +99,27 @@ type GraphNode struct {
 	Version  int      `json:"version"`
 	Reason   string   `json:"reason,omitempty"` // why a node is blocked (escalation)
 	From     string   `json:"from,omitempty"`
+}
+
+// Brief is one agent's initial context — the work it would otherwise have
+// received on the claude command line (the plan, the task spec, prior-attempt
+// feedback). It is written by the orchestrator to brief/<agentID> BEFORE the
+// agent is spawned and read once by the agent through brief_get, so the spawn
+// prompt stays a tiny constant bootstrap and the plan never rides on argv
+// (which Windows caps at 32k). From is the writer identity, used only for the
+// cooperative orchestrator-only write gate on brief/* (mirrors GraphNode).
+type Brief struct {
+	From     string   `json:"from,omitempty"`     // writer identity (orchestrator-only gate)
+	To       string   `json:"to"`                 // the agent this brief is for
+	Role     string   `json:"role,omitempty"`     // tech-lead | backend | frontend | fullstack | test | …
+	Prompt   string   `json:"prompt,omitempty"`   // the full request/plan (tech lead) — never on argv
+	Title    string   `json:"title,omitempty"`    // task title (coder)
+	Files    []string `json:"files,omitempty"`    // the task's fork-safe file boundary (coder)
+	Test     string   `json:"test,omitempty"`     // the defining test (coder)
+	Deps     []string `json:"deps,omitempty"`     // task ids that must finish first (coder)
+	Repo     string   `json:"repo,omitempty"`     // the repo this task targets (multi-repo)
+	Feedback string   `json:"feedback,omitempty"` // prior-attempt failure to avoid (re-plan / retry)
+	Attempt  int      `json:"attempt,omitempty"`  // 1-based attempt number
 }
 
 // Bus carries the bus state: who the single-writer orchestrator is, the
@@ -182,6 +207,34 @@ func (b *Bus) GraphNodesWriteFilter() ooo.Apply {
 	}
 }
 
+// BriefWriteFilter enforces the orchestrator single-writer rule on brief/*: only
+// the orchestrator (by payload From) may write an agent's brief — the brief is
+// conductor-authored context, not something a worker mints. Mirrors the
+// GraphNodes gate; a worker's RemoteSet of any brief is rejected.
+func (b *Bus) BriefWriteFilter() ooo.Apply {
+	return func(key string, data json.RawMessage) (json.RawMessage, error) {
+		var br Brief
+		if err := json.Unmarshal(data, &br); err != nil {
+			return nil, fmt.Errorf("brief: invalid brief: %w", err)
+		}
+		if br.From != b.orchestrator {
+			return nil, fmt.Errorf("brief: write from %q rejected (orchestrator-only)", br.From)
+		}
+		return json.Marshal(br)
+	}
+}
+
+// BriefReadObjectFilter permits reading a brief. A brief is cooperative context
+// (not a secret), so the read is open — registering it is what opens the brief/*
+// GET route under the server's Static deny-by-default mode. Each agent reads its
+// own brief/<self> by convention, the same cooperative model as the rest of the
+// bus (identity is not a security boundary here).
+func (b *Bus) BriefReadObjectFilter() ooo.ApplyObject {
+	return func(key string, obj meta.Object) (meta.Object, error) {
+		return obj, nil
+	}
+}
+
 // --- ReadListFilters (scope what a list read returns) ---
 
 // InboxReadFilter returns only messages newer than the recipient's cursor
@@ -230,6 +283,10 @@ func (b *Bus) RegisterGlobal(server *ooo.Server) {
 	server.WriteFilter(GraphNodesGlob, b.GraphNodesWriteFilter())
 	server.ReadListFilter(GraphNodesGlob, b.GraphNodesReadFilter())
 	server.WriteFilter(GraphEventsGlob, b.GraphEventsWriteFilter())
+	// brief/<agentID>: orchestrator-only write, open read (the agent fetches its
+	// own brief once via brief_get instead of receiving the plan on argv).
+	server.WriteFilter(BriefGlob, b.BriefWriteFilter())
+	server.ReadObjectFilter(BriefGlob, b.BriefReadObjectFilter())
 	// The conductor folds the append-only event log in-process; expose it
 	// unscoped (needed because the conductor runs Static: deny-by-default).
 	server.ReadListFilter(GraphEventsGlob, func(key string, objs []meta.Object) ([]meta.Object, error) {
@@ -361,6 +418,17 @@ func depsDone(deps []string, done map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// PutBrief writes an agent's brief as the orchestrator (the single writer),
+// before that agent is spawned. The agent reads it once via brief_get, so the
+// spawn prompt stays a constant bootstrap and the plan never rides on argv.
+// In-process writes still run BriefWriteFilter (the orchestrator-only gate),
+// satisfied here by setting From=orchestrator.
+func (b *Bus) PutBrief(server *ooo.Server, agentID string, br Brief) error {
+	br.From = b.orchestrator
+	br.To = agentID
+	return ooo.Set(server, BriefKey(agentID), br)
 }
 
 // CommitNode writes or updates a task-graph node as the orchestrator (the
