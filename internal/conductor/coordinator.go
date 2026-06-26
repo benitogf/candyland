@@ -124,6 +124,20 @@ func (c *Conductor) publishGraphNodes(tasks []partitionTask) {
 	}
 }
 
+// putBrief writes an agent's brief to the bus before it is spawned, so the agent
+// fetches its context via brief_get instead of receiving the plan/task on argv.
+// No-op without a bus (serverless tests) — the stub claude needs no brief, and a
+// real run always has the bus up (StartBus).
+func (c *Conductor) putBrief(agentID string, br bus.Brief) {
+	c.mu.Lock()
+	b := c.bus
+	c.mu.Unlock()
+	if b == nil || c.server == nil {
+		return
+	}
+	_ = b.PutBrief(c.server, agentID, br)
+}
+
 // escalateOpenNodes marks every still-open node blocked — the terminal
 // disposition of the K=3 escalation cap when the conductor gives up on a run
 // (no further retries, so no quota thrash). No-op without a bus.

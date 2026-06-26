@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/benitogf/candyland/internal/run"
+	"github.com/benitogf/ooo"
+	"github.com/benitogf/ooo/storage"
+	"github.com/gorilla/mux"
 )
 
 // writeFakeClaude drops an executable fake `claude` and points the executor at
@@ -77,7 +80,17 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 	repo := newGitRepo(t)
 	writeFakeClaude(t, claudeScript)
 	writeFakeGh(t)
-	c := New(nil)
+	// A real ooo server + bus so the conductor writes each agent's brief and the
+	// stub claude can fetch it over HTTP (the brief carries the plan/task that no
+	// longer rides on argv). StartBus registers the bus filters before Start.
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatalf("start bus: %v", err)
+	}
+	t.Cleanup(func() { srv.Close(os.Interrupt) })
 	c.folders = func(run.Run) ([]string, error) { return []string{repo}, nil }
 	// Drain before the test's t.TempDir() is removed: cancel any still-tracked
 	// runs and wait for each executor's deferred worktree cleanup (git worktree

@@ -1,7 +1,9 @@
 package conductor
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,60 @@ func TestParsePartitionSlugsIDsAndDeps(t *testing.T) {
 	}
 	if got[1].Deps[0] != got[0].ID {
 		t.Errorf("dep %q must match the slugged task id %q so unblock still works", got[1].Deps[0], got[0].ID)
+	}
+}
+
+// argvCaptureClaude records the -p argument ($2) of every spawn to the file in
+// CANDYLAND_ARGV_CAPTURE, then drives a minimal single-task delivery. It lets the
+// test prove the plan (which is large) never reaches the command line — it rides
+// the brief instead. A single-task PARTITION also exercises the atomic-task path.
+const argvCaptureClaude = `#!/usr/bin/env bash
+printf '%s\n' "$2" >> "$CANDYLAND_ARGV_CAPTURE"
+prompt="$2"
+if [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"the whole thing\",\"role\":\"fullstack\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+else
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
+  echo "done" > "a.txt"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+fi
+`
+
+// The plan never rides on argv: a large prompt is delivered through the bus brief,
+// so every spawned claude's -p stays a small constant bootstrap. This is the fix
+// for the Windows "command line too long" failure (argv caps at ~32k).
+func TestSpawnArgvCarriesNoPlanBody(t *testing.T) {
+	capture := filepath.Join(t.TempDir(), "argv.txt")
+	t.Setenv("CANDYLAND_ARGV_CAPTURE", capture)
+	c, _ := deliveryConductor(t, argvCaptureClaude)
+
+	plan := strings.Repeat("PLANBODY ", 6000) // ~54k — well over the 32k argv ceiling
+	id := c.Create(run.Spec{Mode: "developer", Prompt: plan})
+	c.Begin(id, nil)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
+	if r.Status != "done" || r.Error != "" {
+		t.Fatalf("single-task run did not finish cleanly: status=%q error=%q", r.Status, r.Error)
+	}
+	if len(r.Tasks) != 1 {
+		t.Fatalf("a single atomic task must be a valid partition, got %d tasks", len(r.Tasks))
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("no argv captured (claude never spawned?): %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least tl + coder spawns captured, got %d", len(lines))
+	}
+	for i, ln := range lines {
+		if strings.Contains(ln, "PLANBODY") {
+			t.Errorf("spawn %d: plan body leaked onto the claude -p arg (first 80 chars): %.80s", i, ln)
+		}
+		if len(ln) > 4000 {
+			t.Errorf("spawn %d: -p arg is %d chars — context must ride the brief, not argv", i, len(ln))
+		}
 	}
 }
 
@@ -243,22 +299,23 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 // The behavior the user asked for: a conflict from the tech lead's OWN split must
 // not kill the run — it reassesses and tries a different breakdown. Here the first
 // partition puts both coders on the same file (conflict the integrator can't fix),
-// and the re-plan (prompt now carries "PREVIOUS ATTEMPT FAILED") produces a
+// and the re-plan (the tech lead's brief now carries "feedback") produces a
 // file-disjoint split that integrates cleanly and ships a PR.
 const replanRecoverClaude = `#!/usr/bin/env bash
 prompt="$2"
+brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
 if [[ "$prompt" == *"git merge conflict"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I cannot reconcile this."}]}}'
   echo '{"type":"result","subtype":"success","result":"x","usage":{"output_tokens":1}}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
-  if [[ "$prompt" == *"PREVIOUS ATTEMPT FAILED"* ]]; then
+  if [[ "$brief" == *'"feedback":'* ]]; then
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"t\"},{\"id\":\"b\",\"title\":\"task b\",\"files\":[\"b.txt\"],\"test\":\"t\"}]"}]}}'
   else
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"shared.txt\"],\"test\":\"t\"},{\"id\":\"b\",\"title\":\"task b\",\"files\":[\"shared.txt\"],\"test\":\"t\"}]"}]}}'
   fi
   echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
 else
-  file=$(printf '%s' "$prompt" | sed -n 's/.*Files: \([A-Za-z0-9_]*\.[A-Za-z0-9_]*\).*/\1/p' | head -1)
+  file=$(printf '%s' "$brief" | sed -n 's/.*"files":\["\([^"]*\)".*/\1/p')
   [ -z "$file" ] && file="fallback_$$.txt"
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"'"$file"'"}}]}}'
   echo "content by $$" > "$file"
@@ -273,25 +330,28 @@ fi
 // content-failure re-plans — only a claude START failure stays terminal.)
 const coderFailReplanClaude = `#!/usr/bin/env bash
 prompt="$2"
+brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
 if [[ "$prompt" == *"git merge conflict"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"resolve"}]}}'
   echo '{"type":"result","subtype":"success","result":"x","usage":{"output_tokens":1}}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
-  if [[ "$prompt" == *"PREVIOUS ATTEMPT FAILED"* ]]; then
+  if [[ "$brief" == *'"feedback":'* ]]; then
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"simple task\",\"files\":[\"x.txt\"],\"test\":\"t\"}]"}]}}'
   else
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"impossible task\",\"files\":[\"x.txt\"],\"test\":\"t\"}]"}]}}'
   fi
   echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
-elif [[ "$prompt" == *"impossible"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I will not act on this."}]}}'
-  echo '{"type":"result","subtype":"success","result":"no-op","usage":{"output_tokens":1}}'
 else
-  file=$(printf '%s' "$prompt" | sed -n 's/.*Files: \([A-Za-z0-9_]*\.[A-Za-z0-9_]*\).*/\1/p' | head -1)
-  [ -z "$file" ] && file="fallback_$$.txt"
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"'"$file"'"}}]}}'
-  echo "done" > "$file"
-  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+  if [[ "$brief" == *"impossible"* ]]; then
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I will not act on this."}]}}'
+    echo '{"type":"result","subtype":"success","result":"no-op","usage":{"output_tokens":1}}'
+  else
+    file=$(printf '%s' "$brief" | sed -n 's/.*"files":\["\([^"]*\)".*/\1/p')
+    [ -z "$file" ] && file="fallback_$$.txt"
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"'"$file"'"}}]}}'
+    echo "done" > "$file"
+    echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+  fi
 fi
 `
 

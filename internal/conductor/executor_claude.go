@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
 )
 
@@ -283,7 +284,8 @@ func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch
 		fail(ctx, c, id, "tl", "Couldn't create the tech lead's worktree: "+err.Error())
 		return attemptDeliveryResult{}
 	}
-	tasks := runAgentResilient(ctx, c, id, "tl", techLeadPrompt(prompt, feedback), true, tlDir, extra)
+	c.putBrief("tl", bus.Brief{Role: "tech-lead", Prompt: prompt, Feedback: feedback, Attempt: attempt})
+	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extra)
 	if ctx.Err() != nil {
 		return attemptDeliveryResult{} // stopped
 	}
@@ -388,7 +390,8 @@ func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string,
 				fail(ctx, c, id, t.ID, "Couldn't create the worktree for "+t.ID+": "+err.Error())
 				return
 			}
-			runAgentResilient(ctx, c, id, t.ID, coderPrompt(t), false, wtDir, extra)
+			c.putBrief(t.ID, bus.Brief{Role: t.Role, Title: t.Title, Files: t.Files, Test: t.Test, Deps: t.Deps})
+			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra)
 			// Don't commit or claim success for a coder that failed (r.Error) or was
 			// killed mid-flight by Stop/Restart (ctx cancelled).
 			cr, _ := c.Get(id)
@@ -465,29 +468,26 @@ func prBody(r run.Run) string {
 		"\n\n🍬 Opened by [candyland](https://github.com/benitogf/candyland)."
 }
 
-func techLeadPrompt(prompt, feedback string) string {
-	p := "You are the tech lead. First, emit exactly one line beginning with `PARTITION ` " +
-		"followed by a JSON array of fork-safe tasks: " +
-		`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
-		"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
-		"Then stop. Request:\n\n" + prompt
-	if feedback != "" {
-		p += "\n\n--- PREVIOUS ATTEMPT FAILED ---\n" + feedback +
-			"\nProduce a DIFFERENT partition that avoids this: ensure no two tasks edit the same file " +
-			"(split by file/module ownership), keep each task small and self-contained, and use \"deps\" " +
-			"to sequence work that genuinely can't run in parallel."
-	}
-	return p
-}
+// The spawn prompts below are CONSTANT bootstraps. The request, task spec, and
+// any prior-attempt feedback ride in the agent's brief (brief/<agentID>, fetched
+// via the brief_get MCP tool) — never on argv, which Windows caps at ~32k. Each
+// keeps the role discriminators ("tech lead", "git merge conflict", the TEST /
+// PARTITION lines) the resilience layer and the stub tests rely on.
 
-func coderPrompt(t partitionTask) string {
-	return "Implement this fork-safe task until its defining test is green: " + t.Title +
-		". Files: " + strings.Join(t.Files, ", ") + ". Test: " + t.Test +
-		". Make the changes with tools — do not just describe them." +
-		" When you run the defining test, report the result as one line beginning with `TEST ` " +
-		`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
-		"), so the run records real verification counts."
-}
+const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line. " +
+	"Then emit exactly one line beginning with `PARTITION ` followed by a JSON array of fork-safe tasks: " +
+	`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
+	"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
+	"A single atomic task is a valid partition — when the work doesn't decompose, emit exactly one task (never treat \"one task\" as a failure). " +
+	"For small, tightly-coupled backend+frontend work, emit one task with role \"fullstack\"; split large cross-domain work into separate tasks sequenced with \"deps\". " +
+	"Then stop."
+
+const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role. " +
+	"Implement the task until its defining test is green: make the changes with your tools — do not just describe them. " +
+	"If your role is \"fullstack\", implement BOTH the server side and the client side of the slice and keep the API contract consistent between them. " +
+	"When you run the defining test, report the result as one line beginning with `TEST ` " +
+	`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
+	"), so the run records real verification counts."
 
 // resolveConflict has the tech lead reconcile a merge git couldn't auto-merge.
 // The conflict markers are left in the integration worktree; the tech lead edits
@@ -499,6 +499,7 @@ func coderPrompt(t partitionTask) string {
 func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t partitionTask, files, extra []string) error {
 	attempts := maxAttempts()
 	var lastErr error
+	c.putBrief("tl", bus.Brief{Role: "tech-lead", Title: "resolve merge conflict in " + t.Title, Files: files})
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -509,7 +510,7 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 				appendToAgent(r, "tl", run.Event{T: "system", Text: "merge conflict in " + strings.Join(files, ", ") + " — tech lead reconciling"}, 0)
 			}
 		})
-		out := streamOnce(ctx, c, id, "tl", reinforce(conflictPrompt(t, files), attempt, false), integDir, extra)
+		out := streamOnce(ctx, c, id, "tl", reinforce(conflictBootstrap, attempt, false), integDir, extra)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -533,13 +534,11 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 	return lastErr
 }
 
-func conflictPrompt(t partitionTask, files []string) string {
-	return "You are resolving a git merge conflict as the tech lead integrating parallel work into one branch. " +
-		"Merging task \"" + t.Title + "\" produced conflicts in: " + strings.Join(files, ", ") +
-		". Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
-		"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
-		"Do not ask questions and do not leave any conflict unresolved."
-}
+const conflictBootstrap = "You are the tech lead resolving a git merge conflict while integrating parallel work into one branch. " +
+	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
+	"Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
+	"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
+	"Do not ask questions and do not leave any conflict unresolved."
 
 // mapAgentLine streams one stream-json line into the agent's live ooo state and
 // returns the signals the resilience layer uses to judge compliance: any parsed

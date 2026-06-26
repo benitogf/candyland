@@ -129,14 +129,26 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	for _, d := range extraDirs {
 		args = append(args, "--add-dir", d)
 	}
-	// Coordination bus: give the agent the comms_*/graph_* MCP tools wired to
-	// the conductor's ooo bus as this agentID (no-op when no bus is running).
-	if cfg := c.busMCPConfig(id, agentID); cfg != "" {
-		args = append(args, "--mcp-config", cfg)
+	// Coordination bus: give the agent the comms_*/graph_*/brief_get MCP tools
+	// wired to the conductor's ooo bus as this agentID (no-op when no bus is
+	// running). The agent reads its initial context (the plan/task spec) via
+	// brief_get rather than from argv — so a large plan can't overflow the
+	// command line.
+	busCfg := c.busMCPConfig(id, agentID)
+	if busCfg != "" {
+		args = append(args, "--mcp-config", busCfg)
 	}
 	cmd := exec.Command(claudeBin(), args...)
 	cmd.Dir = workdir
 	cmd.Env = claudeEnv()
+	// Also expose the bus coordinates directly in the environment. The real
+	// claude reaches the bus through the --mcp-config above; these let any
+	// process locate its own brief without parsing that file (used by the test
+	// stub, which stands in for the model and fetches its brief over HTTP). The
+	// plan never rides here — only the address and the agent id.
+	if busCfg != "" {
+		cmd.Env = append(cmd.Env, "CANDYLAND_BUS_ADDR="+c.server.Address, "CANDYLAND_AGENT_ID="+agentID)
+	}
 	configureProc(cmd)
 	// Capture stderr so a process that exits non-zero reports WHY (e.g. an
 	// auth/model/permission error from claude) instead of a blank "exited".
