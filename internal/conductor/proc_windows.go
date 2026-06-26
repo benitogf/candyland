@@ -2,11 +2,21 @@
 
 package conductor
 
-import "os/exec"
+import (
+	"os/exec"
+	"syscall"
+)
 
-// configureProc is a no-op on Windows (no POSIX process groups). Kill is
-// best-effort on the child process itself.
-func configureProc(cmd *exec.Cmd) {}
+// CREATE_NO_WINDOW: run the spawned process without allocating a console, so a
+// headless candyland run doesn't flash a command window for every claude/comms
+// process it launches. HideWindow covers the case where a console is inherited.
+const createNoWindow = 0x08000000
+
+// configureProc keeps spawned processes windowless on Windows (no POSIX process
+// groups here; kill stays best-effort on the child itself).
+func configureProc(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+}
 
 func killTree(cmd *exec.Cmd) {
 	if cmd.Process != nil {

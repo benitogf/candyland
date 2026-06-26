@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
 )
 
@@ -45,7 +46,25 @@ func (c *Conductor) GenerateQuestions(id string) []run.Question {
 
 	ctx, cancel := context.WithTimeout(context.Background(), questionTimeout())
 	defer cancel()
-	cmd := exec.CommandContext(ctx, claudeBin(), "-p", plannerPrompt(prompt, mode), "--output-format", "json", "--model", "claude-opus-4-8")
+
+	// The request rides in a brief (fetched via brief_get), not on argv — r.Prompt
+	// can be the full settled plan, which would overflow the command line. The
+	// prompt below is a constant bootstrap. Without a bus (serverless tests) there
+	// is no brief; the planner then has only the bootstrap and returns no usable
+	// questions, which the caller already treats as "proceed to build".
+	const plannerID = "planner"
+	c.putBrief(plannerID, bus.Brief{Role: mode, Prompt: prompt})
+	args := []string{"-p", plannerBootstrap(mode), "--output-format", "json", "--model", "claude-opus-4-8"}
+	busCfg := c.busMCPConfig(id, plannerID)
+	if busCfg != "" {
+		args = append(args, "--mcp-config", busCfg)
+	}
+	cmd := exec.CommandContext(ctx, claudeBin(), args...)
+	cmd.Env = claudeEnv()
+	if busCfg != "" {
+		cmd.Env = append(cmd.Env, "CANDYLAND_BUS_ADDR="+c.server.Address, "CANDYLAND_AGENT_ID="+plannerID)
+	}
+	configureProc(cmd) // no flashing console window on Windows
 	out, err := cmd.Output()
 	var qs []run.Question
 	if err == nil {
@@ -67,19 +86,22 @@ func (c *Conductor) cacheQuestions(rt *runtime, qs []run.Question) []run.Questio
 	return qs
 }
 
-func plannerPrompt(prompt, mode string) string {
+// plannerBootstrap is the CONSTANT prompt for the clarifying-questions call. The
+// request rides in the planner's brief (fetched via brief_get), not here — so a
+// large settled plan never reaches argv. Keeps the "clarifying questions"
+// discriminator the stub tests key on.
+func plannerBootstrap(mode string) string {
 	audience := "a non-technical person"
 	style := "Prefer multiple-choice questions — give 2-4 concrete `options` for each, and set `multi:true` only when several answers can apply together."
 	if mode == "developer" {
 		audience = "a developer"
 		style = "Open-ended questions are fine — omit `options` and give a short `placeholder` example answer instead."
 	}
-	return "You are planning a software task before any code is written. " + audience + " asked for:\n\n" +
-		strings.TrimSpace(prompt) + "\n\n" +
+	return "You are planning a software task before any code is written. Call the brief_get tool FIRST to read the request (" + audience + " asked for it) — it is no longer on your command line. " +
 		"Produce 2 to 4 brief clarifying questions that would most help decide what to build. " + style + " " +
 		"Return ONLY a JSON array, no prose, no code fence: " +
 		`[{"id":"short-kebab-key","question":"...","options":["..."],"multi":false,"placeholder":"..."}]. ` +
-		"Each question must be specific to the request above — not generic."
+		"Each question must be specific to the request — not generic."
 }
 
 // parseQuestions pulls the question array out of `claude --output-format json`
