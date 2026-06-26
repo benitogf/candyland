@@ -317,9 +317,9 @@ type EventHandler func(server *ooo.Server, ev Envelope)
 // AfterWrite hook: when any write lands the conductor checks whether it was a
 // worker event (graph/events/*) and, if so, invokes handler for each event
 // newer than the last processed (advancing by seq). It uses the global hook —
-// not a path AfterWriteFilter — because a path-filter's pool preallocation at
-// Start blocks the per-agent inbox filters that are registered later, at spawn.
-// The work runs in a goroutine: AfterWrite fires under the storage write lock,
+// not a path AfterWriteFilter — to keep the AfterWrite path uniform with the
+// other globally-registered filters (all of them register in RegisterGlobal,
+// before Start). The work runs in a goroutine: AfterWrite fires under the storage write lock,
 // so the reactor's own writes must not run inline or they would deadlock the
 // server (the directive is consumed on the worker's next turn regardless).
 // Goroutines serialize on the cursor mutex; the handler must not write

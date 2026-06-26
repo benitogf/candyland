@@ -15,11 +15,12 @@ import (
 const OrchestratorID = "conductor"
 
 // StartBus registers the coordination bus (Realization B) on the conductor's
-// ooo server — the task-graph + cursor filters and the coordination reactor —
-// and stores it so per-agent inboxes can be registered at spawn. Must be called
-// before server.Start (filters register before the listener binds). The bus is
-// a back-channel beside the stdout loop, which is untouched. No-op without a
-// server (serverless tests).
+// ooo server — the task-graph, brief, inbox, and cursor filters plus the
+// coordination reactor — ALL of them here, before server.Start (filters must
+// register before the listener binds, and never while the server is serving:
+// mutating the filter set from a spawn goroutine raced ooo's broadcast loop).
+// The bus is a back-channel beside the stdout loop, which is untouched. No-op
+// without a server (serverless tests).
 func (c *Conductor) StartBus() {
 	if c.server == nil {
 		return
@@ -51,11 +52,12 @@ type mcpConfigFile struct {
 	MCPServers map[string]mcpServerSpec `json:"mcpServers"`
 }
 
-// busMCPConfig registers the agent's inbox (once) and writes a per-agent
-// --mcp-config that launches `candyland comms-mcp`, wiring the coder to the
-// conductor's bus as agentID. Returns the config path, or "" when no bus is
-// wired (no flag is added then). The conductor stays pure Go — it only spawns
-// the process and maps its stdout.
+// busMCPConfig writes a per-agent --mcp-config that launches `candyland
+// comms-mcp`, wiring the coder to the conductor's bus as agentID. Returns the
+// config path, or "" when no bus is wired (no flag is added then). The inbox
+// filters are already registered globally at StartBus, so there is no per-agent
+// registration here. The conductor stays pure Go — it only spawns the process
+// and maps its stdout.
 func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	c.mu.Lock()
 	b := c.bus
