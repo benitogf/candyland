@@ -9,6 +9,10 @@ dist/
 /candyland.exe
 /candyland-*
 
+# bazel build symlinks + lockfile
+/bazel-*
+MODULE.bazel.lock
+
 # loop scratchpads + plan contracts (local only)
 .janitor/
 .smith/

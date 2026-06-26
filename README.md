@@ -47,6 +47,13 @@ Runs on **Linux, macOS, WSL, and Windows** — a single self-contained binary pe
 OS/arch. The app detects the platform at runtime and reports it (plus dependency
 status and install commands) in **Setup** (the status chip in the top bar).
 
+On **Linux/amd64 and Windows** the binary opens the dashboard in a **native
+desktop window** (WebKitGTK 4.1 on Linux/WSLg, WebView2 on Windows; built with
+`-tags webview`). On the other targets — and with `--headless`, or when no
+display is available — it runs headless and serves the dashboard on `--spaPort`
+(default `:8080`) for you to open in a browser. Either way the API/realtime
+backend is the same; the window is just a shell around the embedded SPA.
+
 Dependencies:
 - **Claude Code** (`claude`) — required to run; it drives the agents. Without it a
   run can't start (there is no demo mode) and the UI says so with the install
@@ -124,14 +131,19 @@ Same flow as detritus — a manual bump/tag/release you trigger from a prompt
 scripts/release.sh 0.1.0   # from main, clean tree → tags v0.1.0 and pushes
 ```
 
-The `v*` tag triggers the release workflow, which builds the standalone single
-binaries (backend + embedded UI, version injected via `-ldflags`) for
-linux/darwin/windows (amd64 + arm64) and publishes the GitHub Release the
-detritus installer pulls from (installing candyland beside detritus). The
-workflow lives at [`ci/release.yml`](ci/release.yml) and must be activated once
-per [`ci/README.md`](ci/README.md) — the CLI token that opened these PRs lacks
-the `workflow` scope to push under `.github/workflows/`, so a human moves it into
-place with a workflow-scoped token.
+The `v*` tag triggers the release workflow, which builds every binary (backend +
+embedded UI, version injected via `-ldflags`) for linux/darwin/windows (amd64 +
+arm64) from a single Linux runner via **Bazel + a Zig hermetic C toolchain** (the
+[`spartan/samples/webcanvas`](https://github.com/benitogf/spartan) approach):
+linux/amd64 + windows are CGO `-tags webview` builds (linux native against
+WebKitGTK; windows cross-compiled with `zig cc` + a WebView2 shim), and
+linux/arm64 + darwin are headless CGO-free server builds. It publishes the GitHub
+Release the detritus installer pulls from (installing candyland beside detritus).
+Build locally with `bazel build //:release` (Go, Zig 0.13, `libwebkit2gtk-4.1-dev`
+required). The workflow lives at [`ci/release.yml`](ci/release.yml) and must be
+activated once per [`ci/README.md`](ci/README.md) — the CLI token that opened
+these PRs lacks the `workflow` scope to push under `.github/workflows/`, so a
+human moves it into place with a workflow-scoped token.
 
 ## Stack
 
