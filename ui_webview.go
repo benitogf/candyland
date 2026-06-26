@@ -4,7 +4,10 @@ package main
 
 import (
 	"log"
+	"net"
+	"net/url"
 	"os"
+	"time"
 
 	webview "github.com/Ghibranalj/webview_go"
 	"github.com/benitogf/ooo"
@@ -26,12 +29,31 @@ func runUI(server *ooo.Server, spaURL string, headless bool, width, height int, 
 	}
 
 	log.Printf("candyland: opening the desktop window → %s", spaURL)
+	waitForSPA(spaURL) // avoid a connection-refused first paint before the SPA listener binds
 	w := webview.New(debug)
 	defer w.Destroy()
 	w.SetTitle("Candyland")
 	w.SetSize(width, height, webview.HintNone)
 	w.Navigate(spaURL)
-	go server.WaitClose() // shut down cleanly if the server stops first
+	go server.WaitClose() // honor Ctrl-C / SIGTERM while the window is open
 	w.Run()               // blocks on the GUI loop until the window is closed
 	server.Close(os.Interrupt)
+}
+
+// waitForSPA blocks until the SPA port accepts a connection (the SPA server
+// starts in a goroutine, so it may not be bound yet), giving up after ~2.5s so a
+// stuck listener never wedges the window.
+func waitForSPA(spaURL string) {
+	u, err := url.Parse(spaURL)
+	if err != nil || u.Host == "" {
+		return
+	}
+	for range 50 {
+		c, err := net.DialTimeout("tcp", u.Host, 100*time.Millisecond)
+		if err == nil {
+			c.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

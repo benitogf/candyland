@@ -3,6 +3,7 @@ module github.com/benitogf/candyland
 go 1.25
 
 require (
+	github.com/Ghibranalj/webview_go v0.0.0-20251019170756-f933bf214be3
 	github.com/benitogf/ko v0.0.0-20260223095138-d9bdb5feb085
 	github.com/benitogf/ooo v0.0.0-20260616085443-cb886859c622
 	github.com/gorilla/mux v1.8.1
@@ -10,7 +11,6 @@ require (
 )
 
 require (
-	github.com/Ghibranalj/webview_go v0.0.0-20251019170756-f933bf214be3 // indirect
 	github.com/bclicn/color v0.0.0-20180711051946-108f2023dc84 // indirect
 	github.com/benitogf/coat v0.0.0-20200402073050-ff807656cbec // indirect
 	github.com/benitogf/go-json v0.0.0-20260410172501-727f5690408b // indirect
