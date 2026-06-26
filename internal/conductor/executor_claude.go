@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
 )
 
@@ -65,6 +66,7 @@ type partitionTask struct {
 	Files []string `json:"files"`
 	Test  string   `json:"test"`
 	Deps  []string `json:"deps"`
+	Repo  string   `json:"repo"` // target repo (folder name); empty → the run's primary repo (folders[0])
 }
 
 func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string) {
@@ -137,22 +139,22 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 	}
 }
 
-// fanOut runs the whole delivery: resolve the repo, then partition → code →
-// integrate (reassessing the split when the tech lead's own plan fails), then
-// push and open a PR. It never claims success it didn't achieve, and never fails
-// the run for a problem of the tech lead's own making (a bad split, an
-// unresolvable conflict) without first letting it reassess and try again.
+// fanOut runs the whole delivery: partition → code → integrate per impacted repo
+// (reassessing the split when the tech lead's own plan fails), then push and open
+// ONE PR PER IMPACTED REPO. A feature may span N repos (N≥1, no cap); the
+// cross-repo half is in-scope, never a blocker. It never claims success it didn't
+// achieve, and never fails the run for a problem of the tech lead's own making (a
+// bad split, an unresolvable conflict) without first letting it reassess.
 func fanOut(ctx context.Context, c *Conductor, id string) {
 	r, ok := c.Get(id)
 	if !ok {
 		return
 	}
 
-	// Resolve the run's working folders (supplied at launch). The first folder is
-	// the repo the run branches and opens its PR in; the rest are extra context
-	// (--add-dir). These are ENVIRONMENTAL prerequisites — re-splitting the work
-	// can't fix a missing repo, so a failure here is honest and terminal, not a
-	// reason to re-plan.
+	// Resolve the run's working folders (supplied at launch). Every folder is a
+	// CANDIDATE repo: a task targets one via its `repo` field (default folders[0],
+	// the primary). A missing/invalid primary is ENVIRONMENTAL — re-splitting can't
+	// fix it, so it's honest and terminal, not a reason to re-plan.
 	folders, err := c.folders(r)
 	if err != nil {
 		fail(ctx, c, id, "tl", "Couldn't resolve the run's folders: "+err.Error()+". Launch with at least one folder whose first entry is a git repository.")
@@ -162,48 +164,40 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		fail(ctx, c, id, "tl", "The run has no folders. Launch it with at least one (the first is the git repository the run works in).")
 		return
 	}
-	repo := expandHome(folders[0])
-	extra := make([]string, 0, len(folders)-1)
-	for _, f := range folders[1:] {
-		extra = append(extra, expandHome(f))
+	// Copy before expanding — c.folders may return the run's stored slice by
+	// reference, and fanOut must not mutate shared run state outside c.Update.
+	folders = append([]string(nil), folders...)
+	for i, f := range folders {
+		folders[i] = expandHome(f)
 	}
-	if !isGitRepo(ctx, repo) {
-		fail(ctx, c, id, "tl", "The run's first folder isn't a git repository: "+repo+". A run branches and opens its PR there.")
-		return
-	}
-	base, err := currentBranch(ctx, repo)
-	if err != nil {
-		fail(ctx, c, id, "tl", "Couldn't read the repo's current branch: "+err.Error())
+	if !isGitRepo(ctx, folders[0]) {
+		fail(ctx, c, id, "tl", "The run's first folder isn't a git repository: "+folders[0]+". A run branches and opens its PR there.")
 		return
 	}
 
-	// Everything happens in throwaway worktrees under wtRoot, so the user's own
-	// checkout is never switched or dirtied. Clean any leftovers from a prior
-	// attempt of THIS run (e.g. a restart), and again on the way out.
+	// Everything happens in throwaway worktrees under wtRoot/<repoBase>/…, so the
+	// user's own checkouts are never switched or dirtied. Clean leftovers from a
+	// prior attempt of THIS run (e.g. a restart), and again on the way out.
 	wtRoot := filepath.Join(os.TempDir(), "candyland-wt", id)
-	cleanup(c, id, repo, wtRoot)
-	defer cleanup(c, id, repo, wtRoot)
+	cleanup(c, id, folders, wtRoot)
+	defer cleanup(c, id, folders, wtRoot)
 
-	// ── Plan → code → integrate, REASSESSING the split on a plan-attributable
-	//    failure. A coder that can't finish, or slices that conflict and can't be
-	//    reconciled, mean the tech lead's partition was wrong — feed that back and
-	//    let it re-partition rather than failing the run for its own mistake. ──
+	// ── Plan → code → integrate per repo, REASSESSING the split on a
+	//    plan-attributable failure (a coder can't finish, or slices conflict). ──
 	replans := maxReplans()
 	feedback := ""
-	integDir := ""
+	var delivered map[string]string // repo path → integration worktree, ready to push
 	for attempt := 1; attempt <= replans; attempt++ {
 		if ctx.Err() != nil {
 			return
 		}
 		if attempt > 1 {
-			// Fresh slate: drop the prior attempt's worktrees + per-agent branches so
-			// the re-partition (which may use different task ids) starts clean.
-			cleanup(c, id, repo, wtRoot)
+			cleanup(c, id, folders, wtRoot)
 			log.Printf("candyland: run %s re-planning (attempt %d/%d) after: %s", id, attempt, replans, feedback)
 		}
-		res := attemptDelivery(ctx, c, id, repo, r.Prompt, r.Branch, base, extra, wtRoot, feedback, attempt)
+		res := attemptDelivery(ctx, c, id, folders, r.Prompt, r.Branch, wtRoot, feedback, attempt)
 		if res.ok {
-			integDir = res.integDir
+			delivered = res.integDirs
 			break
 		}
 		if res.replan == "" {
@@ -218,39 +212,65 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 			return
 		}
 	}
-	if integDir == "" {
-		return // defensive — a successful loop always sets integDir
+	if len(delivered) == 0 {
+		return // defensive — a successful loop always delivers at least one repo
 	}
 
-	// ── Deliver: push the run branch and open one PR. These are ENVIRONMENTAL too
-	//    (a missing 'origin' or an unauthenticated gh can't be fixed by re-splitting),
-	//    so a failure here is honest and terminal. The phase advances to PR only once
-	//    the PR actually opens — a push/auth failure must not show "PR · 100%". ──
+	// ── Deliver: push + open one PR PER IMPACTED REPO, in folder order. These are
+	//    ENVIRONMENTAL (a missing 'origin' or an unauthenticated gh can't be fixed
+	//    by re-splitting). PARTIAL-FAILURE ISOLATION: one repo's push/PR failure is
+	//    surfaced on that repo's PR record but does NOT abort the others. The run
+	//    reaches the PR phase if at least one PR opened. ──
 	c.Update(id, func(r *run.Run) {
-		r.StatusLine = "Pushing the branch and opening the pull request…"
-		setAgentState(r, "tl", "working", "pushing the branch and opening the PR")
+		r.StatusLine = "Pushing branches and opening pull requests…"
+		setAgentState(r, "tl", "working", "pushing branches and opening PRs")
 	})
-	if err := pushBranch(ctx, integDir, r.Branch); err != nil {
-		fail(ctx, c, id, "tl", "Couldn't push the run branch: "+err.Error()+". Check the repo has an 'origin' remote you can push to.")
-		return
+	prs := make([]run.PR, 0, len(delivered))
+	for _, repo := range orderedRepos(folders, delivered) {
+		integDir := delivered[repo]
+		base, _ := currentBranch(ctx, repo)
+		pr := run.PR{Repo: repoBase(repo)}
+		if err := pushBranch(ctx, integDir, r.Branch); err != nil {
+			pr.Err = "push failed: " + err.Error()
+		} else if url, err := openPR(ctx, integDir, base, r.Branch, prTitle(r), prBody(r)); err != nil {
+			pr.Err = "PR failed: " + err.Error()
+		} else {
+			pr.URL = url
+		}
+		prs = append(prs, pr)
 	}
-	prURL, err := openPR(ctx, integDir, base, r.Branch, prTitle(r), prBody(r))
-	if err != nil {
-		fail(ctx, c, id, "tl", "Couldn't open the pull request: "+err.Error()+". Make sure GitHub CLI (gh) is installed and authenticated (gh auth login).")
-		return
+	crossLinkPRs(ctx, delivered, prs)
+
+	opened := 0
+	for _, pr := range prs {
+		if pr.URL != "" {
+			opened++
+		}
 	}
 	c.Update(id, func(r *run.Run) {
-		r.PrURL = prURL
-		r.Phase = len(run.Phases) - 1 // PR — reached only now that the PR is open
-		r.StatusLine = "Opened the pull request."
-		setAgentState(r, "tl", "done", "opened the PR")
+		r.PRs = prs
+		for _, pr := range prs {
+			if pr.URL != "" {
+				r.PrURL = pr.URL // primary/first opened — back-compat for the single-PR UI
+				break
+			}
+		}
+		if opened == 0 {
+			r.Error = "No pull request could be opened. " + firstPRErr(prs) +
+				" Check each repo has an 'origin' remote you can push to and that gh is authenticated."
+			setAgentState(r, "tl", "blocked", "no PR opened")
+			return
+		}
+		r.Phase = len(run.Phases) - 1 // PR — reached only now that a PR is open
+		r.StatusLine = prStatusLine(prs)
+		setAgentState(r, "tl", "done", prStatusLine(prs))
 	})
 }
 
 // attemptDeliveryResult is the outcome of ONE partition → code → integrate pass.
 type attemptDeliveryResult struct {
-	integDir string // integration worktree, ready to push (success only)
-	ok       bool   // integration completed cleanly
+	integDirs map[string]string // repo path → integration worktree, ready to push (success only)
+	ok        bool              // every impacted repo integrated cleanly
 	// replan, when non-empty, is feedback for the tech lead: a failure of its OWN
 	// plan (a coder couldn't finish, slices conflicted unresolvably) that warrants
 	// re-partitioning. ok==false && replan=="" means a terminal failure was already
@@ -258,11 +278,15 @@ type attemptDeliveryResult struct {
 	replan string
 }
 
-// attemptDelivery runs the tech lead → coders → integrate flow once. The tech lead
-// reassesses across attempts: on a re-plan (attempt > 1) the prior failure is woven
-// into its prompt so it produces a DIFFERENT breakdown.
-func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch, base string, extra []string, wtRoot, feedback string, attempt int) attemptDeliveryResult {
-	// ── Tech lead: partition the work (in its own worktree; not merged). ──
+// attemptDelivery runs the tech lead → coders → integrate flow once, ACROSS every
+// impacted repo. The tech lead partitions all the work in one pass (its worktree
+// is in the primary repo, with the other folders as --add-dir context); tasks are
+// grouped by their target repo, and each repo's slice is coded + integrated into
+// that repo's own run branch. On a re-plan the prior failure is woven into the
+// brief so the tech lead produces a DIFFERENT breakdown.
+func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []string, prompt, branch, wtRoot, feedback string, attempt int) attemptDeliveryResult {
+	primary := folders[0]
+	// ── Tech lead: partition the work (in its own worktree in the primary repo). ──
 	c.Update(id, func(r *run.Run) {
 		r.Status = "running"
 		r.Phase = 1
@@ -278,12 +302,18 @@ func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch
 		r.Agents = []run.Agent{tl}
 		r.Tasks = []run.Task{}
 	})
-	tlDir := filepath.Join(wtRoot, "tl")
-	if err := addWorktree(ctx, repo, tlDir, branchName(id, "tl"), base); err != nil {
+	base0, err := currentBranch(ctx, primary)
+	if err != nil {
+		fail(ctx, c, id, "tl", "Couldn't read the repo's current branch: "+err.Error())
+		return attemptDeliveryResult{}
+	}
+	tlDir := filepath.Join(wtRoot, repoBase(primary), "tl")
+	if err := addWorktree(ctx, primary, tlDir, branchName(id, "tl"), base0); err != nil {
 		fail(ctx, c, id, "tl", "Couldn't create the tech lead's worktree: "+err.Error())
 		return attemptDeliveryResult{}
 	}
-	tasks := runAgentResilient(ctx, c, id, "tl", techLeadPrompt(prompt, feedback), true, tlDir, extra)
+	c.putBrief("tl", bus.Brief{Role: "tech-lead", Prompt: prompt, Feedback: feedback, Attempt: attempt})
+	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extraDirsFor(primary, folders))
 	if ctx.Err() != nil {
 		return attemptDeliveryResult{} // stopped
 	}
@@ -310,56 +340,76 @@ func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch
 	// graph_read the open work and the conductor can auto-unblock / escalate.
 	c.publishGraphNodes(tasks)
 
-	// ── Coders: one per task, each in its own worktree off base, in parallel. ──
-	runCoders(ctx, c, id, repo, base, wtRoot, tasks, extra)
-	if ctx.Err() != nil {
-		return attemptDeliveryResult{} // stopped
-	}
-	if cr, _ := c.Get(id); cr.Error != "" {
-		reason := cr.Error
-		if strings.HasPrefix(reason, startFailurePrefix) {
-			// claude couldn't even start — environmental, not the plan's fault.
-			// Re-partitioning can't help, so leave the error and end the run.
+	// ── Per impacted repo: code its slice, then integrate it into that repo's run
+	//    branch. A coder/integration failure in ANY repo re-plans the whole split. ──
+	order, byRepo := groupTasksByRepo(tasks, folders)
+	c.Update(id, func(r *run.Run) {
+		r.Phase = len(run.Phases) - 2 // Review (integration)
+	})
+	integDirs := make(map[string]string, len(order))
+	for _, repo := range order {
+		base, err := currentBranch(ctx, repo)
+		if err != nil {
+			fail(ctx, c, id, "tl", "Couldn't read "+repoBase(repo)+"'s current branch: "+err.Error())
 			return attemptDeliveryResult{}
 		}
-		// A coder couldn't finish — that's the tech lead's delegation failing.
-		// Clear the error (so it isn't terminal) and re-plan with the reason.
-		c.Update(id, func(r *run.Run) { r.Error = "" })
-		return attemptDeliveryResult{replan: "A coder couldn't complete its task: " + reason +
-			" Re-split into smaller, clearer, fully self-contained tasks (or sequence dependent ones with deps)."}
-	}
+		repoWt := filepath.Join(wtRoot, repoBase(repo))
+		extra := extraDirsFor(repo, folders)
+		rtasks := byRepo[repo]
 
-	// ── Integrate: merge every task branch into the run branch, in its own
-	//    worktree (the user's checkout stays untouched). ──
+		// Coders for this repo's tasks, each in its own worktree off the repo's base.
+		runCoders(ctx, c, id, repo, base, repoWt, rtasks, extra)
+		if ctx.Err() != nil {
+			return attemptDeliveryResult{} // stopped
+		}
+		if cr, _ := c.Get(id); cr.Error != "" {
+			reason := cr.Error
+			if strings.HasPrefix(reason, startFailurePrefix) {
+				return attemptDeliveryResult{} // claude couldn't start — environmental, terminal
+			}
+			c.Update(id, func(r *run.Run) { r.Error = "" })
+			return attemptDeliveryResult{replan: "A coder couldn't complete its task: " + reason +
+				" Re-split into smaller, clearer, fully self-contained tasks (or sequence dependent ones with deps)."}
+		}
+
+		// Integrate this repo's slice into its run branch.
+		integDir, replan, ok := integrateRepo(ctx, c, id, repo, branch, base, repoWt, rtasks, extra)
+		if !ok {
+			return attemptDeliveryResult{replan: replan} // replan=="" when stopped/terminal
+		}
+		integDirs[repo] = integDir
+	}
+	return attemptDeliveryResult{integDirs: integDirs, ok: true}
+}
+
+// integrateRepo merges one repo's task branches into its run branch, in an
+// integration worktree off that repo (the user's checkout stays untouched). It
+// returns the worktree ready to push, or a re-plan reason. ok=false with an empty
+// replan means the run was stopped or a terminal failure was already recorded.
+func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, repoWt string, tasks []partitionTask, extra []string) (string, string, bool) {
 	c.Update(id, func(r *run.Run) {
-		r.Phase = len(run.Phases) - 2 // Review
-		r.StatusLine = "Integrating the work into one branch…"
+		r.StatusLine = "Integrating " + repoBase(repo) + " into one branch…"
 		setAgentState(r, "tl", "integrating", "merging the slices")
 	})
-	integDir := filepath.Join(wtRoot, "integrate")
+	integDir := filepath.Join(repoWt, "integrate")
 	if err := addWorktree(ctx, repo, integDir, branch, base); err != nil {
-		fail(ctx, c, id, "tl", "Couldn't create the integration worktree: "+err.Error())
-		return attemptDeliveryResult{}
+		fail(ctx, c, id, "tl", "Couldn't create the integration worktree for "+repoBase(repo)+": "+err.Error())
+		return "", "", false
 	}
 	for _, t := range tasks {
 		conflicted, files, err := mergeBranch(ctx, integDir, branchName(id, t.ID))
 		if err != nil {
-			// git couldn't even start the merge cleanly — treat as the split's fault.
 			abortMerge(integDir)
-			return attemptDeliveryResult{replan: "Merging " + t.ID + " failed: " + err.Error() +
-				" Re-partition so tasks own disjoint files."}
+			return "", "Merging " + t.ID + " failed: " + err.Error() + " Re-partition so tasks own disjoint files.", false
 		}
 		if conflicted {
-			// First, the tech lead reconciles overlapping work IN PLACE (cheap). Only
-			// if that genuinely can't be done do we reassess the whole split.
 			if err := resolveConflict(ctx, c, id, integDir, t, files, extra); err != nil {
 				if ctx.Err() != nil {
-					return attemptDeliveryResult{} // stopped mid-resolution
+					return "", "", false // stopped mid-resolution
 				}
 				abortMerge(integDir)
-				return attemptDeliveryResult{replan: "Task " + t.ID + " conflicted with an earlier slice in " +
-					strings.Join(files, ", ") + " and couldn't be reconciled (" + err.Error() +
-					"). Re-partition so NO two tasks edit the same file, or sequence the dependent one with deps."}
+				return "", "Task " + t.ID + " conflicted with an earlier slice in " + strings.Join(files, ", ") +
+					" and couldn't be reconciled (" + err.Error() + "). Re-partition so NO two tasks edit the same file, or sequence the dependent one with deps.", false
 			}
 			c.Update(id, func(r *run.Run) {
 				r.StatusLine = "Resolved a merge conflict — integrating…"
@@ -368,10 +418,98 @@ func attemptDelivery(ctx context.Context, c *Conductor, id, repo, prompt, branch
 			})
 		}
 		if ctx.Err() != nil {
-			return attemptDeliveryResult{}
+			return "", "", false
 		}
 	}
-	return attemptDeliveryResult{integDir: integDir, ok: true}
+	return integDir, "", true
+}
+
+// --- multi-repo helpers ---
+
+// repoBase is the folder basename used to match a task's `repo` field and to name
+// the per-repo worktree subdirectory. (Two folders sharing a basename is an
+// unsupported edge case — runs pass distinct folders.)
+func repoBase(path string) string { return filepath.Base(strings.TrimRight(path, "/")) }
+
+// resolveRepo maps a task to its target repo path. The task's Repo names a folder
+// (by path or basename); empty or unmatched → folders[0], the primary repo.
+func resolveRepo(t partitionTask, folders []string) string {
+	if t.Repo != "" {
+		for _, f := range folders {
+			if f == t.Repo || repoBase(f) == t.Repo || repoBase(f) == repoBase(t.Repo) {
+				return f
+			}
+		}
+	}
+	return folders[0]
+}
+
+// groupTasksByRepo buckets tasks by their resolved repo, returning the impacted
+// repos in folder order plus the per-repo task slices.
+func groupTasksByRepo(tasks []partitionTask, folders []string) ([]string, map[string][]partitionTask) {
+	byRepo := make(map[string][]partitionTask)
+	for _, t := range tasks {
+		repo := resolveRepo(t, folders)
+		byRepo[repo] = append(byRepo[repo], t)
+	}
+	order := make([]string, 0, len(byRepo))
+	for _, f := range folders {
+		if len(byRepo[f]) > 0 {
+			order = append(order, f)
+		}
+	}
+	return order, byRepo
+}
+
+// orderedRepos returns the delivered repos in folder order (stable PR ordering).
+func orderedRepos(folders []string, delivered map[string]string) []string {
+	order := make([]string, 0, len(delivered))
+	for _, f := range folders {
+		if _, ok := delivered[f]; ok {
+			order = append(order, f)
+		}
+	}
+	return order
+}
+
+// extraDirsFor returns the --add-dir context for an agent working in `repo`:
+// every OTHER folder, so it can read across repos without editing its own twice.
+func extraDirsFor(repo string, folders []string) []string {
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		if f != repo {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// firstPRErr returns the first per-repo failure reason (for the run-level error
+// when no PR opened at all).
+func firstPRErr(prs []run.PR) string {
+	for _, pr := range prs {
+		if pr.Err != "" {
+			return pr.Repo + ": " + pr.Err + "."
+		}
+	}
+	return ""
+}
+
+// prStatusLine summarizes the delivery: "Opened 2 pull requests" / "Opened 1 of 2
+// (other: …)" so a partial failure is visible, never papered over as full success.
+func prStatusLine(prs []run.PR) string {
+	opened, failed := 0, 0
+	for _, pr := range prs {
+		if pr.URL != "" {
+			opened++
+		} else {
+			failed++
+		}
+	}
+	if failed == 0 {
+		return fmt.Sprintf("Opened %d pull %s.", opened, plural(opened, "request", "requests"))
+	}
+	return fmt.Sprintf("Opened %d of %d pull requests — %d repo(s) failed: %s", opened, opened+failed, failed, firstPRErr(prs))
 }
 
 // runCoders implements every task in parallel, each in its own worktree off base.
@@ -388,7 +526,8 @@ func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string,
 				fail(ctx, c, id, t.ID, "Couldn't create the worktree for "+t.ID+": "+err.Error())
 				return
 			}
-			runAgentResilient(ctx, c, id, t.ID, coderPrompt(t), false, wtDir, extra)
+			c.putBrief(t.ID, bus.Brief{Role: t.Role, Title: t.Title, Files: t.Files, Test: t.Test, Deps: t.Deps, Repo: repoBase(repo)})
+			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra)
 			// Don't commit or claim success for a coder that failed (r.Error) or was
 			// killed mid-flight by Stop/Restart (ctx cancelled).
 			cr, _ := c.Get(id)
@@ -421,17 +560,56 @@ func branchName(runID, agentID string) string {
 	return "candyland/" + runID + "/" + agentID
 }
 
-// cleanup removes this run's worktrees and the throwaway per-agent branches
-// (best-effort). The run branch itself is left intact — it's the PR.
-func cleanup(c *Conductor, id, repo, wtRoot string) {
+// cleanup removes this run's worktrees and throwaway per-agent branches across
+// every impacted repo (best-effort). Worktrees live under wtRoot/<repoBase>/…, so
+// each repo's are pruned against that repo. The run branch is left intact — it's
+// the PR.
+func cleanup(c *Conductor, id string, folders []string, wtRoot string) {
 	ctx := context.Background()
-	entries, _ := os.ReadDir(wtRoot)
-	for _, e := range entries {
-		removeWorktree(ctx, repo, filepath.Join(wtRoot, e.Name()))
-		_, _ = git(ctx, repo, "branch", "-D", branchName(id, e.Name()))
+	for _, repo := range folders {
+		sub := filepath.Join(wtRoot, repoBase(repo))
+		entries, _ := os.ReadDir(sub)
+		for _, e := range entries {
+			removeWorktree(ctx, repo, filepath.Join(sub, e.Name()))
+			_, _ = git(ctx, repo, "branch", "-D", branchName(id, e.Name()))
+		}
+		_, _ = git(ctx, repo, "worktree", "prune")
 	}
-	_, _ = git(ctx, repo, "worktree", "prune")
 	_ = os.RemoveAll(wtRoot)
+}
+
+// crossLinkPRs adds a "Companion PRs" comment to each opened PR so the per-repo
+// PRs of one multi-repo feature review together. Best-effort — a failed edit is
+// logged, never fatal (the PRs are already open).
+func crossLinkPRs(ctx context.Context, delivered map[string]string, prs []run.PR) {
+	urls := make([]string, 0, len(prs))
+	for _, pr := range prs {
+		if pr.URL != "" {
+			urls = append(urls, pr.URL)
+		}
+	}
+	if len(urls) < 2 {
+		return // a single PR has no siblings to link
+	}
+	dirByRepo := make(map[string]string, len(delivered))
+	for repo, dir := range delivered {
+		dirByRepo[repoBase(repo)] = dir
+	}
+	for _, pr := range prs {
+		if pr.URL == "" {
+			continue
+		}
+		others := make([]string, 0, len(urls)-1)
+		for _, u := range urls {
+			if u != pr.URL {
+				others = append(others, u)
+			}
+		}
+		note := "🍬 Companion PRs (same feature, other repos): " + strings.Join(others, ", ")
+		if err := commentPR(ctx, dirByRepo[pr.Repo], pr.URL, note); err != nil {
+			log.Printf("candyland: cross-link PR %s: %v", pr.URL, err)
+		}
+	}
 }
 
 // fail records an actionable run error and blocks the named agent. It never
@@ -465,29 +643,27 @@ func prBody(r run.Run) string {
 		"\n\n🍬 Opened by [candyland](https://github.com/benitogf/candyland)."
 }
 
-func techLeadPrompt(prompt, feedback string) string {
-	p := "You are the tech lead. First, emit exactly one line beginning with `PARTITION ` " +
-		"followed by a JSON array of fork-safe tasks: " +
-		`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
-		"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
-		"Then stop. Request:\n\n" + prompt
-	if feedback != "" {
-		p += "\n\n--- PREVIOUS ATTEMPT FAILED ---\n" + feedback +
-			"\nProduce a DIFFERENT partition that avoids this: ensure no two tasks edit the same file " +
-			"(split by file/module ownership), keep each task small and self-contained, and use \"deps\" " +
-			"to sequence work that genuinely can't run in parallel."
-	}
-	return p
-}
+// The spawn prompts below are CONSTANT bootstraps. The request, task spec, and
+// any prior-attempt feedback ride in the agent's brief (brief/<agentID>, fetched
+// via the brief_get MCP tool) — never on argv, which Windows caps at ~32k. Each
+// keeps the role discriminators ("tech lead", "git merge conflict", the TEST /
+// PARTITION lines) the resilience layer and the stub tests rely on.
 
-func coderPrompt(t partitionTask) string {
-	return "Implement this fork-safe task until its defining test is green: " + t.Title +
-		". Files: " + strings.Join(t.Files, ", ") + ". Test: " + t.Test +
-		". Make the changes with tools — do not just describe them." +
-		" When you run the defining test, report the result as one line beginning with `TEST ` " +
-		`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
-		"), so the run records real verification counts."
-}
+const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line. " +
+	"Then emit exactly one line beginning with `PARTITION ` followed by a JSON array of fork-safe tasks: " +
+	`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
+	"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
+	"A single atomic task is a valid partition — when the work doesn't decompose, emit exactly one task (never treat \"one task\" as a failure). " +
+	"For small, tightly-coupled backend+frontend work, emit one task with role \"fullstack\"; split large cross-domain work into separate tasks sequenced with \"deps\". " +
+	"If the work spans more than one of the run's folders/repos, set each task's \"repo\" to the target folder's name (omit it for the primary repo); each impacted repo gets its own pull request. " +
+	"Then stop."
+
+const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role. " +
+	"Implement the task until its defining test is green: make the changes with your tools — do not just describe them. " +
+	"If your role is \"fullstack\", implement BOTH the server side and the client side of the slice and keep the API contract consistent between them. " +
+	"When you run the defining test, report the result as one line beginning with `TEST ` " +
+	`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
+	"), so the run records real verification counts."
 
 // resolveConflict has the tech lead reconcile a merge git couldn't auto-merge.
 // The conflict markers are left in the integration worktree; the tech lead edits
@@ -499,6 +675,7 @@ func coderPrompt(t partitionTask) string {
 func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t partitionTask, files, extra []string) error {
 	attempts := maxAttempts()
 	var lastErr error
+	c.putBrief("tl", bus.Brief{Role: "tech-lead", Title: "resolve merge conflict in " + t.Title, Files: files})
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -509,7 +686,7 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 				appendToAgent(r, "tl", run.Event{T: "system", Text: "merge conflict in " + strings.Join(files, ", ") + " — tech lead reconciling"}, 0)
 			}
 		})
-		out := streamOnce(ctx, c, id, "tl", reinforce(conflictPrompt(t, files), attempt, false), integDir, extra)
+		out := streamOnce(ctx, c, id, "tl", reinforce(conflictBootstrap, attempt, false), integDir, extra)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -533,13 +710,11 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 	return lastErr
 }
 
-func conflictPrompt(t partitionTask, files []string) string {
-	return "You are resolving a git merge conflict as the tech lead integrating parallel work into one branch. " +
-		"Merging task \"" + t.Title + "\" produced conflicts in: " + strings.Join(files, ", ") +
-		". Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
-		"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
-		"Do not ask questions and do not leave any conflict unresolved."
-}
+const conflictBootstrap = "You are the tech lead resolving a git merge conflict while integrating parallel work into one branch. " +
+	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
+	"Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
+	"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
+	"Do not ask questions and do not leave any conflict unresolved."
 
 // mapAgentLine streams one stream-json line into the agent's live ooo state and
 // returns the signals the resilience layer uses to judge compliance: any parsed
@@ -597,11 +772,23 @@ func parsePartition(text string) []partitionTask {
 			// worktree root or break ref creation, and ids stay consistent with the
 			// deps that reference them. Realistic ids (a, backend, csv-export) are
 			// unchanged by slug.
+			seen := make(map[string]bool, len(tasks))
 			for i := range tasks {
 				tasks[i].ID = slug(tasks[i].ID)
 				for j := range tasks[i].Deps {
 					tasks[i].Deps[j] = slug(tasks[i].Deps[j])
 				}
+				// Ensure ids are UNIQUE: a task id keys the brief, the bus agent, the
+				// worktree dir, and the git branch — a collision (more likely now that
+				// one partition spans multiple repos) would silently overwrite the
+				// first. Suffix duplicates; deps still resolve to the first occurrence
+				// (the bus auto-unblock is a best-effort hint, not a hard dependency).
+				base, uid := tasks[i].ID, tasks[i].ID
+				for k := 2; seen[uid]; k++ {
+					uid = fmt.Sprintf("%s-%d", base, k)
+				}
+				tasks[i].ID = uid
+				seen[uid] = true
 			}
 			return tasks
 		}

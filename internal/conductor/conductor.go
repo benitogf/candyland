@@ -51,9 +51,9 @@ type Conductor struct {
 	// point a run at a throwaway git repo.
 	folders func(r run.Run) ([]string, error)
 	// bus is the coordination back-channel (Realization B), set by StartBus.
-	// nil when no bus is wired (e.g. serverless tests).
-	bus       *bus.Bus
-	busAgents map[string]bool // agent ids whose inbox filters are registered
+	// nil when no bus is wired (e.g. serverless tests). Its filters are all
+	// registered once, globally, in StartBus — there is no per-agent registration.
+	bus *bus.Bus
 }
 
 // New builds a conductor bound to an ooo server. Every run is driven by the real
@@ -61,9 +61,8 @@ type Conductor struct {
 // run fails honestly (see resilience.go) rather than falling back to a demo.
 func New(server *ooo.Server) *Conductor {
 	c := &Conductor{
-		server:    server,
-		runs:      map[string]*runtime{},
-		busAgents: map[string]bool{},
+		server: server,
+		runs:   map[string]*runtime{},
 	}
 	c.folders = runFolders
 	return c

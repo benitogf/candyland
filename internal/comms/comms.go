@@ -78,6 +78,18 @@ func (c *Client) Inbox() ([]bus.Envelope, error) {
 	return out, nil
 }
 
+// BriefGet returns this agent's brief — the initial context (the plan for the
+// tech lead; the task spec for a coder) the orchestrator wrote to brief/<self>
+// before spawn. The agent reads it once via the brief_get tool instead of
+// receiving the plan on its command line. Errors if no brief was written.
+func (c *Client) BriefGet() (bus.Brief, error) {
+	m, err := io.RemoteGet[bus.Brief](c.cfg, bus.BriefKey(c.self))
+	if err != nil {
+		return bus.Brief{}, err
+	}
+	return m.Data, nil
+}
+
 // GraphRead returns the open task-graph nodes (the server filters out done).
 func (c *Client) GraphRead() ([]bus.GraphNode, error) {
 	metas, err := io.RemoteGetList[bus.GraphNode](c.cfg, bus.GraphNodesGlob)
@@ -154,6 +166,17 @@ func RegisterTools(server *mcp.Server, c *Client) {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "brief_get",
+		Description: "Return this agent's brief — its task/plan context. Call this FIRST, before doing any work; it carries the instructions that used to be passed on the command line.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
+		br, err := c.BriefGet()
+		if err != nil {
+			return errResult("brief_get: " + err.Error()), nil, nil
+		}
+		return textResult(formatBrief(br)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "graph_read",
 		Description: "Return the open (non-done) task-graph nodes — the current work to do.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
@@ -183,6 +206,41 @@ func RegisterTools(server *mcp.Server, c *Client) {
 		}
 		return textResult("proposed"), nil, nil
 	})
+}
+
+// formatBrief renders a brief as the readable text the agent sees from brief_get.
+// The tech lead's brief carries the plan (Prompt); a coder's carries the task
+// fields. Empty fields are omitted so each role sees only what's relevant.
+func formatBrief(b bus.Brief) string {
+	var sb strings.Builder
+	w := func(label, val string) {
+		if val != "" {
+			fmt.Fprintf(&sb, "%s: %s\n", label, val)
+		}
+	}
+	w("role", b.Role)
+	w("repo", b.Repo)
+	w("task", b.Title)
+	if len(b.Files) > 0 {
+		w("files", strings.Join(b.Files, ", "))
+	}
+	w("test", b.Test)
+	if len(b.Deps) > 0 {
+		w("deps", strings.Join(b.Deps, ", "))
+	}
+	if b.Attempt > 1 {
+		fmt.Fprintf(&sb, "attempt: %d\n", b.Attempt)
+	}
+	if b.Feedback != "" {
+		fmt.Fprintf(&sb, "previous attempt failed — avoid this: %s\n", b.Feedback)
+	}
+	if b.Prompt != "" {
+		fmt.Fprintf(&sb, "\n%s", b.Prompt)
+	}
+	if s := strings.TrimSpace(sb.String()); s != "" {
+		return s
+	}
+	return "(no brief)"
 }
 
 func textResult(s string) *mcp.CallToolResult {

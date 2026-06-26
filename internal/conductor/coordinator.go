@@ -15,11 +15,12 @@ import (
 const OrchestratorID = "conductor"
 
 // StartBus registers the coordination bus (Realization B) on the conductor's
-// ooo server — the task-graph + cursor filters and the coordination reactor —
-// and stores it so per-agent inboxes can be registered at spawn. Must be called
-// before server.Start (filters register before the listener binds). The bus is
-// a back-channel beside the stdout loop, which is untouched. No-op without a
-// server (serverless tests).
+// ooo server — the task-graph, brief, inbox, and cursor filters plus the
+// coordination reactor — ALL of them here, before server.Start (filters must
+// register before the listener binds, and never while the server is serving:
+// mutating the filter set from a spawn goroutine raced ooo's broadcast loop).
+// The bus is a back-channel beside the stdout loop, which is untouched. No-op
+// without a server (serverless tests).
 func (c *Conductor) StartBus() {
 	if c.server == nil {
 		return
@@ -51,11 +52,12 @@ type mcpConfigFile struct {
 	MCPServers map[string]mcpServerSpec `json:"mcpServers"`
 }
 
-// busMCPConfig registers the agent's inbox (once) and writes a per-agent
-// --mcp-config that launches `candyland comms-mcp`, wiring the coder to the
-// conductor's bus as agentID. Returns the config path, or "" when no bus is
-// wired (no flag is added then). The conductor stays pure Go — it only spawns
-// the process and maps its stdout.
+// busMCPConfig writes a per-agent --mcp-config that launches `candyland
+// comms-mcp`, wiring the coder to the conductor's bus as agentID. Returns the
+// config path, or "" when no bus is wired (no flag is added then). The inbox
+// filters are already registered globally at StartBus, so there is no per-agent
+// registration here. The conductor stays pure Go — it only spawns the process
+// and maps its stdout.
 func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	c.mu.Lock()
 	b := c.bus
@@ -63,7 +65,9 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	if b == nil || c.server == nil || c.server.Address == "" {
 		return ""
 	}
-	c.registerBusAgent(agentID)
+	// No per-agent filter registration here: the inbox filters are registered
+	// once, globally, in StartBus (before the server serves). Registering them at
+	// spawn raced ooo's broadcast loop.
 
 	self, err := os.Executable()
 	if err != nil {
@@ -124,6 +128,20 @@ func (c *Conductor) publishGraphNodes(tasks []partitionTask) {
 	}
 }
 
+// putBrief writes an agent's brief to the bus before it is spawned, so the agent
+// fetches its context via brief_get instead of receiving the plan/task on argv.
+// No-op without a bus (serverless tests) — the stub claude needs no brief, and a
+// real run always has the bus up (StartBus).
+func (c *Conductor) putBrief(agentID string, br bus.Brief) {
+	c.mu.Lock()
+	b := c.bus
+	c.mu.Unlock()
+	if b == nil || c.server == nil {
+		return
+	}
+	_ = b.PutBrief(c.server, agentID, br)
+}
+
 // escalateOpenNodes marks every still-open node blocked — the terminal
 // disposition of the K=3 escalation cap when the conductor gives up on a run
 // (no further retries, so no quota thrash). No-op without a bus.
@@ -139,15 +157,4 @@ func (c *Conductor) escalateOpenNodes(reason string) {
 			_ = b.Escalate(c.server, n.ID, reason)
 		}
 	}
-}
-
-// registerBusAgent registers an agent's inbox filters exactly once.
-func (c *Conductor) registerBusAgent(agentID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.bus == nil || c.busAgents[agentID] {
-		return
-	}
-	c.bus.RegisterAgent(c.server, agentID)
-	c.busAgents[agentID] = true
 }

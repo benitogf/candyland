@@ -181,6 +181,14 @@ func pushBranch(ctx context.Context, repo, branch string) error {
 
 // openPR opens a pull request for the pushed branch via gh and returns its URL
 // (gh prints the URL on stdout). base is the branch the run started from.
+// commentPR adds a comment to an already-open PR (used to cross-link the sibling
+// PRs of a multi-repo run). The cwd repo is the integration worktree the PR was
+// opened from. Best-effort: the caller treats a failure as non-fatal.
+func commentPR(ctx context.Context, repo, prURL, body string) error {
+	_, err := runCmd(ctx, repo, ghBin(), "pr", "comment", prURL, "--body", body)
+	return err
+}
+
 func openPR(ctx context.Context, repo, base, head, title, body string) (string, error) {
 	out, err := runCmd(ctx, repo, ghBin(), "pr", "create",
 		"--base", base, "--head", head, "--title", title, "--body", body)

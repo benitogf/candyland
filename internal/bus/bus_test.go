@@ -50,6 +50,31 @@ func TestInboxWriteFilterSeqAndAddressing(t *testing.T) {
 	}
 }
 
+// Brief write gate: only the orchestrator may write an agent's brief (it is
+// conductor-authored context), and the read filter passes a brief through so
+// the agent can fetch it. This is what lets the plan ride the bus, not argv.
+func TestBriefWriteFilterOrchestratorOnly(t *testing.T) {
+	b := NewBus("conductor", nil)
+	wf := b.BriefWriteFilter()
+
+	out, err := wf(BriefKey("backend"), mustJSON(t, Brief{From: "conductor", To: "backend", Title: "x"}))
+	if err != nil {
+		t.Errorf("orchestrator brief write rejected: %v", err)
+	}
+	var got Brief
+	if json.Unmarshal(out, &got); got.Title != "x" {
+		t.Errorf("brief not round-tripped through write filter: %+v", got)
+	}
+	if _, err := wf(BriefKey("backend"), mustJSON(t, Brief{From: "backend", To: "backend"})); err == nil {
+		t.Error("expected rejection: a worker may not write its own brief (orchestrator-only)")
+	}
+
+	rf := b.BriefReadObjectFilter()
+	if _, err := rf(BriefKey("backend"), obj(t, Brief{To: "backend"})); err != nil {
+		t.Errorf("brief read rejected: %v", err)
+	}
+}
+
 // CPB3 (graph half): only the orchestrator may write the task ledger.
 func TestGraphNodesWriteFilterOrchestratorOnly(t *testing.T) {
 	b := NewBus("tech-lead", nil)

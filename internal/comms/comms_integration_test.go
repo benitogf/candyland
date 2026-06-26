@@ -7,6 +7,7 @@ import (
 
 	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/ooo"
+	"github.com/benitogf/ooo/io"
 	"github.com/benitogf/ooo/storage"
 	"github.com/gorilla/mux"
 )
@@ -35,14 +36,57 @@ func startBus(t *testing.T, orchestrator string, agents ...string) (string, func
 	// so this also proves every bus path has a registered filter.
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	b := bus.NewBus(orchestrator, bus.CursorReader(srv))
-	b.RegisterGlobal(srv)
-	for _, a := range agents {
-		b.RegisterAgent(srv, a)
-	}
+	b.RegisterGlobal(srv) // registers every filter (incl. all inboxes) before Start
+	_ = agents
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatalf("start bus: %v", err)
 	}
 	return srv.Address, func() { srv.Close(os.Interrupt) }
+}
+
+// Brief round-trip: the orchestrator writes a coder's brief in-process (PutBrief),
+// and the coder reads it over HTTP via brief_get — the path that replaces passing
+// the plan/task on the claude command line. Proves the brief/* write+read filters
+// are registered (Static deny-by-default would otherwise reject the GET).
+func TestBriefRoundTrip(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	b := bus.NewBus("conductor", bus.CursorReader(srv))
+	b.RegisterGlobal(srv)
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatalf("start bus: %v", err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	// Orchestrator writes the coder's brief before it would be spawned.
+	want := bus.Brief{Role: "fullstack", Repo: "/repo", Title: "export → CSV",
+		Files: []string{"api/reports.go", "ui/Export.tsx"}, Test: "api/export_test.go", Deps: []string{"tests"}}
+	if err := b.PutBrief(srv, "backend", want); err != nil {
+		t.Fatalf("PutBrief: %v", err)
+	}
+
+	// The coder reads its brief over the wire.
+	coder := NewClient(srv.Address, "backend", "conductor")
+	got, err := coder.BriefGet()
+	if err != nil {
+		t.Fatalf("BriefGet: %v", err)
+	}
+	if got.Title != want.Title || got.Role != want.Role || got.Repo != want.Repo ||
+		got.Test != want.Test || strings.Join(got.Files, ",") != strings.Join(want.Files, ",") {
+		t.Fatalf("brief not round-tripped: got %+v want %+v", got, want)
+	}
+	if got.From != "conductor" || got.To != "backend" {
+		t.Errorf("PutBrief should stamp From=conductor To=backend, got From=%q To=%q", got.From, got.To)
+	}
+	// The rendered form (what the agent sees) carries the task, not an empty blob.
+	if rendered := formatBrief(got); !strings.Contains(rendered, "export → CSV") {
+		t.Errorf("formatBrief dropped the task: %q", rendered)
+	}
+
+	// A worker cannot forge another agent's brief — the orchestrator-only write gate.
+	if err := io.RemoteSet(coder.cfg, bus.BriefKey("victim"), bus.Brief{From: "backend", To: "victim", Title: "evil"}); err == nil {
+		t.Error("a worker writing a brief (From != orchestrator) must be rejected")
+	}
 }
 
 // CPB1 + CPB2 (inbox): A sends to B; B's inbox returns it over io.Remote*, and a
