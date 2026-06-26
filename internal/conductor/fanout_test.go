@@ -113,6 +113,107 @@ func TestSpawnArgvCarriesNoPlanBody(t *testing.T) {
 	}
 }
 
+// A multi-repo run: the tech lead partitions work across TWO repos (task a→alpha,
+// task b→beta via the `repo` field). candyland delivers ONE PR PER IMPACTED REPO —
+// each repo's task lands on its own run branch and opens its own PR.
+const multiRepoClaude = `#!/usr/bin/env bash
+prompt="$2"
+brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
+if [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"alpha task\",\"files\":[\"a.txt\"],\"test\":\"t\",\"repo\":\"alpha\"},{\"id\":\"b\",\"title\":\"beta task\",\"files\":[\"b.txt\"],\"test\":\"t\",\"repo\":\"beta\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+else
+  file=$(printf '%s' "$brief" | sed -n 's/.*"files":\["\([^"]*\)".*/\1/p')
+  [ -z "$file" ] && file="fallback_$$.txt"
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"'"$file"'"}}]}}'
+  echo "by $$" > "$file"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+fi
+`
+
+// A stub gh that echoes a per-repo PR URL (derived from the integration worktree's
+// repo dir), so two repos produce two distinct PRs.
+const perRepoGh = "#!/usr/bin/env bash\nrepo=$(basename \"$(dirname \"$PWD\")\")\necho \"https://github.com/example/$repo/pull/7\"\n"
+
+func writeGh(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CANDYLAND_GH", gh)
+}
+
+func TestMultiRepoOnePRPerImpactedRepo(t *testing.T) {
+	c, repos := multiRepoConductor(t, multiRepoClaude, "alpha", "beta")
+	writeGh(t, perRepoGh)
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "ship across two repos"})
+	c.Begin(id, nil)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" || r.Error != "" {
+		t.Fatalf("multi-repo run did not finish cleanly: status=%q error=%q", r.Status, r.Error)
+	}
+	if len(r.PRs) != 2 {
+		t.Fatalf("a 2-repo feature must open one PR per impacted repo, got %d: %+v", len(r.PRs), r.PRs)
+	}
+	byRepo := map[string]run.PR{}
+	for _, pr := range r.PRs {
+		byRepo[pr.Repo] = pr
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		pr, ok := byRepo[name]
+		if !ok || pr.URL == "" || pr.Err != "" {
+			t.Errorf("repo %q did not get an opened PR: %+v", name, pr)
+		}
+	}
+	if byRepo["alpha"].URL == byRepo["beta"].URL {
+		t.Errorf("the two repos must open distinct PRs, both = %q", byRepo["alpha"].URL)
+	}
+	// Each repo's task file landed on its own run branch (pushed to origin).
+	for _, want := range []struct{ repo, file string }{{repos[0], "a.txt"}, {repos[1], "b.txt"}} {
+		out, err := exec.Command("git", "-C", want.repo, "show", r.Branch+":"+want.file).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s missing on %s's run branch: %v\n%s", want.file, filepath.Base(want.repo), err, out)
+		}
+	}
+}
+
+// Partial-failure isolation: when ONE repo's PR can't open, the OTHER still ships
+// and the failure is surfaced — never a falsely-green run, never aborting the rest.
+func TestMultiRepoPartialFailureIsolation(t *testing.T) {
+	c, _ := multiRepoConductor(t, multiRepoClaude, "alpha", "beta")
+	// gh fails only for beta (its integration worktree path contains /beta/).
+	writeGh(t, "#!/usr/bin/env bash\nif [[ \"$PWD\" == *\"/beta/\"* ]]; then echo 'gh: beta not authenticated' >&2; exit 1; fi\necho 'https://github.com/example/alpha/pull/7'\n")
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "ship across two repos"})
+	c.Begin(id, nil)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" {
+		t.Fatalf("run did not finish: status=%q error=%q", r.Status, r.Error)
+	}
+	if r.Error != "" {
+		t.Fatalf("one repo failing must NOT fail the whole run (the other shipped): %q", r.Error)
+	}
+	if len(r.PRs) != 2 {
+		t.Fatalf("expected a PR record per repo, got %d: %+v", len(r.PRs), r.PRs)
+	}
+	byRepo := map[string]run.PR{}
+	for _, pr := range r.PRs {
+		byRepo[pr.Repo] = pr
+	}
+	if byRepo["alpha"].URL == "" {
+		t.Errorf("alpha should have shipped despite beta failing: %+v", byRepo["alpha"])
+	}
+	if byRepo["beta"].Err == "" || byRepo["beta"].URL != "" {
+		t.Errorf("beta's failure must be surfaced (Err set, no URL): %+v", byRepo["beta"])
+	}
+	if r.PrURL != byRepo["alpha"].URL {
+		t.Errorf("PrURL should mirror the first opened PR (alpha), got %q", r.PrURL)
+	}
+}
+
 func TestClaudeFanOut(t *testing.T) {
 	c, repo := deliveryConductor(t, fanOutClaude)
 	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})

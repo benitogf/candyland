@@ -44,11 +44,15 @@ func writeFakeGh(t *testing.T) {
 // newGitRepo creates a throwaway git repo (with an initial commit and a local
 // bare `origin` to push to), so the executor's real git/worktree/push work runs
 // against a real repository.
-func newGitRepo(t *testing.T) string {
+func newGitRepo(t *testing.T) string { return newGitRepoNamed(t, "repo") }
+
+// newGitRepoNamed creates a throwaway git repo with a controlled basename (the
+// name a multi-repo task's `repo` field matches) and its own bare origin.
+func newGitRepoNamed(t *testing.T, name string) string {
 	t.Helper()
 	root := t.TempDir()
-	repo := filepath.Join(root, "repo")
-	bare := filepath.Join(root, "origin.git")
+	repo := filepath.Join(root, name)
+	bare := filepath.Join(root, name+"-origin.git")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +128,54 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 		}
 	})
 	return c, repo
+}
+
+// multiRepoConductor wires N real throwaway repos (with the given basenames, the
+// names a task's `repo` field matches), a stub claude, and a real bus, returning
+// a conductor whose runs span all of them. The caller installs its own stub gh
+// (CANDYLAND_GH) before creating the run, so it can make one repo's PR fail.
+func multiRepoConductor(t *testing.T, claudeScript string, repoNames ...string) (*Conductor, []string) {
+	t.Helper()
+	repos := make([]string, len(repoNames))
+	for i, n := range repoNames {
+		repos[i] = newGitRepoNamed(t, n)
+	}
+	writeFakeClaude(t, claudeScript)
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatalf("start bus: %v", err)
+	}
+	t.Cleanup(func() { srv.Close(os.Interrupt) })
+	c.folders = func(run.Run) ([]string, error) { return repos, nil }
+	t.Cleanup(func() {
+		c.mu.Lock()
+		ids := make([]string, 0, len(c.runs))
+		for id := range c.runs {
+			ids = append(ids, id)
+		}
+		c.mu.Unlock()
+		for _, id := range ids {
+			c.Cancel(id)
+		}
+		wtParent := filepath.Join(os.TempDir(), "candyland-wt")
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			pending := false
+			for _, id := range ids {
+				if _, err := os.Stat(filepath.Join(wtParent, id)); err == nil {
+					pending = true
+					break
+				}
+			}
+			if !pending {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+	return c, repos
 }
 
 func waitFor(t *testing.T, c *Conductor, id string, until func(run.Run) bool, d time.Duration) run.Run {

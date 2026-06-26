@@ -39,6 +39,15 @@ type Task struct {
 	Deps  []string `json:"deps"`
 }
 
+// PR is one opened (or attempted) pull request. A run that spans multiple repos
+// opens one per impacted repo; Err is set instead of URL when that repo's push or
+// PR failed (partial-failure isolation — one repo's failure doesn't fail the rest).
+type PR struct {
+	Repo string `json:"repo"`          // the repo folder this PR belongs to
+	URL  string `json:"url,omitempty"` // set when the PR opened
+	Err  string `json:"err,omitempty"` // set when push/PR failed for this repo
+}
+
 // Run is the full state of a run — the object stored at ooo key runs/<id>.
 type Run struct {
 	ID           string   `json:"id"`
@@ -53,7 +62,8 @@ type Run struct {
 	Progress     float64  `json:"progress"`           // 0..1
 	StatusLine   string   `json:"statusLine,omitempty"`
 	Error        string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
-	PrURL        string   `json:"prUrl,omitempty"`
+	PrURL        string   `json:"prUrl,omitempty"` // the primary PR (folders[0]); first opened — kept for back-compat
+	PRs          []PR     `json:"prs,omitempty"`   // one per impacted repo (multi-repo runs); PrURL mirrors the first
 	TokensUsed   int      `json:"tokensUsed"`
 	TokensBudget int      `json:"tokensBudget"`
 	CostUsd      float64  `json:"costUsd"`
