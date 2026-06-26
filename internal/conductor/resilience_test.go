@@ -140,6 +140,38 @@ func waitFor(t *testing.T, c *Conductor, id string, until func(run.Run) bool, d 
 	return r
 }
 
+// A single atomic task is a VALID partition — not a failure. The only tech-lead
+// partition failure is emitting nothing parseable (so a small/atomic task, or one
+// fullstack task spanning both domains, completes instead of being rejected).
+func TestCompliantAtomicSingleTaskIsValid(t *testing.T) {
+	ok, why := compliant(attemptOutcome{partition: []partitionTask{{ID: "a", Title: "the whole thing", Role: "fullstack"}}}, true)
+	if !ok {
+		t.Errorf("a one-task partition must be compliant (atomic is valid), got: %s", why)
+	}
+	if ok, why := compliant(attemptOutcome{partition: nil}, true); ok || why == "" {
+		t.Errorf("an empty partition must be the (only) tech-lead failure, got ok=%v why=%q", ok, why)
+	}
+}
+
+// The spawn prompts are constant bootstraps that encode the role contract (atomic
+// + fullstack) and fetch context via brief_get — they must never carry a plan body.
+func TestBootstrapsCarryRoleContractNotContext(t *testing.T) {
+	if !strings.Contains(techLeadBootstrap, "atomic") || !strings.Contains(techLeadBootstrap, "fullstack") {
+		t.Error("tech-lead bootstrap must bless atomic + fullstack partitions")
+	}
+	if !strings.Contains(coderBootstrap, "fullstack") || !strings.Contains(coderBootstrap, "brief_get") {
+		t.Error("coder bootstrap must be role-aware (fullstack) and fetch its brief")
+	}
+	for name, p := range map[string]string{"techLead": techLeadBootstrap, "coder": coderBootstrap, "conflict": conflictBootstrap} {
+		if !strings.Contains(p, "brief_get") {
+			t.Errorf("%s bootstrap must instruct the agent to call brief_get", name)
+		}
+		if len(p) > 2000 {
+			t.Errorf("%s bootstrap is %d chars — must be a small constant, not carry context", name, len(p))
+		}
+	}
+}
+
 // A coder that defers/asks a question on the first try (base prompt) and only
 // does real work once the prompt has been hardened with the autonomy reminder.
 // Exercises the non-compliance → retry-with-firmer-prompt → success path.
