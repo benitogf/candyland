@@ -17,7 +17,7 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
-import { useRuns, useWorkspaces } from '../data/ooo'
+import { useRuns } from '../data/ooo'
 import { ModeBadge } from '../components/StatusBits'
 
 // The full history of every run, in any state — including ones cleared from the
@@ -33,13 +33,11 @@ const statusText = (r) => {
 const Tasks = () => {
     const navigate = useNavigate()
     const runs = useRuns() // all runs, including archived — this is the history
-    const workspaces = useWorkspaces() // all, including soft-deleted (still shown here, struck-through)
-    const wsFor = (id) => workspaces.find((w) => w.id === id)
-    const wsLabel = (id) => wsFor(id)?.label || id || '—'
+    const folderOf = (r) => r.folders?.[0] || '—'
     const [query, setQuery] = useState('')
 
     const needle = query.trim().toLowerCase()
-    const matches = (r) => !needle || [runLabel(r), r.status, wsLabel(r.workspace), r.prompt, r.branch].some((s) => String(s || '').toLowerCase().includes(needle))
+    const matches = (r) => !needle || [runLabel(r), r.status, folderOf(r), r.prompt, r.branch].some((s) => String(s || '').toLowerCase().includes(needle))
     const filtered = runs.filter(matches)
 
     return (
@@ -48,7 +46,7 @@ const Tasks = () => {
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Every run, in any state — including ones cleared from the dashboard.</Typography>
 
             <TextField
-                size="small" fullWidth placeholder="Search by title, prompt, workspace, status…"
+                size="small" fullWidth placeholder="Search by title, prompt, folder, status…"
                 value={query} onChange={(e) => setQuery(e.target.value)} sx={{ mb: 2, maxWidth: 520 }}
                 InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
             />
@@ -60,7 +58,7 @@ const Tasks = () => {
                             <TableCell sx={{ fontWeight: 700 }}>Task</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>Mode</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Workspace</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Folder</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>PR</TableCell>
                         </TableRow>
                     </TableHead>
@@ -88,14 +86,10 @@ const Tasks = () => {
                                 <TableCell>
                                     <Typography
                                         variant="body2" component="span"
-                                        title={wsFor(r.workspace)?.deleted ? 'workspace deleted' : undefined}
-                                        sx={{
-                                            color: 'text.secondary',
-                                            textDecoration: wsFor(r.workspace)?.deleted ? 'line-through' : 'none',
-                                            opacity: wsFor(r.workspace)?.deleted ? 0.7 : 1,
-                                        }}
+                                        title={folderOf(r)}
+                                        sx={{ color: 'text.secondary', fontFamily: 'monospace', fontSize: 12, maxWidth: 260, display: 'inline-block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}
                                     >
-                                        {wsLabel(r.workspace)}
+                                        {folderOf(r)}
                                     </Typography>
                                 </TableCell>
                                 <TableCell onClick={(e) => e.stopPropagation()}>

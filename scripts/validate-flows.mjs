@@ -1,11 +1,14 @@
 // Browser smoke against the REAL binary (Go backend + embedded SPA), wired to a
 // stub claude + stub gh + a throwaway git repo so it's deterministic and spends
-// no Anthropic tokens. It proves the things that were actually broken when you
-// opened the app:
-//   1. you can create a workspace in the UI and it appears in the list (live);
-//   2. the new workspace is selectable in the New Run wizard;
+// no Anthropic tokens. candyland is a sidecar now: runs are launched from the
+// editor (the candyland MCP) or, secondarily, from the dashboard wizard by
+// naming the repo folder. This proves the secondary web flow + the lifecycle:
+//   1. the dashboard leads with the editor-launch hint + a secondary "Start one here";
+//   2. the wizard takes a repository folder (typed) + a prompt — no workspace concept;
 //   3. starting a run shows the planning Q&A (fetched from the backend);
-//   4. you can CANCEL during the questions and land back on the dashboard.
+//   4. you can CANCEL during the questions and land back on the dashboard;
+//   5. a cleared run stays in the Tasks history;
+//   6. a finished run offers Edit, which re-opens planning.
 // Runs on non-default ports — the binary injects its API port into the SPA — so
 // it never collides with a candyland already running on 8888.
 // Usage: npm run build && go build -o /tmp/candyland . && CANDYLAND_BIN=/tmp/candyland node scripts/validate-flows.mjs
@@ -38,8 +41,8 @@ writeFileSync(join(repo, 'README.md'), '# ui\n'); git(repo, 'add', '-A'); git(re
 git(repo, 'init', '--bare', '-q', join(root, 'origin.git')); git(repo, 'remote', 'add', 'origin', join(root, 'origin.git'))
 const stubClaude = join(root, 'claude')
 // planner → a generated question (proves the Q&A is from a real call); tech lead →
-// a one-task partition; coder → a real file write. Lets a run complete so the
-// finished-run controls (Edit) can be exercised.
+// a one-task partition; coder → a real file write + a TEST line. Lets a run
+// complete so the finished-run controls (Edit) and the audit can be exercised.
 writeFileSync(stubClaude, `#!/usr/bin/env bash
 prompt="$2"
 if [[ "$prompt" == *"clarifying questions"* ]]; then
@@ -50,6 +53,7 @@ elif [[ "$prompt" == *"tech lead"* ]]; then
 else
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
   echo "work $$" > "candyland_$$.txt"
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"TEST {\\"pass\\":1,\\"fail\\":0}"}]}}'
   echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
 fi
 `)
@@ -57,8 +61,6 @@ chmodSync(stubClaude, 0o755)
 const stubGh = join(root, 'gh')
 writeFileSync(stubGh, "#!/usr/bin/env bash\necho 'https://github.com/example/repo/pull/7'\n"); chmodSync(stubGh, 0o755)
 
-// Point the backend's HOME at our temp root so the folder picker (which starts
-// at home) reaches the test repo in one click.
 const srv = spawn(bin, ['--port', API_PORT, '--spaPort', SPA_PORT, '--dataPath', join(root, 'data')], {
     stdio: 'ignore',
     env: { ...process.env, HOME: root, CANDYLAND_CLAUDE: stubClaude, CANDYLAND_GH: stubGh },
@@ -74,36 +76,27 @@ const p = await browser.newPage({ viewport: { width: 1280, height: 900 } })
 const pageErrors = []
 p.on('pageerror', (e) => { pageErrors.push(e.message); console.log('PAGEERROR:', e.message) })
 p.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE.ERR:', m.text().slice(0, 300)) })
-try {
-    await p.goto(UI, { waitUntil: 'networkidle' })
-    await p.getByRole('button', { name: 'Start a new run' }).first().click()
+
+// Open the secondary web wizard and fill it (mode → repo folder → prompt step).
+const openWizard = async () => {
+    await p.getByRole('button', { name: 'Start one here' }).first().click()
     const wiz = p.getByRole('dialog')
     await wiz.getByText('Non-developer', { exact: true }).click()
     await wiz.getByRole('button', { name: 'Next' }).click()
+    await wiz.getByRole('heading', { name: 'Which repository?' }).waitFor({ state: 'visible', timeout: 6000 })
+    await wiz.getByLabel('Repository folder').fill(repo)
+    await wiz.getByRole('button', { name: 'Next' }).click()
+    return wiz
+}
 
-    // Workspace step: none yet → open the manager and create one.
-    check('wizard shows the empty workspace state', await p.getByText(/No workspaces yet/).isVisible())
-    await p.getByRole('button', { name: /New \/ manage workspaces/ }).click()
-    await p.getByRole('textbox', { name: 'Name' }).fill('UI Repo')
-    // Pick the folder via the browser (no typing): open the picker (starts at the
-    // backend's HOME = our temp root), descend into the repo, add it.
-    await p.getByRole('button', { name: /Browse for a folder/ }).click()
-    const picker = p.getByRole('dialog').last()
-    await picker.getByText('repo', { exact: true }).click()
-    await picker.getByRole('button', { name: /Add this folder/ }).click()
-    check('picked a real folder via the browser (no typed path)', await p.getByText(repo).first().isVisible())
-    await p.getByRole('button', { name: 'Create workspace' }).click()
-    // The created workspace shows up live in the saved list (no reload).
-    await p.getByText('UI Repo').first().waitFor({ state: 'visible', timeout: 6000 })
-    check('created workspace appears live in the list', true)
-    // Close the manager (the topmost dialog) → back to the wizard.
-    await p.getByRole('dialog').last().getByRole('button', { name: 'close' }).click()
-    await p.getByRole('heading', { name: 'Which workspace?' }).waitFor({ state: 'visible', timeout: 6000 })
+try {
+    await p.goto(UI, { waitUntil: 'networkidle' })
 
-    // It's selectable in the wizard.
-    await p.getByText('UI Repo').first().click()
-    await p.getByRole('button', { name: 'Next' }).click()
-    check('created workspace is selectable in the wizard', true)
+    // The dashboard leads with the editor-launch story (candyland is a sidecar).
+    check('dashboard shows the editor-launch hint', await p.getByText(/Launch from your editor/i).first().isVisible())
+
+    await openWizard()
+    check('wizard takes a typed repository folder (no workspace concept)', true)
 
     // Prompt → start the run.
     await p.getByPlaceholder(/Add a CSV export/).fill('Let people download their reports as a CSV')
@@ -113,9 +106,9 @@ try {
     await p.getByText('Export all rows or the filtered view?').waitFor({ state: 'visible', timeout: 8000 })
     check('planning question generated from the prompt', true)
 
-    // Cancel DURING the questions → back to the dashboard (the thing that was impossible).
+    // Cancel DURING the questions → back to the dashboard.
     await p.getByRole('button', { name: /Cancel run/ }).click()
-    await p.getByRole('button', { name: 'Start a new run' }).first().waitFor({ state: 'visible', timeout: 8000 })
+    await p.getByRole('button', { name: 'Start one here' }).first().waitFor({ state: 'visible', timeout: 8000 })
     check('can cancel during the planning questions', true)
 
     // The cancelled run is KEPT (history), shown on the dashboard as Cancelled.
@@ -133,14 +126,8 @@ try {
     check('cleared run is still in the Tasks history', await p.getByText('Cancelled').first().isVisible())
 
     // ── Edit a finished run: distinct from restart, it re-opens planning. ──
-    // Start a fresh run and let it complete (answer the one generated question).
     await p.getByRole('button', { name: 'Dashboard' }).click()
-    await p.getByRole('button', { name: 'Start a new run' }).first().click()
-    const wiz2 = p.getByRole('dialog')
-    await wiz2.getByText('Non-developer', { exact: true }).click()
-    await wiz2.getByRole('button', { name: 'Next' }).click()
-    await p.getByText('UI Repo').first().click()
-    await p.getByRole('button', { name: 'Next' }).click()
+    await openWizard()
     await p.getByPlaceholder(/Add a CSV export/).fill('first version of the request')
     await p.getByRole('button', { name: 'Start run' }).click()
     await p.getByText('Export all rows or the filtered view?').waitFor({ state: 'visible', timeout: 8000 })

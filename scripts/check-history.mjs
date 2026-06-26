@@ -24,7 +24,7 @@ const run = async (id) => (await j(`/runs/${id}`)).body?.data
 for (let i = 0; i < 50; i++) { try { if ((await fetch(API + '/api/system')).ok) break } catch { /* wait */ } await new Promise((r) => setTimeout(r, 200)) }
 
 try {
-    const created = await j('/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'developer', workspace: 'ws', prompt: 'history test' }) })
+    const created = await j('/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'developer', folders: ['/tmp'], prompt: 'history test' }) })
     const id = created.body?.id
     check('run created (planning)', (await run(id))?.status === 'planning', id)
 

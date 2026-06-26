@@ -18,7 +18,8 @@ import (
 
 // Client is one agent's view of the bus: a remote ooo config pointing at the
 // conductor + the agent's own id (the From on everything it sends, the inbox it
-// reads). orchestrator is the id permitted to graph_commit.
+// reads). orchestrator is the id permitted to commit task-graph nodes (the
+// server-gated single writer).
 type Client struct {
 	cfg          io.RemoteConfig
 	self         string
@@ -98,10 +99,12 @@ func (c *Client) GraphPropose(mutation string) error {
 	})
 }
 
-// GraphCommit writes a node to the durable ledger. Only the orchestrator may do
-// this: it fails fast client-side when self isn't the orchestrator (avoiding a
-// doomed round-trip), and the server's GraphNodesWriteFilter is the actual gate
-// that rejects any non-orchestrator write.
+// GraphCommit writes a node to the durable ledger. It is NOT exposed as an MCP
+// tool — coders can only graph_propose; the conductor commits in-process via
+// bus.CommitNode. This client-side helper exists to exercise the orchestrator
+// single-writer gate from the comms path (the integration test): it fails fast
+// when self isn't the orchestrator, and the server's GraphNodesWriteFilter is
+// the actual gate that rejects any non-orchestrator write.
 func (c *Client) GraphCommit(n bus.GraphNode) error {
 	if c.self != c.orchestrator {
 		return fmt.Errorf("graph_commit: only the orchestrator %q may commit nodes, not %q", c.orchestrator, c.self)

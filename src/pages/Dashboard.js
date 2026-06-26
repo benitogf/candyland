@@ -9,13 +9,12 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import AddIcon from '@mui/icons-material/Add'
 import ClearIcon from '@mui/icons-material/Clear'
-import FolderIcon from '@mui/icons-material/Folder'
 
 import { candy } from '../config'
 import { useMode } from '../mode'
 import { PHASES, STATE_META } from '../meta/run'
 import { runLabel } from '../util'
-import { useRuns, useWorkspaces } from '../data/ooo'
+import { useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { createRun, archiveRun } from '../data/api'
 import { useToast } from '../feedback'
@@ -65,30 +64,27 @@ const RunCard = ({ run, onOpen, onClear }) => {
     )
 }
 
-const Landing = ({ runs, workspaces, onClear, onOpen, onNew, reachable }) => {
+const Landing = ({ runs, onClear, onOpen, onNew, reachable }) => {
     const running = runs.filter((r) => !isTerminal(r))
     const recentTerminal = runs.filter(isTerminal).slice(0, RECENT_TERMINAL)
-    const visible = [...running, ...recentTerminal]
-    const groups = workspaces
-        .map((ws) => ({ ws, items: visible.filter((r) => r.workspace === ws.id) }))
-        .filter((g) => g.items.length)
+    const visible = [...running, ...recentTerminal] // useRuns is already newest-first
 
     return (
         <Box>
+            {/* candyland is the sidecar: you launch runs from your editor (the candyland
+                MCP uses your current folder), and monitor / audit / stop them here. */}
             <Card sx={{ mb: 5, borderColor: 'primary.main' }}>
                 <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap', py: 3 }}>
                     <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                        <Typography variant="h5" sx={{ fontWeight: 800 }}>Start something new</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800 }}>Launch from your editor</Typography>
                         <Typography variant="body2" color="text.secondary">
-                            {reachable
-                                ? "Describe what you want built — we'll guide you through it and hand back one PR."
-                                : "The candyland server is unreachable — start it before you can begin a run."}
+                            Run <Box component="span" sx={{ fontFamily: 'monospace', color: 'primary.main' }}>launch_run</Box> from your Claude Code session (the candyland MCP) to start a multi-agent run in your current folder. Monitor, audit, and stop it here.
                         </Typography>
                     </Box>
-                    {/* Guard: don't let the user start a run that can't reach the backend. */}
+                    {/* Secondary path: start one from here by naming the repo folder. */}
                     <Tooltip title={reachable ? '' : 'Server unreachable — start ./candyland first'} disableHoverListener={reachable}>
                         <Box sx={{ flexShrink: 0 }}>
-                            <Button size="large" variant="contained" startIcon={<AddIcon />} onClick={onNew} disabled={!reachable}>Start a new run</Button>
+                            <Button variant="outlined" startIcon={<AddIcon />} onClick={onNew} disabled={!reachable}>Start one here</Button>
                         </Box>
                     </Tooltip>
                 </CardContent>
@@ -99,20 +95,13 @@ const Landing = ({ runs, workspaces, onClear, onOpen, onNew, reachable }) => {
                 <Typography variant="caption" color="text.secondary">{running.length} running · {recentTerminal.length} recent</Typography>
             </Box>
 
-            {groups.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">Nothing running. Start a run to see it here.</Typography>
-            ) : groups.map(({ ws, items }) => (
-                <Box key={ws.id} sx={{ mb: 4 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-                        <FolderIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{ws.label}</Typography>
-                        <Typography variant="caption" color="text.secondary">{items.length}</Typography>
-                    </Box>
-                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
-                        {items.map((run) => <RunCard key={run.id} run={run} onOpen={onOpen} onClear={onClear} />)}
-                    </Box>
+            {visible.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">Nothing running. Launch a run from your editor (or start one here) to see it.</Typography>
+            ) : (
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
+                    {visible.map((run) => <RunCard key={run.id} run={run} onOpen={onOpen} onClear={onClear} />)}
                 </Box>
-            ))}
+            )}
         </Box>
     )
 }
@@ -123,7 +112,6 @@ const Dashboard = () => {
     const { runId, tab } = useParams()
     const { mode } = useMode()
     const liveRuns = useRuns()
-    const workspaces = useWorkspaces()
     const { reachable } = useSystemStatus()
     const toast = useToast()
 
@@ -131,13 +119,13 @@ const Dashboard = () => {
     const runs = liveRuns.filter((r) => !r.archived)
     const isNew = location.pathname === '/new'
 
-    const start = async ({ workspace, prompt, title }) => {
+    const start = async ({ folders, prompt, title }) => {
         if (!reachable) {
             toast('Server unreachable — start ./candyland, then try again.')
             return
         }
         try {
-            const { id } = await createRun({ mode, workspace, prompt, title })
+            const { id } = await createRun({ mode, folders, prompt, title })
             navigate(`/run/${id}`)
         } catch {
             toast("Couldn't start the run — is the candyland server reachable? Check the status chip.")
@@ -148,7 +136,6 @@ const Dashboard = () => {
         <Box>
             <Landing
                 runs={runs}
-                workspaces={workspaces}
                 reachable={reachable}
                 onNew={() => navigate('/new')}
                 onOpen={(id) => navigate(`/run/${id}`)}

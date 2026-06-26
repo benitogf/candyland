@@ -22,7 +22,6 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import EditIcon from '@mui/icons-material/Edit'
 
 import { PHASES, isDone } from '../meta/run'
-import { useWorkspaces, workspaceById } from '../data/ooo'
 import { runLabel } from '../util'
 import { StateChip, StateIcon, StateLegend, ModeBadge } from '../components/StatusBits'
 import EditRunDialog from '../components/EditRunDialog'
@@ -31,6 +30,7 @@ import AgentsPanel from '../panels/AgentsPanel'
 import BoardPanel from '../panels/BoardPanel'
 import TasksPanel from '../panels/TasksPanel'
 import SessionsPanel from '../panels/SessionsPanel'
+import AuditPanel from '../panels/AuditPanel'
 
 const TABS = [
     { key: 'overview', label: 'Overview' },
@@ -38,6 +38,7 @@ const TABS = [
     { key: 'board', label: 'Board' },
     { key: 'tasks', label: 'Tasks' },
     { key: 'sessions', label: 'Sessions' },
+    { key: 'audit', label: 'Audit' },
 ]
 
 // ── Developer: the full, detailed view ──────────────────────────────────────
@@ -110,6 +111,7 @@ const panelFor = (key, run) => {
     if (key === 'sessions') return <SessionsPanel run={run} />
     if (key === 'board') return <Scrollable><BoardPanel run={run} /></Scrollable>
     if (key === 'tasks') return <Scrollable><TasksPanel run={run} /></Scrollable>
+    if (key === 'audit') return <Scrollable><AuditPanel run={run} /></Scrollable>
     return <Scrollable><OverviewPanel run={run} /></Scrollable>
 }
 
@@ -158,7 +160,7 @@ const SimplePanel = ({ run, done }) => (
                         <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Your change is ready to review ✅</Typography>
                         <Typography variant="body2" color="text.secondary">We opened one pull request. Reviewing and merging are your call.</Typography>
                     </Box>
-                    <Button variant="outlined" color="secondary" endIcon={<OpenInNewIcon />}>Review the PR</Button>
+                    <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" variant="outlined" color="secondary" endIcon={<OpenInNewIcon />}>Review the PR</Button>
                 </CardContent>
             </Card>
         ) : run.status === 'cancelled' ? (
@@ -197,7 +199,7 @@ const RunControls = ({ run, controls, done, onEdit }) => {
 
     if (!controls.controllable) {
         return done && run.prUrl
-            ? <Button color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
+            ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
             : <Chip label="snapshot" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
     }
     if (controls.status === 'cancelled') {
@@ -209,7 +211,7 @@ const RunControls = ({ run, controls, done, onEdit }) => {
                 {run.error
                     ? <><Chip label="failed" size="small" color="error" variant="outlined" /><RestartButton label="Restart" /></>
                     : run.prUrl
-                        ? <Button color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
+                        ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
                         : <Chip label="completed" size="small" color="success" variant="outlined" />}
                 <EditButton />
             </Box>
@@ -241,13 +243,12 @@ const CancelControl = ({ onCancel }) => (
 )
 
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
-    const workspaces = useWorkspaces()
     const [editing, setEditing] = useState(false)
     const isPlanning = !!planning
     const isDev = run.mode === 'developer'
     const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
-    const ws = workspaceById(workspaces, run.workspace)
+    const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = isDev && !isPlanning
     // Real, functional completion — moves over the live run (elapsed-driven), or
     // reflects the phase for a static snapshot.
@@ -263,8 +264,8 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                             <Typography variant="h5" sx={{ fontWeight: 800 }} noWrap>{runLabel(run)}</Typography>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
                                 {isDev
-                                    ? <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{ws?.label} · {run.branch}</Typography>
-                                    : <Typography variant="body2" color="text.secondary" noWrap>in {ws?.label}</Typography>}
+                                    ? <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{repo} · {run.branch}</Typography>
+                                    : <Typography variant="body2" color="text.secondary" noWrap>in {repo}</Typography>}
                                 <ModeBadge mode={run.mode} />
                             </Box>
                         </Box>
@@ -311,13 +312,11 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                 </Box>
             )}
 
-            {/* Run-level advisory (error, or an informational note) — visible across tabs */}
-            {(run.error || run.note) && (
+            {/* Run-level error advisory — visible across tabs */}
+            {run.error && (
                 <Box sx={{ px: { xs: 2, sm: 4 }, pt: 1.5 }}>
                     <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
-                        {run.error
-                            ? <Alert severity="error" variant="outlined">{run.error}</Alert>
-                            : <Alert severity="info" variant="outlined">{run.note}</Alert>}
+                        <Alert severity="error" variant="outlined">{run.error}</Alert>
                     </Box>
                 </Box>
             )}

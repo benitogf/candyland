@@ -1,12 +1,12 @@
 // End-to-end: drives the REAL binary (Go ooo backend + conductor) through the
-// whole delivery — create a workspace, create a run, run the planning Q&A's
-// begin, and let the conductor partition → code in parallel git worktrees →
-// integrate → push → open a PR. No browser, no mocks, and NO Anthropic tokens:
-// a stub `claude` (emits a partition + writes real files) and a stub `gh` (prints
-// a PR URL) stand in for the only two external commands, against a throwaway git
-// repo with a local `origin`. This proves the real machinery, including resolving
-// the workspace from ooo storage. The live Claude model behavior is the only
-// thing not exercised here — swap CANDYLAND_CLAUDE for the real binary for that.
+// whole delivery — create a run in a repo folder (the shape the launch_run MCP
+// sends), begin the build, and let the conductor partition → code in parallel
+// git worktrees → integrate → push → open a PR. No browser, no mocks, and NO
+// Anthropic tokens: a stub `claude` (emits a partition + writes real files) and a
+// stub `gh` (prints a PR URL) stand in for the only two external commands,
+// against a throwaway git repo with a local `origin`. This proves the real
+// machinery. The live Claude model behavior is the only thing not exercised
+// here — swap CANDYLAND_CLAUDE for the real binary for that.
 import { spawn, execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -71,12 +71,9 @@ const j = async (path, opts) => {
 try {
     for (let i = 0; i < 50; i++) { try { if ((await fetch(API + '/api/system')).ok) break } catch { /* wait */ } await sleep(200) }
 
-    // Create a workspace pointing at the real repo (resolved from ooo storage).
-    const ws = await j('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'E2E Repo', folders: [repo] }) })
-    check('workspace created', ws.status === 200 && ws.body?.id === 'e2erepo', `id ${ws.body?.id}`)
-
-    // Create a run on it and begin the build.
-    const created = await j('/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'developer', workspace: ws.body.id, prompt: 'add a CSV export' }) })
+    // Create a run pointing at the real repo (folders[0] = the git repo it
+    // branches/PRs in — the same shape the launch_run MCP sends) and begin the build.
+    const created = await j('/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'developer', folders: [repo], prompt: 'add a CSV export' }) })
     const runId = created.body?.id
     check('run created', created.status === 200 && !!runId, runId)
     await j(`/api/runs/${runId}/begin`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
@@ -101,7 +98,7 @@ try {
 
     // Edit the finished run in place: change the request → it resets to planning
     // and the questions regenerate from the new prompt (distinct from restart).
-    const edit = await fetch(API + `/api/runs/${runId}/edit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'developer', workspace: ws.body.id, prompt: 'a completely different request', title: 'edited' }) })
+    const edit = await fetch(API + `/api/runs/${runId}/edit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'developer', folders: [repo], prompt: 'a completely different request', title: 'edited' }) })
     check('edit accepted', edit.status === 204, `status ${edit.status}`)
     let edited = null
     for (let i = 0; i < 20; i++) { edited = (await j(`/runs/${runId}`)).body?.data; if (edited?.status === 'planning') break; await sleep(100) }

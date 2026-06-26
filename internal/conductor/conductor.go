@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -45,10 +46,10 @@ type Conductor struct {
 	mu     sync.Mutex
 	runs   map[string]*runtime
 	seq    int
-	// folders resolves a workspace id to its folders. Defaults to reading the
-	// persisted workspace from ooo; tests override it to point a run at a
-	// throwaway git repo without standing up storage.
-	folders func(wsID string) ([]string, error)
+	// folders resolves a run's working folders. Defaults to the folders the run
+	// was launched with (Spec.Folders, carried on the Run); tests override it to
+	// point a run at a throwaway git repo.
+	folders func(r run.Run) ([]string, error)
 	// bus is the coordination back-channel (Realization B), set by StartBus.
 	// nil when no bus is wired (e.g. serverless tests).
 	bus       *bus.Bus
@@ -64,27 +65,18 @@ func New(server *ooo.Server) *Conductor {
 		runs:      map[string]*runtime{},
 		busAgents: map[string]bool{},
 	}
-	c.folders = c.storageFolders
+	c.folders = runFolders
 	return c
 }
 
-// storageFolders reads a workspace's folders from ooo (the production resolver).
-func (c *Conductor) storageFolders(wsID string) ([]string, error) {
-	if c.server == nil {
-		return nil, fmt.Errorf("no workspace storage")
+// runFolders resolves a run's working folders from the run itself — they were
+// supplied at launch (Spec.Folders → Run.Folders). No workspace lookup: the
+// launcher (the VSCode session's cwd) owns the folder set.
+func runFolders(r run.Run) ([]string, error) {
+	if len(r.Folders) == 0 {
+		return nil, fmt.Errorf("run has no folders (the launcher must supply at least the git repo)")
 	}
-	obj, err := c.server.Storage.Get("workspaces/" + wsID)
-	if err != nil {
-		return nil, fmt.Errorf("workspace %q not found", wsID)
-	}
-	var ws run.Workspace
-	if err := json.Unmarshal(obj.Data, &ws); err != nil {
-		return nil, fmt.Errorf("workspace %q is unreadable: %w", wsID, err)
-	}
-	if len(ws.Folders) == 0 {
-		return nil, fmt.Errorf("workspace %q has no folders", wsID)
-	}
-	return ws.Folders, nil
+	return r.Folders, nil
 }
 
 // publish writes the run object to ooo (key runs/<id>); subscribers update live.
@@ -136,6 +128,12 @@ func (c *Conductor) Update(id string, mutate func(*run.Run)) {
 // the run is still persisted). Without this, controls like Restart/Edit would
 // 409 on any run that outlived the process that started it. Returns nil only when
 // the run isn't in memory AND isn't in storage.
+//
+// The cancelled flag is rehydrated from the persisted status: it's the in-memory
+// guard that keeps a cancelled run terminal (Edit/Restart refuse it, Update drops
+// late writes), and it's lost on restart. Without restoring it, a cancelled run
+// rehydrated for an Edit/Restart would slip past those guards and be resurrected,
+// undoing ReconcileOrphans keeping it terminal.
 func (c *Conductor) tracked(id string) *runtime {
 	c.mu.Lock()
 	rt := c.runs[id]
@@ -154,7 +152,7 @@ func (c *Conductor) tracked(id string) *runtime {
 	if err := json.Unmarshal(obj.Data, &r); err != nil {
 		return nil
 	}
-	rt = &runtime{r: r, control: newControl()}
+	rt = &runtime{r: r, control: newControl(), cancelled: r.Status == "cancelled"}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if existing := c.runs[id]; existing != nil {
@@ -180,32 +178,6 @@ func (c *Conductor) Get(id string) (run.Run, bool) {
 	return cloneRun(rt.r), true
 }
 
-// BlockingRuns returns the active runs (planning|running|paused) that reference
-// the workspace — the runs that make deleting it unsafe. These are exactly the
-// non-terminal runs, which always live in the in-memory map (a restart reconciles
-// any persisted non-terminal run to done, so there are no stale actives in ooo).
-func (c *Conductor) BlockingRuns(wsID string) []run.Run {
-	c.mu.Lock()
-	rts := make([]*runtime, 0, len(c.runs))
-	for _, rt := range c.runs {
-		rts = append(rts, rt)
-	}
-	c.mu.Unlock()
-
-	var blocking []run.Run
-	for _, rt := range rts {
-		rt.mu.Lock()
-		r := cloneRun(rt.r)
-		cancelled := rt.cancelled
-		rt.mu.Unlock()
-		active := r.Status == "planning" || r.Status == "running" || r.Status == "paused"
-		if r.Workspace == wsID && active && !cancelled {
-			blocking = append(blocking, r)
-		}
-	}
-	return blocking
-}
-
 // cloneRun deep-copies the slices that get mutated in place so a returned run is
 // safe to read without holding rt.mu.
 func cloneRun(r run.Run) run.Run {
@@ -225,7 +197,13 @@ func cloneRun(r run.Run) run.Run {
 // "planning"/"running" phantoms in the live dashboard. Candyland doesn't resume
 // runs, so each is closed with an explanatory error (a clean record of what
 // happened, not a fake completion). Must run AFTER server.Start() (storage is
-// live only then); completed runs are left untouched as genuine history.
+// live only then); runs already in a terminal state (done or cancelled) are
+// left untouched as genuine history.
+//
+// It also seeds the run-id sequence past the highest persisted id: seq is
+// in-memory and resets to 0 on restart, so without this the first post-restart
+// Create would mint "r1" again and Storage.Set (an upsert) would overwrite a
+// prior run's record — silent history loss.
 func (c *Conductor) ReconcileOrphans() {
 	if c.server == nil {
 		return
@@ -235,16 +213,27 @@ func (c *Conductor) ReconcileOrphans() {
 		log.Printf("candyland: reconcile runs: %v", err)
 		return
 	}
+	maxSeq := 0
 	for _, k := range keys {
 		if !strings.HasPrefix(k, "runs/") {
 			continue
+		}
+		// Track the highest "r<N>" id across ALL runs (including terminal ones,
+		// which the status checks below skip) so the seed can't reuse a live id.
+		if rest := strings.TrimPrefix(k, "runs/"); strings.HasPrefix(rest, "r") {
+			if n, err := strconv.Atoi(rest[1:]); err == nil && n > maxSeq {
+				maxSeq = n
+			}
 		}
 		obj, err := c.server.Storage.Get(k)
 		if err != nil {
 			continue
 		}
 		var r run.Run
-		if json.Unmarshal(obj.Data, &r) != nil || r.Status == "done" {
+		// A cancelled run is already a terminal genuine record (Cancel persists
+		// Status=="cancelled" with no Error); rewriting it to "done"/Interrupted
+		// would corrupt the user's deliberate-cancel history on restart.
+		if json.Unmarshal(obj.Data, &r) != nil || r.Status == "done" || r.Status == "cancelled" {
 			continue
 		}
 		r.Status = "done"
@@ -259,6 +248,11 @@ func (c *Conductor) ReconcileOrphans() {
 			log.Printf("candyland: reconcile run %s: %v", r.ID, err)
 		}
 	}
+	c.mu.Lock()
+	if maxSeq > c.seq {
+		c.seq = maxSeq // next Create mints r<maxSeq+1>, never an existing id
+	}
+	c.mu.Unlock()
 }
 
 // Create registers a new run (status: planning) and publishes it. The build
@@ -270,14 +264,14 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.mu.Unlock()
 
 	r := run.Run{
-		ID:        id,
-		Title:     spec.Title,
-		Prompt:    spec.Prompt,
-		Mode:      spec.Mode,
-		Workspace: spec.Workspace,
+		ID:      id,
+		Title:   spec.Title,
+		Prompt:  spec.Prompt,
+		Mode:    spec.Mode,
+		Folders: spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
-		Branch:       "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id,
+		Branch:       runBranch(spec, id),
 		Status:       "planning",
 		Phase:        0,
 		TokensBudget: 900,
@@ -290,7 +284,7 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.runs[id] = rt
 	c.mu.Unlock()
 	c.publish(r)
-	log.Printf("candyland: run %s created (%s, workspace %q)", id, orEmpty(r.Mode, "?"), r.Workspace)
+	log.Printf("candyland: run %s created (%s, folders %v)", id, orEmpty(r.Mode, "?"), r.Folders)
 	return id
 }
 
@@ -463,7 +457,7 @@ func (c *Conductor) Restart(id string) bool {
 	return true
 }
 
-// Edit changes a run's task (mode/workspace/prompt/title) in place and resets it
+// Edit changes a run's task (mode/folders/prompt/title) in place and resets it
 // to planning — clearing the previous result and INVALIDATING the cached planning
 // questions so they regenerate from the new prompt. The run keeps its id (and its
 // row in the Tasks history); the UI's planning flow then re-asks the (new)
@@ -491,10 +485,10 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 		}
 	}
 	rt.r.Mode = spec.Mode
-	rt.r.Workspace = spec.Workspace
+	rt.r.Folders = spec.Folders
 	rt.r.Prompt = spec.Prompt
 	rt.r.Title = spec.Title
-	rt.r.Branch = "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id
+	rt.r.Branch = runBranch(spec, id)
 	rt.r.Status = "planning"
 	rt.r.Error = ""
 	rt.r.PrURL = ""
@@ -564,4 +558,12 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// runBranch derives a run's git branch from its spec + id. The id suffix keeps
+// two runs from the same prompt from colliding on the branch (and so on the
+// push / PR head). Create and Edit must derive it identically — keep this the
+// single definition of the format.
+func runBranch(spec run.Spec, id string) string {
+	return "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id
 }

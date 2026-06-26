@@ -117,7 +117,7 @@ type attemptOutcome struct {
 // the parent run is stopped — and the whole process tree goes with it.
 //
 // workdir is where the agent runs (the repo for the tech lead, a per-task git
-// worktree for a coder). extraDirs are the workspace's other folders, exposed to
+// worktree for a coder). extraDirs are the run's other folders, exposed to
 // the agent via --add-dir. The agent runs with --dangerously-skip-permissions
 // because a headless run has no human to approve tool use — without it a coder
 // can't edit files and silently does nothing.

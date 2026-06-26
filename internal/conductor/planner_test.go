@@ -22,7 +22,7 @@ fi
 func TestGenerateQuestionsFromPrompt(t *testing.T) {
 	writeFakeClaude(t, plannerClaude)
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "non-developer", Workspace: "ws", Prompt: "add a CSV export to the reports page"})
+	id := c.Create(run.Spec{Mode: "non-developer", Prompt: "add a CSV export to the reports page"})
 
 	qs := c.GenerateQuestions(id)
 	if len(qs) != 1 {
@@ -42,7 +42,7 @@ func TestGenerateQuestionsFromPrompt(t *testing.T) {
 func TestEditResetsAndRegeneratesQuestions(t *testing.T) {
 	writeFakeClaude(t, plannerClaude)
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "non-developer", Workspace: "ws", Prompt: "first prompt"})
+	id := c.Create(run.Spec{Mode: "non-developer", Prompt: "first prompt"})
 
 	// Generate + cache questions for the original prompt.
 	if len(c.GenerateQuestions(id)) != 1 {
@@ -51,14 +51,14 @@ func TestEditResetsAndRegeneratesQuestions(t *testing.T) {
 	// Pretend the run finished, then edit it.
 	c.Update(id, func(r *run.Run) { r.Status = "done"; r.Error = "boom" })
 
-	if !c.Edit(id, run.Spec{Mode: "developer", Workspace: "ws2", Prompt: "a totally different request"}) {
+	if !c.Edit(id, run.Spec{Mode: "developer", Prompt: "a totally different request"}) {
 		t.Fatal("Edit should succeed for a finished run")
 	}
 	r, _ := c.Get(id)
 	if r.Status != "planning" {
 		t.Errorf("edit should reset status to planning, got %q", r.Status)
 	}
-	if r.Prompt != "a totally different request" || r.Workspace != "ws2" || r.Mode != "developer" {
+	if r.Prompt != "a totally different request" || r.Mode != "developer" {
 		t.Errorf("edit did not apply the new task: %+v", r)
 	}
 	if r.Error != "" {
@@ -84,7 +84,7 @@ func TestEditResetsAndRegeneratesQuestions(t *testing.T) {
 	// A stopped (paused) run CAN be edited — its parked executor is terminated
 	// first, then it re-plans (the "edit a stopped run" case).
 	c.Update(id, func(r *run.Run) { r.Status = "paused" })
-	if !c.Edit(id, run.Spec{Mode: "developer", Workspace: "ws", Prompt: "edit a stopped run"}) {
+	if !c.Edit(id, run.Spec{Mode: "developer", Prompt: "edit a stopped run"}) {
 		t.Error("Edit should be allowed for a paused (stopped) run")
 	}
 	if r, _ := c.Get(id); r.Status != "planning" {
@@ -93,7 +93,7 @@ func TestEditResetsAndRegeneratesQuestions(t *testing.T) {
 
 	// An actively running build must be stopped first.
 	c.Update(id, func(r *run.Run) { r.Status = "running" })
-	if c.Edit(id, run.Spec{Workspace: "ws", Prompt: "x"}) {
+	if c.Edit(id, run.Spec{Prompt: "x"}) {
 		t.Error("Edit must refuse an actively running run")
 	}
 }
@@ -103,7 +103,7 @@ func TestEditResetsAndRegeneratesQuestions(t *testing.T) {
 func TestGenerateQuestionsEmptyOnFailure(t *testing.T) {
 	writeFakeClaude(t, "#!/usr/bin/env bash\necho 'not json at all'\n")
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do a thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do a thing"})
 	if qs := c.GenerateQuestions(id); len(qs) != 0 {
 		t.Errorf("unparseable claude output must yield no questions, got %+v", qs)
 	}

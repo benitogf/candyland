@@ -26,14 +26,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 func Register(server *ooo.Server, c *conductor.Conductor) {
 	server.OpenFilter("runs/*")   // enables both the list (runs/*) and item (runs/<id>) reads
 	server.OpenFilter("audits/*") // per-run verification audits (audits/* list + audits/<id> item)
-	registerWorkspaces(server, c)
 	registerSystem(server)
-	registerFS(server)
 
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}
 
-	// Create a run from the wizard (mode/workspace/prompt/title).
+	// Create a run (mode/folders/prompt/title) — from the web UI or the trigger MCP.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs",
 		Methods: post,
@@ -43,7 +41,28 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if strings.TrimSpace(spec.Prompt) == "" || len(spec.Folders) == 0 {
+				http.Error(w, "a prompt and at least one folder are required", http.StatusBadRequest)
+				return
+			}
 			writeJSON(w, map[string]string{"id": c.Create(spec)})
+		},
+	})
+
+	// Read a single run's current snapshot (the trigger MCP's run_status reads
+	// this; the web UI uses the ooo subscription instead). Served from storage so
+	// it works for finished/untracked runs too.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/runs/{id}",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			obj, err := server.Storage.Get("runs/" + mux.Vars(r)["id"])
+			if err != nil {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(obj.Data)
 		},
 	})
 
@@ -126,8 +145,8 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if strings.TrimSpace(spec.Prompt) == "" || strings.TrimSpace(spec.Workspace) == "" {
-				http.Error(w, "a prompt and a workspace are required", http.StatusBadRequest)
+			if strings.TrimSpace(spec.Prompt) == "" || len(spec.Folders) == 0 {
+				http.Error(w, "a prompt and at least one folder are required", http.StatusBadRequest)
 				return
 			}
 			if !c.Edit(mux.Vars(r)["id"], spec) {

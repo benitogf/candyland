@@ -27,9 +27,39 @@ else
 fi
 `
 
+// Task ids from the tech-lead's PARTITION line become worktree path components
+// and git branch refs, and their deps are matched against task ids by the bus
+// auto-unblock. parsePartition must normalize all of them through slug so a
+// malformed id can't escape the worktree root or break ref creation — while
+// leaving realistic ids untouched and keeping deps consistent with the ids they
+// reference (else dependent tasks would never unblock).
+func TestParsePartitionSlugsIDsAndDeps(t *testing.T) {
+	// Realistic ids pass through unchanged — normal partitions behave identically.
+	clean := parsePartition(`PARTITION [{"id":"a","title":"A"},{"id":"backend","title":"B","deps":["a"]}]`)
+	if len(clean) != 2 || clean[0].ID != "a" || clean[1].ID != "backend" || len(clean[1].Deps) != 1 || clean[1].Deps[0] != "a" {
+		t.Fatalf("realistic ids must be unchanged, got %+v", clean)
+	}
+
+	// A malformed id (path traversal) and a dep referencing it are slugged the
+	// SAME way, so the dependency still matches the (now slugged) task id.
+	got := parsePartition(`PARTITION [{"id":"../escape","title":"X"},{"id":"task B","title":"Y","deps":["../escape"]}]`)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(got))
+	}
+	if strings.ContainsAny(got[0].ID, "/.") {
+		t.Errorf("traversal id not sanitized: %q", got[0].ID)
+	}
+	if got[1].ID != "task-b" {
+		t.Errorf("id not slugged: %q", got[1].ID)
+	}
+	if got[1].Deps[0] != got[0].ID {
+		t.Errorf("dep %q must match the slugged task id %q so unblock still works", got[1].Deps[0], got[0].ID)
+	}
+}
+
 func TestClaudeFanOut(t *testing.T) {
 	c, repo := deliveryConductor(t, fanOutClaude)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "add a CSV export"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -121,7 +151,7 @@ fi
 
 func TestIntegrationConflictResolved(t *testing.T) {
 	c, repo := deliveryConductor(t, conflictResolvedClaude)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -173,7 +203,7 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 	c, _ := deliveryConductor(t, conflictUnresolvableClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")  // one resolution attempt per integrate
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "2") // reassess once, then give an honest failure
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -269,7 +299,7 @@ func TestCoderFailureTriggersReplan(t *testing.T) {
 	c, repo := deliveryConductor(t, coderFailReplanClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // the impossible coder fails in one attempt
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -292,7 +322,7 @@ func TestReplanRecoversFromBadSplit(t *testing.T) {
 	c, repo := deliveryConductor(t, replanRecoverClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)

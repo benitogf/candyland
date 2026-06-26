@@ -6,7 +6,6 @@ import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import DialogTitle from '@mui/material/DialogTitle'
 import IconButton from '@mui/material/IconButton'
-import MenuItem from '@mui/material/MenuItem'
 import TextField from '@mui/material/TextField'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
@@ -15,32 +14,30 @@ import CloseIcon from '@mui/icons-material/Close'
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch'
 
 import { MODES } from '../meta/run'
-import { useActiveWorkspaces } from '../data/ooo'
 import { editRun } from '../data/api'
 import { useToast } from '../feedback'
 import CommandInput from './CommandInput'
 
-// Edit a finished task IN PLACE: change the request (and mode/workspace/title),
-// save, and the run resets to planning — the questions regenerate from the new
-// prompt and it re-runs. Distinct from Restart, which re-runs the task as-is.
+// Edit a finished task IN PLACE: change the request (and mode/title), save, and
+// the run resets to planning — the questions regenerate from the new prompt and
+// it re-runs in the same folders. Distinct from Restart, which re-runs as-is.
 const EditRunDialog = ({ run, open, onClose }) => {
-    const workspaces = useActiveWorkspaces()
     const toast = useToast()
     const [mode, setMode] = useState(run.mode)
-    const [workspace, setWorkspace] = useState(run.workspace)
     const [prompt, setPrompt] = useState(run.prompt)
     const [title, setTitle] = useState(run.title || '')
 
     // Re-seed from the run each time the dialog opens (or the run changes).
     useEffect(() => {
         if (!open) return
-        setMode(run.mode); setWorkspace(run.workspace); setPrompt(run.prompt); setTitle(run.title || '')
+        setMode(run.mode); setPrompt(run.prompt); setTitle(run.title || '')
     }, [open, run.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    const canSave = prompt.trim().length > 0 && !!workspace
+    const canSave = prompt.trim().length > 0
     const save = () => {
         if (!canSave) return
-        editRun(run.id, { mode, workspace, prompt: prompt.trim(), title: title.trim() })
+        // The run keeps its folders; resend them so /edit's folder requirement is met.
+        editRun(run.id, { mode, folders: run.folders, prompt: prompt.trim(), title: title.trim() })
             .then(onClose)
             .catch((e) => toast(e.message || "Couldn't save the changes."))
     }
@@ -62,11 +59,6 @@ const EditRunDialog = ({ run, open, onClose }) => {
                         </ToggleButton>
                     ))}
                 </ToggleButtonGroup>
-
-                <TextField select size="small" label="Workspace" value={workspace} onChange={(e) => setWorkspace(e.target.value)} helperText={workspaces.length === 0 ? 'No workspaces — create one from the dashboard.' : ''}>
-                    {workspaces.map((w) => <MenuItem key={w.id} value={w.id}>{w.label}</MenuItem>)}
-                    {workspaces.every((w) => w.id !== workspace) && workspace && <MenuItem value={workspace}>{workspace} (current)</MenuItem>}
-                </TextField>
 
                 <Box>
                     <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 0.5 }}>what you want done</Typography>

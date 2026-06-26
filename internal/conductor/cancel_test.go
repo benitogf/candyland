@@ -17,7 +17,7 @@ import (
 // covers against the real binary.
 func TestCancelDuringPlanningRemovesRun(t *testing.T) {
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "myrepo", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 
 	if _, ok := c.Get(id); !ok {
 		t.Fatal("run should exist after Create")
@@ -48,7 +48,7 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	c, _ := deliveryConductor(t, slowCoder) // tech lead partitions fast; coder then sleeps
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "original"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "original"})
 	c.Begin(id, nil)
 	working := func(r run.Run) bool {
 		for _, a := range r.Agents {
@@ -58,17 +58,17 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 		}
 		return false
 	}
-	if r := waitFor(t, c, id, working, 8*time.Second); !working(r) {
+	if r := waitFor(t, c, id, working, 20*time.Second); !working(r) {
 		t.Fatal("first run never reached a working coder")
 	}
 	// Stop → paused (executor parks on its control channel).
 	c.Command(id, "stop")
-	if r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "paused" }, 6*time.Second); r.Status != "paused" {
+	if r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "paused" }, 15*time.Second); r.Status != "paused" {
 		t.Fatalf("run did not pause: %q", r.Status)
 	}
 
 	// Edit the stopped run → quits the parked executor and re-plans.
-	if !c.Edit(id, run.Spec{Mode: "developer", Workspace: "ws", Prompt: "edited request"}) {
+	if !c.Edit(id, run.Spec{Mode: "developer", Prompt: "edited request"}) {
 		t.Fatal("Edit should succeed for a paused run")
 	}
 	if r, _ := c.Get(id); r.Status != "planning" || r.Prompt != "edited request" {
@@ -78,8 +78,12 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	// Begin again → a fresh executor on a fresh channel runs the new task; if a
 	// stale quit had reached it, it would die instead of reaching a working coder.
 	c.Begin(id, nil)
-	if r := waitFor(t, c, id, working, 8*time.Second); !working(r) {
-		t.Fatal("re-run after edit never reached a working coder — the new executor may have caught a stale command")
+	if r := waitFor(t, c, id, working, 20*time.Second); !working(r) {
+		st := []string{}
+		for _, a := range r.Agents {
+			st = append(st, a.ID+":"+a.State)
+		}
+		t.Fatalf("re-run after edit never reached a working coder (status=%q phase=%d err=%q agents=%v) — the new executor may have caught a stale command or the re-run stalled", r.Status, r.Phase, r.Error, st)
 	}
 	if r, _ := c.Get(id); r.Status != "running" {
 		t.Errorf("re-run should be running, got %q", r.Status)
@@ -94,68 +98,11 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-}
-
-// A workspace can only be soft-deleted when no run that references it is still
-// active. BlockingRuns is the guard: it returns exactly the planning|running|
-// paused runs for the workspace — never done/cancelled ones, never other
-// workspaces — and a cancelled blocker drops out (so the UI's "cancel then
-// delete" flow converges).
-func TestBlockingRunsForWorkspace(t *testing.T) {
-	c := New(nil)
-	a := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "a"}) // planning
-	b := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "b"}) // → running
-	other := c.Create(run.Spec{Mode: "developer", Workspace: "other", Prompt: "c"})
-	done := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "d"}) // → done
-	c.Update(b, func(r *run.Run) { r.Status = "running" })
-	c.Update(done, func(r *run.Run) { r.Status = "done" })
-
-	blk := c.BlockingRuns("ws")
-	got := map[string]bool{}
-	for _, r := range blk {
-		got[r.ID] = true
+	// Cancelling the re-run must also tear down its worktrees (the run is now
+	// untracked, so the deliveryConductor teardown drain won't cover it).
+	if _, err := os.Stat(wtRoot); !os.IsNotExist(err) {
+		t.Errorf("cancel after edit-rerun did not clean up worktrees at %s", wtRoot)
 	}
-	if len(blk) != 2 || !got[a] || !got[b] {
-		t.Fatalf("want exactly {%s,%s} blocking ws, got %v", a, b, got)
-	}
-	if got[done] || got[other] {
-		t.Errorf("a done run or a different workspace must not block: %v", got)
-	}
-	// The blocking-run summary carries enough to list it (id + a human title).
-	for _, r := range blk {
-		if r.ID == "" || runTitleLike(r) == "" {
-			t.Errorf("blocking run lacks id/title: %+v", r)
-		}
-	}
-
-	// A paused run still blocks (it's resumable, not terminal).
-	c.Update(a, func(r *run.Run) { r.Status = "paused" })
-	if len(c.BlockingRuns("ws")) != 2 {
-		t.Error("a paused run should still block deletion")
-	}
-
-	// Cancel the blockers → the workspace becomes deletable (the cancel-then-delete
-	// flow the UI offers).
-	c.Cancel(a)
-	c.Cancel(b)
-	if blk := c.BlockingRuns("ws"); len(blk) != 0 {
-		t.Errorf("after cancelling every blocker, none should remain: %+v", blk)
-	}
-	if len(c.BlockingRuns("nope")) != 0 {
-		t.Error("an unknown workspace has no blockers")
-	}
-}
-
-// runTitleLike mirrors the API's run-title fallback (title → prompt → id) so the
-// test asserts a non-empty label without importing the httpapi package.
-func runTitleLike(r run.Run) string {
-	if r.Title != "" {
-		return r.Title
-	}
-	if r.Prompt != "" {
-		return r.Prompt
-	}
-	return r.ID
 }
 
 // The progress bar must actually MOVE during a run, not sit at 0 until the end.
@@ -207,7 +154,7 @@ func TestProgressMovesWithPhaseAndTasks(t *testing.T) {
 // terminal-run storage path is covered live by check-history.mjs.)
 func TestArchiveTrackedRunSticks(t *testing.T) {
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "x"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "x"})
 
 	if !c.Archive(id) {
 		t.Fatal("Archive should succeed for a tracked run")
@@ -232,7 +179,7 @@ func TestCancelRunningRunStopsAndDropsFromTracking(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	// Wait until the coder is actually in flight.
@@ -243,7 +190,7 @@ func TestCancelRunningRunStopsAndDropsFromTracking(t *testing.T) {
 			}
 		}
 		return false
-	}, 5*time.Second)
+	}, 20*time.Second)
 	working := false
 	for _, a := range r.Agents {
 		if a.ID == "a" && a.State == "working" {

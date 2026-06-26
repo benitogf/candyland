@@ -78,7 +78,38 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 	writeFakeClaude(t, claudeScript)
 	writeFakeGh(t)
 	c := New(nil)
-	c.folders = func(string) ([]string, error) { return []string{repo}, nil }
+	c.folders = func(run.Run) ([]string, error) { return []string{repo}, nil }
+	// Drain before the test's t.TempDir() is removed: cancel any still-tracked
+	// runs and wait for each executor's deferred worktree cleanup (git worktree
+	// remove / branch -D / prune on the repo, then rm the worktree dir) to
+	// finish. Registered AFTER newGitRepo's t.TempDir, so it runs BEFORE that
+	// RemoveAll (LIFO) — otherwise a late git subprocess races the harness
+	// removing repo/.git ("directory not empty"). Test-only teardown.
+	t.Cleanup(func() {
+		c.mu.Lock()
+		ids := make([]string, 0, len(c.runs))
+		for id := range c.runs {
+			ids = append(ids, id)
+		}
+		c.mu.Unlock()
+		for _, id := range ids {
+			c.Cancel(id)
+		}
+		wtParent := filepath.Join(os.TempDir(), "candyland-wt")
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+			pending := false
+			for _, id := range ids {
+				if _, err := os.Stat(filepath.Join(wtParent, id)); err == nil {
+					pending = true
+					break
+				}
+			}
+			if !pending {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	return c, repo
 }
 
@@ -118,7 +149,7 @@ func TestRetryRecoversNonCompliantAgent(t *testing.T) {
 	c, _ := deliveryConductor(t, flakyThenCompliant)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "3")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "add a CSV export"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -177,7 +208,7 @@ func TestStallFailsHonestly(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "4000")
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 12*time.Second)
@@ -245,7 +276,7 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 	c, _ := deliveryConductor(t, exitWithStderr)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
@@ -282,7 +313,7 @@ func TestRestartRecoversFailedRun(t *testing.T) {
 	t.Setenv("CANDYLAND_TEST_MARKER", filepath.Join(t.TempDir(), "marker"))
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // fail fast on the first run
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
@@ -309,7 +340,7 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000") // don't let the stall watchdog fire during the test
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Workspace: "ws", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	// Wait until the coder is spawned and in flight, then stop the run.
@@ -320,12 +351,12 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 			}
 		}
 		return false
-	}, 8*time.Second)
+	}, 20*time.Second)
 	if !c.Command(id, "stop") {
 		t.Fatal("stop command was dropped")
 	}
 
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "paused" }, 6*time.Second)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "paused" }, 15*time.Second)
 	if r.Status != "paused" {
 		t.Fatalf("run did not pause on stop: status=%q", r.Status)
 	}

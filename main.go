@@ -18,6 +18,7 @@ import (
 
 	"github.com/benitogf/candyland/internal/comms"
 	"github.com/benitogf/candyland/internal/conductor"
+	"github.com/benitogf/candyland/internal/control"
 	"github.com/benitogf/candyland/internal/httpapi"
 	"github.com/benitogf/candyland/internal/spa"
 	"github.com/benitogf/candyland/internal/version"
@@ -45,6 +46,15 @@ func main() {
 	// conductor's ooo bus (the comms_*/graph_* tools as io.Remote* clients).
 	if len(os.Args) > 1 && os.Args[1] == "comms-mcp" {
 		runCommsMCP()
+		return
+	}
+
+	// Hidden subcommand: the trigger MCP server a VSCode Claude Code session
+	// launches via its mcp config. It exposes launch_run/run_status/stop_run as a
+	// thin HTTP client to the running candyland sidecar (CANDYLAND_ADDR) — the
+	// editor session triggers a run; candyland spawns + tracks it.
+	if len(os.Args) > 1 && os.Args[1] == "control-mcp" {
+		runControlMCP()
 		return
 	}
 
@@ -108,5 +118,21 @@ func runCommsMCP() {
 	comms.RegisterTools(srv, comms.NewClient(addr, self, orchestrator))
 	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("comms-mcp: %v", err)
+	}
+}
+
+// runControlMCP serves the trigger MCP over stdio. A VSCode Claude Code session
+// registers it (alongside detritus) and calls launch_run to start a candyland
+// multi-agent run, run_status to check it, and stop_run to halt a hung/wrong one.
+// CANDYLAND_ADDR points at the running sidecar's api (default 127.0.0.1:8888).
+func runControlMCP() {
+	addr := os.Getenv("CANDYLAND_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:8888" // the default --port the sidecar binds
+	}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "candyland-control", Version: version.Version}, nil)
+	control.RegisterTools(srv, control.NewClient(addr))
+	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Fatalf("control-mcp: %v", err)
 	}
 }

@@ -33,7 +33,7 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 
 	// Persist a finished+failed run directly, as a prior process would have, with
 	// NO entry in the in-memory map.
-	r := run.Run{ID: "r9", Status: "done", Error: "boom", Mode: "developer", Workspace: "ws", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	r := run.Run{ID: "r9", Status: "done", Error: "boom", Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
 	b, _ := json.Marshal(r)
 	if _, err := st.Set("runs/r9", b); err != nil {
 		t.Fatalf("persist run: %v", err)
@@ -47,11 +47,158 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 		t.Fatal("tracked should rehydrate a persisted run that isn't in memory")
 	}
 	got, ok := c.Get("r9")
-	if !ok || got.Prompt != "x" || got.Workspace != "ws" {
+	if !ok || got.Prompt != "x" {
 		t.Errorf("rehydrated run wrong/missing: ok=%v %+v", ok, got)
 	}
 	// …and an unknown run is still nil (not in memory, not in storage).
 	if c.tracked("nope") != nil {
 		t.Error("tracked should return nil for a run that's neither tracked nor stored")
+	}
+}
+
+// On restart ReconcileOrphans closes out non-terminal phantom runs (no executor
+// survives a process) but must leave terminal history intact — a deliberately
+// cancelled run is genuine history, not a phantom, so rewriting it to
+// "done"/Interrupted would corrupt what the user actually did.
+func TestReconcileOrphansClosesPhantomsKeepsTerminal(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	c := New(srv)
+
+	seed := func(id, status, errStr string) {
+		r := run.Run{ID: id, Status: status, Error: errStr, Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+		b, _ := json.Marshal(r)
+		if _, err := st.Set("runs/"+id, b); err != nil {
+			t.Fatalf("persist run %s: %v", id, err)
+		}
+	}
+	read := func(id string) run.Run {
+		obj, err := st.Get("runs/" + id)
+		if err != nil {
+			t.Fatalf("read run %s: %v", id, err)
+		}
+		var r run.Run
+		if err := json.Unmarshal(obj.Data, &r); err != nil {
+			t.Fatalf("unmarshal run %s: %v", id, err)
+		}
+		return r
+	}
+
+	seed("phantom", "running", "")     // left mid-flight by a dead process
+	seed("cancelled", "cancelled", "") // deliberately cancelled — terminal history
+	seed("finished", "done", "boom")   // already terminal with its own error
+
+	c.ReconcileOrphans()
+
+	if r := read("phantom"); r.Status != "done" || r.Error == "" {
+		t.Errorf("phantom running run should be closed out: status=%q error=%q", r.Status, r.Error)
+	}
+	if r := read("cancelled"); r.Status != "cancelled" || r.Error != "" {
+		t.Errorf("cancelled run must stay cancelled with no synthesized error: status=%q error=%q", r.Status, r.Error)
+	}
+	if r := read("finished"); r.Status != "done" || r.Error != "boom" {
+		t.Errorf("finished run must keep its own terminal record: status=%q error=%q", r.Status, r.Error)
+	}
+}
+
+// A cancelled run is terminal: Edit and Restart must refuse it. The refusal keys
+// off the in-memory cancelled flag, which is lost on restart — so after a restart
+// (run only in storage, not in the map) the flag must be rehydrated from the
+// persisted status, or the run gets resurrected. Pairs with ReconcileOrphans
+// keeping the run cancelled across the same restart.
+func TestCancelledRunNotResurrectedAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	c := New(srv)
+
+	// A cancelled run as a prior process left it: persisted, not in the live map.
+	r := run.Run{ID: "c1", Status: "cancelled", Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	b, _ := json.Marshal(r)
+	if _, err := st.Set("runs/c1", b); err != nil {
+		t.Fatalf("persist cancelled run: %v", err)
+	}
+	if _, ok := c.Get("c1"); ok {
+		t.Fatal("precondition: c1 must not be tracked in memory yet")
+	}
+
+	if c.Edit("c1", run.Spec{Mode: "developer", Prompt: "sneak it back", Folders: []string{"/tmp"}}) {
+		t.Error("Edit must refuse a cancelled run rehydrated after restart")
+	}
+	if c.Restart("c1") {
+		t.Error("Restart must refuse a cancelled run rehydrated after restart")
+	}
+	if got, _ := c.Get("c1"); got.Status != "cancelled" {
+		t.Errorf("cancelled run must stay cancelled, got %q", got.Status)
+	}
+}
+
+// seq is in-memory and resets to 0 on restart. ReconcileOrphans must seed it past
+// the highest persisted run id, or the first post-restart Create mints an id that
+// already exists and Storage.Set (upsert) overwrites that run's record — silent
+// history loss.
+func TestReconcileSeedsSeqPastPersistedRuns(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	// Two runs a prior process left behind (one terminal, one a higher-numbered
+	// cancelled run — both must be counted even though the status checks skip them).
+	for _, seed := range []run.Run{
+		{ID: "r1", Status: "done", Mode: "developer", Prompt: "first", Agents: []run.Agent{}, Tasks: []run.Task{}},
+		{ID: "r5", Status: "cancelled", Mode: "developer", Prompt: "fifth", Agents: []run.Agent{}, Tasks: []run.Task{}},
+	} {
+		b, _ := json.Marshal(seed)
+		if _, err := st.Set("runs/"+seed.ID, b); err != nil {
+			t.Fatalf("persist %s: %v", seed.ID, err)
+		}
+	}
+
+	c := New(srv)
+	c.ReconcileOrphans()
+
+	// The next Create must skip past r5, not reuse r1.
+	id := c.Create(run.Spec{Mode: "developer", Prompt: "new", Folders: []string{"/tmp"}})
+	if id != "r6" {
+		t.Errorf("post-restart Create reused/collided an id: got %q, want r6", id)
+	}
+	// The prior runs' records are intact (not overwritten).
+	obj, err := st.Get("runs/r1")
+	if err != nil {
+		t.Fatalf("r1 record missing after reconcile+create: %v", err)
+	}
+	var r run.Run
+	if err := json.Unmarshal(obj.Data, &r); err != nil {
+		t.Fatalf("unmarshal r1: %v", err)
+	}
+	if r.Prompt != "first" {
+		t.Errorf("r1 was overwritten: prompt=%q", r.Prompt)
 	}
 }
