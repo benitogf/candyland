@@ -164,6 +164,9 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		fail(ctx, c, id, "tl", "The run has no folders. Launch it with at least one (the first is the git repository the run works in).")
 		return
 	}
+	// Copy before expanding — c.folders may return the run's stored slice by
+	// reference, and fanOut must not mutate shared run state outside c.Update.
+	folders = append([]string(nil), folders...)
 	for i, f := range folders {
 		folders[i] = expandHome(f)
 	}
@@ -769,11 +772,23 @@ func parsePartition(text string) []partitionTask {
 			// worktree root or break ref creation, and ids stay consistent with the
 			// deps that reference them. Realistic ids (a, backend, csv-export) are
 			// unchanged by slug.
+			seen := make(map[string]bool, len(tasks))
 			for i := range tasks {
 				tasks[i].ID = slug(tasks[i].ID)
 				for j := range tasks[i].Deps {
 					tasks[i].Deps[j] = slug(tasks[i].Deps[j])
 				}
+				// Ensure ids are UNIQUE: a task id keys the brief, the bus agent, the
+				// worktree dir, and the git branch — a collision (more likely now that
+				// one partition spans multiple repos) would silently overwrite the
+				// first. Suffix duplicates; deps still resolve to the first occurrence
+				// (the bus auto-unblock is a best-effort hint, not a hard dependency).
+				base, uid := tasks[i].ID, tasks[i].ID
+				for k := 2; seen[uid]; k++ {
+					uid = fmt.Sprintf("%s-%d", base, k)
+				}
+				tasks[i].ID = uid
+				seen[uid] = true
 			}
 			return tasks
 		}

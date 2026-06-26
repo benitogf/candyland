@@ -19,10 +19,8 @@ func startServer(t *testing.T, orchestrator string, agents ...string) (*ooo.Serv
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	b := NewBus(orchestrator, CursorReader(srv))
-	b.RegisterGlobal(srv)
-	for _, a := range agents {
-		b.RegisterAgent(srv, a)
-	}
+	b.RegisterGlobal(srv) // registers every filter (incl. all inboxes) before Start
+	_ = agents
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -38,7 +36,6 @@ func TestReactorWritesDirectiveOnWorkerEvent(t *testing.T) {
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	b := NewBus("conductor", CursorReader(srv))
 	b.RegisterGlobal(srv)
-	b.RegisterAgent(srv, "worker")
 	done := make(chan struct{}, 1)
 	b.RegisterReactor(srv, func(s *ooo.Server, ev Envelope) {
 		_ = b.PushDirective(s, ev.From, "noted: "+ev.Body)

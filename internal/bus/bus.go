@@ -42,10 +42,13 @@ const (
 	GraphNodesGlob  = "graph/nodes/*"  // the durable task ledger (orchestrator single-writer)
 	GraphEventsGlob = "graph/events/*" // append-only proposal/mutation log (anyone appends)
 	BriefGlob       = "brief/*"        // per-agent initial context (orchestrator-written, agent-read)
+	InboxFilterGlob = "inbox/*/*"      // server-side filter covering EVERY recipient's inbox/<id>/<seq>
 )
 
-// InboxGlob is the per-recipient inbox list path. Registered per agent at spawn
-// (the recipient is a fixed segment so the single trailing glob is valid).
+// InboxGlob is the per-recipient inbox list path a client pushes to / reads from
+// (the recipient is a fixed segment so the single trailing glob is valid for the
+// HTTP request). The server-side filters are registered ONCE, globally, as
+// InboxFilterGlob — see RegisterGlobal; there is no per-agent registration.
 func InboxGlob(agentID string) string { return "inbox/" + agentID + "/*" }
 
 // GraphNodeKey is the concrete (non-glob) key of one task-graph node.
@@ -287,6 +290,13 @@ func (b *Bus) RegisterGlobal(server *ooo.Server) {
 	// own brief once via brief_get instead of receiving the plan on argv).
 	server.WriteFilter(BriefGlob, b.BriefWriteFilter())
 	server.ReadObjectFilter(BriefGlob, b.BriefReadObjectFilter())
+	// inbox/<recipient>/<seq>: ONE global filter pair covering every recipient.
+	// The filters derive the recipient from the key segment, so no per-agent
+	// registration is needed — every bus filter is registered here, before
+	// server.Start, and the filter set is never mutated again while the server is
+	// serving (mutating it from a spawn goroutine raced ooo's broadcast loop).
+	server.WriteFilter(InboxFilterGlob, b.InboxWriteFilter())
+	server.ReadListFilter(InboxFilterGlob, b.InboxReadFilter())
 	// The conductor folds the append-only event log in-process; expose it
 	// unscoped (needed because the conductor runs Static: deny-by-default).
 	server.ReadListFilter(GraphEventsGlob, func(key string, objs []meta.Object) ([]meta.Object, error) {
@@ -295,15 +305,6 @@ func (b *Bus) RegisterGlobal(server *ooo.Server) {
 	// cursor/<agentId> read+write must be permitted under Static mode (the
 	// inbox read filter reads it; comms_inbox advances it).
 	server.OpenFilter("cursor/*")
-}
-
-// RegisterAgent registers an agent's per-inbox filters. The recipient id is a
-// fixed path segment, so the single trailing glob is valid. Call as each agent
-// (tech-lead, coder) is spawned.
-func (b *Bus) RegisterAgent(server *ooo.Server, agentID string) {
-	glob := InboxGlob(agentID)
-	server.WriteFilter(glob, b.InboxWriteFilter())
-	server.ReadListFilter(glob, b.InboxReadFilter())
 }
 
 // --- coordination reaction (the conductor's in-process orchestration hook) ---

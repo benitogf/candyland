@@ -63,7 +63,9 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	if b == nil || c.server == nil || c.server.Address == "" {
 		return ""
 	}
-	c.registerBusAgent(agentID)
+	// No per-agent filter registration here: the inbox filters are registered
+	// once, globally, in StartBus (before the server serves). Registering them at
+	// spawn raced ooo's broadcast loop.
 
 	self, err := os.Executable()
 	if err != nil {
@@ -153,15 +155,4 @@ func (c *Conductor) escalateOpenNodes(reason string) {
 			_ = b.Escalate(c.server, n.ID, reason)
 		}
 	}
-}
-
-// registerBusAgent registers an agent's inbox filters exactly once.
-func (c *Conductor) registerBusAgent(agentID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.bus == nil || c.busAgents[agentID] {
-		return
-	}
-	c.bus.RegisterAgent(c.server, agentID)
-	c.busAgents[agentID] = true
 }

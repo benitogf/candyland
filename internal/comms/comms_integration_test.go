@@ -36,10 +36,8 @@ func startBus(t *testing.T, orchestrator string, agents ...string) (string, func
 	// so this also proves every bus path has a registered filter.
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	b := bus.NewBus(orchestrator, bus.CursorReader(srv))
-	b.RegisterGlobal(srv)
-	for _, a := range agents {
-		b.RegisterAgent(srv, a)
-	}
+	b.RegisterGlobal(srv) // registers every filter (incl. all inboxes) before Start
+	_ = agents
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatalf("start bus: %v", err)
 	}

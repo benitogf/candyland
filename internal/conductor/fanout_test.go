@@ -57,6 +57,14 @@ func TestParsePartitionSlugsIDsAndDeps(t *testing.T) {
 	if got[1].Deps[0] != got[0].ID {
 		t.Errorf("dep %q must match the slugged task id %q so unblock still works", got[1].Deps[0], got[0].ID)
 	}
+
+	// Duplicate ids (more likely once one partition spans multiple repos) are made
+	// unique — a collision would otherwise silently overwrite the first task's
+	// brief / bus agent / worktree / branch.
+	dup := parsePartition(`PARTITION [{"id":"a","title":"X","repo":"alpha"},{"id":"a","title":"Y","repo":"beta"}]`)
+	if len(dup) != 2 || dup[0].ID == dup[1].ID {
+		t.Errorf("duplicate task ids must be made unique, got %q and %q", dup[0].ID, dup[1].ID)
+	}
 }
 
 // argvCaptureClaude records the -p argument ($2) of every spawn to the file in

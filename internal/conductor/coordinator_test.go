@@ -52,11 +52,8 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 		t.Errorf("agent/orchestrator env wrong: %v", spec.Env)
 	}
 
-	// The agent's inbox is now live: a peer can send to it over the bus (proving
-	// post-spawn registration took effect on the HTTP path).
-	if !c.busAgents["coder-1"] {
-		t.Error("coder-1 inbox not marked registered")
-	}
+	// The agent's inbox is live via the global filters registered at StartBus: a
+	// peer can send to it over the bus and read it back (no per-agent registration).
 	rc := io.RemoteConfig{Host: srv.Address, Client: &http.Client{}}
 	if err := io.RemotePush(rc, bus.InboxGlob("coder-1"), bus.Envelope{From: "peer", To: "coder-1", Type: bus.MsgQuestion}); err != nil {
 		t.Fatalf("send to the newly-registered inbox failed: %v", err)
