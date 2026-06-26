@@ -38,6 +38,12 @@ var (
 	spaPort  = flag.Int("spaPort", 8080, "SPA http port")
 	dataPath = flag.String("dataPath", "db/data", "data storage path")
 	silence  = flag.Bool("silence", true, "silence ooo output")
+
+	// Desktop window (webview build only; ignored by the default headless build).
+	headless     = flag.Bool("headless", false, "serve the UI on spaPort only, without opening the desktop window")
+	windowW      = flag.Int("width", 1280, "desktop window width")
+	windowH      = flag.Int("height", 820, "desktop window height")
+	debugWebview = flag.Bool("debugWebview", false, "open the desktop window with devtools")
 )
 
 func main() {
@@ -101,7 +107,7 @@ func main() {
 	server.Start(*host + ":" + strconv.Itoa(*port))
 	log.Printf("candyland API → http://%s:%d (bound to %s; use --host 0.0.0.0 to expose on the network)", *host, *port, *host)
 	cond.ReconcileOrphans() // storage is live only after Start; close out phantom runs from a prior process
-	server.WaitClose()
+	runUI(server, "http://localhost:"+strconv.Itoa(*spaPort), *headless, *windowW, *windowH, *debugWebview)
 }
 
 // runCommsMCP serves the per-coder coordination-bus MCP over stdio. The
