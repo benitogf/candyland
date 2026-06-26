@@ -1,0 +1,11 @@
+common --enable_platform_specific_config
+build:linux --sandbox_add_mount_pair=/tmp
+build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+# The release genrules shell out to the system Go + Zig and read the version to
+# stamp into the binary from this env var (defaults to "dev" when unset).
+build --action_env=CANDYLAND_VERSION
+build --action_env=PATH=/usr/local/zig:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+build --action_env=HOME=/root
+build --action_env=GOPATH=/root/go
+build --action_env=GOMODCACHE=/root/go/pkg/mod

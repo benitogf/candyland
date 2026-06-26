@@ -1,0 +1,16 @@
+module(name = "candyland", version = "0.1.0")
+
+# Zig hermetic C/C++ toolchain — lets the CGO webview build cross-compile the
+# Windows (WebView2) binaries from a Linux runner, the same approach as
+# spartan/samples/webcanvas. The genrules below invoke `zig cc` directly; this
+# dep is what makes a Zig toolchain available to Bazel.
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.1.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+toolchains = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
+use_repo(toolchains, "zig_sdk")
+
+register_toolchains(
+    "@zig_sdk//toolchain:windows_amd64",
+    "@zig_sdk//toolchain:windows_arm64",
+)

@@ -1,7 +1,8 @@
 # Release workflow
 
-`ci/release.yml` is the standalone-binary release pipeline (linux/darwin/windows ×
-amd64/arm64; builds the embedded SPA + binary and publishes the GitHub Release the
+`ci/release.yml` is the release pipeline (linux/darwin/windows × amd64/arm64;
+builds the embedded SPA + binaries via Bazel + a Zig toolchain — webview/CGO on
+linux-amd64 + windows, headless elsewhere — and publishes the GitHub Release the
 detritus installer pulls from). It lives here, not under `.github/workflows/`,
 because the CLI token used to push these branches lacks the `workflow` OAuth scope.
 
