@@ -19,6 +19,7 @@ import (
 	"github.com/benitogf/candyland/internal/comms"
 	"github.com/benitogf/candyland/internal/conductor"
 	"github.com/benitogf/candyland/internal/control"
+	"github.com/benitogf/candyland/internal/datadir"
 	"github.com/benitogf/candyland/internal/httpapi"
 	"github.com/benitogf/candyland/internal/spa"
 	"github.com/benitogf/candyland/internal/version"
@@ -36,7 +37,7 @@ var (
 	host     = flag.String("host", "127.0.0.1", "host/interface to bind (default loopback; set 0.0.0.0 to expose on the network)")
 	port     = flag.Int("port", 8888, "ooo realtime + api port")
 	spaPort  = flag.Int("spaPort", 8080, "SPA http port")
-	dataPath = flag.String("dataPath", "db/data", "data storage path")
+	dataPath = flag.String("dataPath", "", "data storage path (default: ~/.candyland/db)")
 	silence  = flag.Bool("silence", true, "silence ooo output")
 
 	// Desktop window (webview build only; ignored by the default headless build).
@@ -67,6 +68,11 @@ func main() {
 	flag.Parse()
 	log.Printf("candyland %s", version.Version)
 
+	// Resolve the data directory: an explicit --dataPath wins verbatim; unset
+	// resolves to ~/.candyland/db, creating it and migrating any legacy
+	// project-local ./db/data on a best-effort basis (never fails startup).
+	resolvedDataPath := datadir.Resolve(*dataPath)
+
 	server := &ooo.Server{
 		ReadTimeout:  20 * time.Minute,
 		WriteTimeout: 20 * time.Minute,
@@ -76,7 +82,7 @@ func main() {
 		Workers:      2,
 		Storage: storage.New(storage.LayeredConfig{
 			Memory:   storage.NewMemoryLayer(),
-			Embedded: ko.NewEmbeddedStorage(*dataPath),
+			Embedded: ko.NewEmbeddedStorage(resolvedDataPath),
 		}),
 		Silence: *silence,
 	}
