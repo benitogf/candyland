@@ -1,18 +1,13 @@
-# Release workflow
+# Release
 
-`ci/release.yml` is the release pipeline (linux/darwin/windows × amd64/arm64;
-builds the embedded SPA + binaries via Bazel + a Zig toolchain — webview/CGO on
-linux-amd64 + windows, headless elsewhere — and publishes the GitHub Release the
-detritus installer pulls from). It lives here, not under `.github/workflows/`,
-because the CLI token used to push these branches lacks the `workflow` OAuth scope.
+The release pipeline now lives at `.github/workflows/release.yml` (active). A version
+tag (`v*`) triggers it: it builds the embedded SPA + the cross-platform binaries
+(linux/darwin/windows × amd64/arm64; webview/CGO on linux-amd64 + windows via Bazel +
+a Zig toolchain, headless elsewhere) and publishes the GitHub Release the detritus
+installer pulls from.
 
-To activate it (one-time, needs a workflow-scoped token — a human step):
+Cut a release from `main` with:
 
 ```bash
-gh auth refresh -h github.com -s workflow
-git mv ci/release.yml .github/workflows/release.yml
-git commit -m 'ci: activate release workflow' && git push
+scripts/release.sh X.Y.Z
 ```
-
-Then cut a release with `scripts/release.sh X.Y.Z`. Until activated there are no
-candyland releases, and the detritus installer simply skips the sidecar binary.
