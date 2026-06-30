@@ -138,6 +138,133 @@ const (
 	PhasePR        = 3
 )
 
+// AutonomyLevel is how much human gating a quest's child runs carry. The value
+// rides on the QuestSpec at launch and is persisted on the Quest; the tick loop
+// (a later phase) reads it to decide whether to report only, gate the PR, or run
+// unattended. The three settled levels:
+//   - L1 (report-only): discover and triage, but launch nothing — surface findings.
+//   - L2 (assisted-gate-PR): launch child runs, but hold each PR for human gate.
+//   - L3 (unattended): launch and deliver without a per-PR human gate.
+type AutonomyLevel string
+
+const (
+	AutonomyReportOnly AutonomyLevel = "L1" // discover/triage only, launch nothing
+	AutonomyGatePR     AutonomyLevel = "L2" // launch runs, gate each PR for a human
+	AutonomyUnattended AutonomyLevel = "L3" // launch and deliver without a per-PR gate
+)
+
+// Delivery is how a quest's child runs ship their work. A standalone quest opens
+// a PR per child run ("pr"); a campaign-owned quest commits onto a shared per-repo
+// branch ("branch") derived as campaign/<campaignID> (NOT a scalar branch name —
+// settled decision). The derivation lives in conductor.QuestBranch.
+type Delivery string
+
+const (
+	DeliverPR     Delivery = "pr"     // standalone quest: one PR per child run
+	DeliverBranch Delivery = "branch" // campaign-owned: commit onto campaign/<campaignID>
+)
+
+// QuestSpec is the launch input for a quest — a Candyland-native iterative loop
+// (the generalized homologue of /janitor) that repeatedly discovers/triages work
+// items and launches child runs, producing many PRs over time. It mirrors run.Spec
+// (launch input) the way Quest mirrors Run (persisted state). The tick loop,
+// discover/triage/launch logic, and delivery wiring are later phases — this spec
+// only carries the settled launch parameters.
+type QuestSpec struct {
+	// Objective is the refined intent that drives discovery/triage each tick. Set
+	// once at creation onto Quest.OriginalObjective and never rewritten, mirroring
+	// how Run.OriginalIntent is captured once (see Quest.OriginalObjective).
+	Objective string   `json:"objective"`
+	Folders   []string `json:"folders,omitempty"` // target folders/repos (folders[0] = the git repo child runs branch/PR in)
+	Scope     string   `json:"scope,omitempty"`   // human-readable bound on what work is in-scope
+	// Safety is the safety boundary: the files/areas a quest's child runs must not
+	// touch (the quest-level analogue of a coder's fork-safe boundary).
+	Safety string   `json:"safety,omitempty"`
+	Verify []string `json:"verify,omitempty"` // verification command(s) every child run must pass green
+	Stop   string   `json:"stop,omitempty"`   // stop/pause criteria (when to halt the loop)
+	// AutonomyLevel gates the child runs (L1 report-only | L2 assisted-gate-PR |
+	// L3 unattended). Empty defaults to L1 at creation (report-only is the safe floor).
+	AutonomyLevel AutonomyLevel `json:"autonomyLevel,omitempty"`
+	TokenBudget   int           `json:"tokenBudget,omitempty"` // cap on total tokens across all ticks/child runs
+	// Deliver is "pr" (standalone) or "branch" (campaign-owned). Empty defaults to
+	// "pr" at creation. When "branch", the per-repo branch is campaign/<campaignID>.
+	Deliver Delivery `json:"deliver,omitempty"`
+	// CampaignID is the parent campaign link, set when this quest is launched under a
+	// campaign. Empty for a standalone quest.
+	CampaignID string `json:"campaignId,omitempty"`
+}
+
+// WorkItem is one unit of work a quest's discovery surfaced and triage decided on.
+// It links the originating tick, the evidence/classification/decision, the child
+// run launched to do it (when one was), and the final disposition.
+type WorkItem struct {
+	ID             string `json:"id"`
+	SourceTick     string `json:"sourceTick"`               // the Tick.ID that discovered this item
+	Evidence       string `json:"evidence,omitempty"`       // why discovery flagged it
+	Classification string `json:"classification,omitempty"` // discovery's category for the item
+	Decision       string `json:"decision,omitempty"`       // triage's call (do now | skip | block)
+	ChildRunID     string `json:"childRunId,omitempty"`     // the run launched for this item, when one was
+	Disposition    string `json:"disposition,omitempty"`    // final outcome (completed | skipped | blocked)
+}
+
+// Tick is one iteration of the quest loop: a discovery pass, the triage decisions
+// it produced, the child runs it launched, the PRs that resulted, any blockers,
+// and what the loop will do next.
+type Tick struct {
+	ID               string   `json:"id"`
+	StartedAt        string   `json:"startedAt"`         // RFC3339 set when the tick begins
+	EndedAt          string   `json:"endedAt,omitempty"` // RFC3339 set when the tick completes
+	DiscoverySummary string   `json:"discoverySummary,omitempty"`
+	TriageDecisions  []string `json:"triageDecisions,omitempty"`
+	LaunchedRunIDs   []string `json:"launchedRunIds,omitempty"`
+	PRs              []PR     `json:"prs,omitempty"` // PRs opened during this tick
+	Blockers         []string `json:"blockers,omitempty"`
+	NextAction       string   `json:"nextAction,omitempty"`
+}
+
+// Quest is the full persisted state of a quest — the object stored at ooo key
+// quests/<id>. It mirrors Run (the stored run object) for a quest's iterative loop:
+// stable id + optional parent campaign link, the objective fields carried from the
+// spec, lifecycle status, autonomy/budget/delivery, the work items and ticks the
+// loop accumulates, rollup counters for the dashboard, and the schema version. The
+// tick loop that populates Ticks/WorkItems is a later phase — this is the model and
+// its persistence only.
+type Quest struct {
+	ID         string `json:"id"`
+	CampaignID string `json:"campaignId,omitempty"` // parent campaign link; empty for a standalone quest
+	// OriginalObjective is the launch objective, set ONCE at creation and never
+	// rewritten — the quest analogue of Run.OriginalIntent. Final review compares
+	// the quest's output against this, not against a mutated objective.
+	OriginalObjective string   `json:"originalObjective"`
+	Objective         string   `json:"objective"` // the working objective (may evolve; starts == OriginalObjective)
+	Folders           []string `json:"folders,omitempty"`
+	Scope             string   `json:"scope,omitempty"`
+	Safety            string   `json:"safety,omitempty"`
+	Verify            []string `json:"verify,omitempty"`
+	Stop              string   `json:"stop,omitempty"`
+	// Status is the lifecycle state: running|paused|stopped|blocked|done. PauseReason
+	// carries the human-readable reason when paused/blocked.
+	Status        string        `json:"status"`
+	PauseReason   string        `json:"pauseReason,omitempty"`
+	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
+	TokenBudget   int           `json:"tokenBudget,omitempty"`
+	TokensUsed    int           `json:"tokensUsed"`
+	Deliver       Delivery      `json:"deliver"`
+	WorkItems     []WorkItem    `json:"workItems"`
+	Ticks         []Tick        `json:"ticks"`
+	// Rollup fields for the dashboard, recomputed from WorkItems/Ticks by the loop.
+	PRsOpened      int    `json:"prsOpened"`
+	ItemsCompleted int    `json:"itemsCompleted"`
+	ItemsSkipped   int    `json:"itemsSkipped"`
+	ItemsBlocked   int    `json:"itemsBlocked"`
+	LastProgress   string `json:"lastProgress,omitempty"` // RFC3339 of the last forward step
+	CreatedAt      string `json:"createdAt"`              // RFC3339 set once at creation
+	UpdatedAt      string `json:"updatedAt"`              // RFC3339 set on every persisted mutation
+	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
+	// exported trace carries TraceVersion so a future store can detect/migrate.
+	TraceVersion int `json:"traceVersion"`
+}
+
 // RunTrace is the normalized, exportable trace of a single run: the stored Run
 // plus its Audit (when present) and the schema version, in a stable JSONL-friendly
 // shape. It is shape-readiness for a later central store — it embeds the existing

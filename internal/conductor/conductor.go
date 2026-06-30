@@ -42,6 +42,9 @@ type Conductor struct {
 	mu     sync.Mutex
 	runs   map[string]*runtime
 	seq    int
+	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
+	// highest persisted quest id by reconcileQuestSeq after a restart.
+	questSeq int
 	// folders resolves a run's working folders. Defaults to the folders the run
 	// was launched with (Spec.Folders, carried on the Run); tests override it to
 	// point a run at a throwaway git repo.
@@ -248,6 +251,9 @@ func (c *Conductor) ReconcileOrphans() {
 		c.seq = maxSeq // next Create mints r<maxSeq+1>, never an existing id
 	}
 	c.mu.Unlock()
+	// Seed the quest-id sequence the same way, so a post-restart CreateQuest can't
+	// overwrite an existing quest record.
+	c.reconcileQuestSeq()
 }
 
 // Create registers a new run (status: planning) and publishes it. The build
