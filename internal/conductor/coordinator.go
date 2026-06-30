@@ -79,12 +79,17 @@ func (c *Conductor) StartBus() {
 	c.mu.Unlock()
 }
 
-// mcpServerSpec is one entry in a Claude Code --mcp-config file. The comms
-// surface is now an HTTP MCP endpoint hosted on the app (type:http + url),
-// replacing the per-agent stdio process the old Command/Args spawned.
+// mcpServerSpec is one entry in a Claude Code --mcp-config file. It supports
+// both shapes claude's --mcp-config accepts: a STDIO entry is {command, args,
+// env}; an HTTP entry is {type:"http", url}. The comms surface is HTTP (it talks
+// to candyland's shared ooo bus); detritus is STDIO — a passive stdio child each
+// agent spawns from the installed binary, exactly as a VSCode Claude session does.
 type mcpServerSpec struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
+	Type    string            `json:"type,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 type mcpConfigFile struct {
@@ -94,11 +99,17 @@ type mcpConfigFile struct {
 // busMCPConfig writes a per-agent --mcp-config that points the coder at the
 // app-hosted comms MCP endpoint over HTTP, identifying it by the agentID in the
 // URL path. Returns the config path, or "" when no bus is wired (no flag is added
-// then). When DETRITUS_MCP_URL is set (detritus exports it on the sidecar
-// process), a second `detritus` http entry is added so the agent has the
-// kb_*/code_*/skill_* tools the Composition Constraint requires. The inbox
-// filters are registered globally at StartBus, so there is no per-agent
-// registration here. The conductor stays pure Go — it only writes the config.
+// then). It also adds a `detritus` STDIO entry so the agent has the
+// kb_*/code_*/skill_* tools the Composition Constraint requires: detritus is a
+// passive stdio MCP server, so each agent spawns its own detritus stdio child
+// from the installed binary — exactly as a VSCode Claude session does — rather
+// than sharing one long-lived process. The binary is resolved from DETRITUS_BIN
+// (detritus sets this on the candyland process at launch) or PATH; if neither
+// resolves, the entry is omitted (degraded — agents lack doctrine). The agent
+// (claude) process is spawned with the full env, which its detritus stdio child
+// inherits, so gh/HOME creds propagate. The inbox filters are registered globally
+// at StartBus, so there is no per-agent registration here. The conductor stays
+// pure Go — it only writes the config.
 func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	c.mu.Lock()
 	b := c.bus
@@ -117,10 +128,12 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 		},
 	}
 	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
-	// Constraint). detritus sets DETRITUS_MCP_URL on the sidecar process; pass it
-	// through as a second http entry when present.
-	if detritusURL := os.Getenv("DETRITUS_MCP_URL"); detritusURL != "" {
-		servers["detritus"] = mcpServerSpec{Type: "http", URL: detritusURL}
+	// Constraint). detritus is a passive stdio MCP server: resolve the installed
+	// binary and add a stdio entry {command, args:[]} so each agent spawns its own
+	// detritus child (like a VSCode session). Resolve via DETRITUS_BIN, else PATH;
+	// omit the entry (degraded) when neither resolves.
+	if detritusBin := resolveDetritusBin(); detritusBin != "" {
+		servers["detritus"] = mcpServerSpec{Command: detritusBin, Args: []string{}}
 	}
 	cfg := mcpConfigFile{MCPServers: servers}
 	data, err := json.Marshal(cfg)
@@ -136,6 +149,20 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 		return ""
 	}
 	return path
+}
+
+// resolveDetritusBin locates the detritus binary an agent's stdio MCP child
+// should run. detritus sets DETRITUS_BIN on the candyland process at launch;
+// fall back to PATH for a dev/manual run. Returns "" when neither resolves, so
+// the caller omits the detritus entry (degraded — agents lack doctrine).
+func resolveDetritusBin() string {
+	if bin := os.Getenv("DETRITUS_BIN"); bin != "" {
+		return bin
+	}
+	if bin, err := exec.LookPath("detritus"); err == nil {
+		return bin
+	}
+	return ""
 }
 
 // busConfigDir is the per-run directory holding the spawned agents'

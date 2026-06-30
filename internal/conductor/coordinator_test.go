@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -27,8 +28,9 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	}
 	defer srv.Close(os.Interrupt)
 
-	// DETRITUS_MCP_URL unset: only the comms entry is present.
-	os.Unsetenv("DETRITUS_MCP_URL")
+	// DETRITUS_BIN unset: the comms entry is always present; the detritus entry is
+	// absent only when `detritus` is also not on PATH (gate that case on LookPath).
+	os.Unsetenv("DETRITUS_BIN")
 	path := c.busMCPConfig("run1", "coder-1")
 	if path == "" {
 		t.Fatal("expected a --mcp-config path when the bus is wired")
@@ -45,21 +47,31 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	if !strings.HasPrefix(spec.URL, "http://"+srv.Address) || !strings.HasSuffix(spec.URL, wantSuffix) {
 		t.Errorf("comms url = %q, want http://%s...%s", spec.URL, srv.Address, wantSuffix)
 	}
-	if _, has := cfg.MCPServers["detritus"]; has {
-		t.Errorf("detritus entry must be absent when DETRITUS_MCP_URL is unset: %+v", cfg)
+	if _, onPath := exec.LookPath("detritus"); onPath != nil {
+		// Neither DETRITUS_BIN nor PATH resolves detritus → entry omitted (degraded).
+		if _, has := cfg.MCPServers["detritus"]; has {
+			t.Errorf("detritus entry must be absent when DETRITUS_BIN unset and detritus not on PATH: %+v", cfg)
+		}
 	}
 
-	// DETRITUS_MCP_URL set: a second `detritus` http entry is added so the agent
-	// has kb_*/code_*/skill_* (the Composition Constraint).
-	const detURL = "http://127.0.0.1:9999/mcp"
-	t.Setenv("DETRITUS_MCP_URL", detURL)
+	// DETRITUS_BIN set: a `detritus` STDIO entry is added so the agent has
+	// kb_*/code_*/skill_* (the Composition Constraint). It is {command, args:[]} —
+	// a passive stdio child the agent spawns, like a VSCode session.
+	const detBin = "/opt/detritus/bin/detritus"
+	t.Setenv("DETRITUS_BIN", detBin)
 	cfg = readConfig(t, c.busMCPConfig("run1", "coder-2"))
 	det, ok := cfg.MCPServers["detritus"]
 	if !ok {
-		t.Fatalf("config missing detritus server when DETRITUS_MCP_URL is set: %+v", cfg)
+		t.Fatalf("config missing detritus server when DETRITUS_BIN is set: %+v", cfg)
 	}
-	if det.Type != "http" || det.URL != detURL {
-		t.Errorf("detritus entry = %+v, want {http %s}", det, detURL)
+	if det.Command != detBin {
+		t.Errorf("detritus entry command = %q, want %q", det.Command, detBin)
+	}
+	if len(det.Args) != 0 {
+		t.Errorf("detritus entry args = %v, want empty", det.Args)
+	}
+	if det.Type != "" || det.URL != "" {
+		t.Errorf("detritus stdio entry must not carry type/url, got %+v", det)
 	}
 	if comm := cfg.MCPServers["candyland-comms"]; !strings.HasSuffix(comm.URL, "/mcp/comms/coder-2") {
 		t.Errorf("comms url for coder-2 = %q, want suffix /mcp/comms/coder-2", comm.URL)
