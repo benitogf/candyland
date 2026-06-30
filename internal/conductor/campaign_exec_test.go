@@ -25,8 +25,8 @@ func waitForCampaign(t *testing.T, c *Conductor, id string, until func(run.Campa
 }
 
 // campaignClaude is a scripted stub `claude` driving the whole campaign supervisor
-// with no real model. It branches on the spawn's role (the prompt) and a per-stage
-// fixture/counter file (the existing CANDYLAND_AGENT_ID/prompt-branching convention):
+// with no real model. Composed from the stubClaude harness (see stubclaude_test.go);
+// it branches on the spawn's role (the prompt) and a per-stage fixture/counter file:
 //   - the INTENT LEAD fails the brief gate ONCE (a goal that shares no terms with the
 //     original input — recorded via CANDYLAND_BRIEF_FIXTURE), then on the route-back
 //     emits a consistent brief with one draft task and two commitments c1/c2.
@@ -36,36 +36,24 @@ func waitForCampaign(t *testing.T, c *Conductor, id string, until func(run.Campa
 //   - the INTENT REVIEWER emits a per-commitment INTENT_REVIEW: c1 satisfied, and c2
 //     either `missed` (blocks the PR) or `partial` (annotates only) per
 //     CANDYLAND_TEST_VERDICT — the lever the oracle flips to assert both gates.
-const campaignClaude = `#!/usr/bin/env bash
-prompt="$2"
-if [[ "$prompt" == *"intent lead"* ]]; then
-  if [[ -f "$CANDYLAND_BRIEF_FIXTURE" ]]; then
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"INTENT_BRIEF {\"restatedGoal\":\"add csv export to the reports page\",\"scopeByDomain\":[\"backend\"],\"draftTasks\":[\"implement csv export endpoint\",\"add csv export button\"],\"commitments\":[{\"id\":\"c1\",\"statement\":\"export endpoint exists\"},{\"id\":\"c2\",\"statement\":\"export includes totals\"}]}"}]}}'
-    echo '{"type":"result","subtype":"success","result":"brief","usage":{"output_tokens":2}}'
-  else
-    touch "$CANDYLAND_BRIEF_FIXTURE"
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"INTENT_BRIEF {\"restatedGoal\":\"totally unrelated nonsense\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}"}]}}'
-    echo '{"type":"result","subtype":"success","result":"brief","usage":{"output_tokens":1}}'
-  fi
-elif [[ "$prompt" == *"intent reviewer"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
-  echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added in handler.go\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$CANDYLAND_TEST_VERDICT\\\",\\\"evidence\\\":[\\\"totals column not wired\\\"]}]}\"}]}}"
-  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
-elif [[ "$prompt" == *"code reviewer"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
-  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
-elif [[ "$prompt" == *"tech lead"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"do the item\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
-  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
-else
-  # Each coder writes a file UNIQUE to its worktree (PID-named) so two child runs
-  # sharing the campaign branch don't collide — their commits ACCUMULATE on it.
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"work.txt"}}]}}'
-  echo "done by $$" > "work_$$.txt"
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"TEST {\"pass\":1,\"fail\":0}"}]}}'
-  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
-fi
-`
+var campaignClaude = stubClaude(
+	role("intent lead", `if [[ -f "$CANDYLAND_BRIEF_FIXTURE" ]]; then
+  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"add csv export to the reports page\",\"scopeByDomain\":[\"backend\"],\"draftTasks\":[\"implement csv export endpoint\",\"add csv export button\"],\"commitments\":[{\"id\":\"c1\",\"statement\":\"export endpoint exists\"},{\"id\":\"c2\",\"statement\":\"export includes totals\"}]}`)+`  `+emitResult("brief", 2)+`else
+  touch "$CANDYLAND_BRIEF_FIXTURE"
+  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"totally unrelated nonsense\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+`  `+emitResult("brief", 1)+`fi
+`),
+	// The intent reviewer's verdict for c2 is interpolated from the env at run time
+	// (CANDYLAND_TEST_VERDICT), so the INTENT_REVIEW line is double-escaped and echoed
+	// directly rather than built from emitText.
+	role("intent reviewer", `echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added in handler.go\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$CANDYLAND_TEST_VERDICT\\\",\\\"evidence\\\":[\\\"totals column not wired\\\"]}]}\"}]}}"
+`+emitResult("reviewed", 1)),
+	roleCleanReviewer,
+	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
+	// Each coder writes a file UNIQUE to its worktree (PID-named) so two child runs
+	// sharing the campaign branch don't collide — their commits ACCUMULATE on it.
+	coder(writeWorktreeFile("work_$$.txt"), emitTest(1, 0)),
+)
 
 // The ORACLE for the campaign execution layer. A scripted-stub run drives the full
 // intent→delivery supervisor deterministically and asserts every gate:

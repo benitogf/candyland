@@ -25,7 +25,8 @@ func waitForQuest(t *testing.T, c *Conductor, id string, until func(run.Quest) b
 }
 
 // questTickClaude is a scripted stub `claude` that drives a whole quest tick with
-// no real model. It branches on the spawn's role (the prompt) and the bus brief:
+// no real model. Composed from the stubClaude harness (see stubclaude_test.go); it
+// branches on the spawn's role (the prompt) and a per-tick fixture file:
 //   - the QUEST LEAD emits ONE work item on the first tick (recorded via a marker
 //     file in CANDYLAND_QUEST_FIXTURE), then WORKITEMS_NONE on every later tick — so
 //     the loop launches one child run, then naturally finishes (no safe work left).
@@ -33,31 +34,16 @@ func waitForQuest(t *testing.T, c *Conductor, id string, until func(run.Quest) b
 //     and reports a green TEST; its REVIEWER returns REVIEW_CLEAN — the existing run
 //     executor then opens a PR. This exercises discover→triage→run→review→PR for one
 //     work item end to end, deterministically.
-const questTickClaude = `#!/usr/bin/env bash
-prompt="$2"
-if [[ "$prompt" == *"quest lead"* ]]; then
-  if [[ -f "$CANDYLAND_QUEST_FIXTURE" ]]; then
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"WORKITEMS_NONE"}]}}'
-    echo '{"type":"result","subtype":"success","result":"WORKITEMS_NONE","usage":{"output_tokens":1}}'
-  else
-    touch "$CANDYLAND_QUEST_FIXTURE"
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"WORKITEMS [{\"title\":\"tidy the lint\",\"evidence\":\"a stale import\",\"classification\":\"cleanup\",\"decision\":\"do\"}]"}]}}'
-    echo '{"type":"result","subtype":"success","result":"done","usage":{"output_tokens":2}}'
-  fi
-elif [[ "$prompt" == *"code reviewer"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
-  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
-elif [[ "$prompt" == *"tech lead"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"do the item\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
-  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
-else
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
-  echo "done by $$" > "a.txt"
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"TEST {\"pass\":1,\"fail\":0}"}]}}'
-  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
-fi
-`
+var questTickClaude = stubClaude(
+	role("quest lead", `if [[ -f "$CANDYLAND_QUEST_FIXTURE" ]]; then
+  `+emitText("WORKITEMS_NONE")+`  `+emitResult("WORKITEMS_NONE", 1)+`else
+  touch "$CANDYLAND_QUEST_FIXTURE"
+  `+emitText(`WORKITEMS [{\"title\":\"tidy the lint\",\"evidence\":\"a stale import\",\"classification\":\"cleanup\",\"decision\":\"do\"}]`)+`  `+emitResult("done", 2)+`fi
+`),
+	roleCleanReviewer,
+	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
+	coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
+)
 
 // The ORACLE for the quest execution layer: a scripted-stub tick asserting the full
 // discover → triage → run → review → PR transition for ONE work item. An L3
