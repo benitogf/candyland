@@ -150,7 +150,7 @@ func TestCampaignDeliversWithPartialAnnotation(t *testing.T) {
 	// sibling commits ACCUMULATE rather than the second clobbering the first. Assert
 	// the final campaign branch carries BOTH children's distinct PID-named files —
 	// the exact clobber the SHA-pinning guards against.
-	branch := CampaignBranch(cam, repo)
+	branch := CampaignBranch(cam)
 	out := gitOut(t, repo, "ls-tree", "-r", "--name-only", branch)
 	var workFiles []string
 	for _, f := range strings.Split(strings.TrimSpace(out), "\n") {

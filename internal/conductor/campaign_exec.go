@@ -358,7 +358,7 @@ func (c *Conductor) executeChildren(ctx context.Context, id string, cam run.Camp
 		if tokenCap > 0 {
 			if used := c.campaignTokensUsed(id); used >= tokenCap {
 				log.Printf("candyland: campaign %s token cap reached (%d/%d) — delivering partial", id, used, tokenCap)
-				c.noteCampaign(id, fmt.Sprintf("token cap reached (%d/%d) — skipped %d remaining child run(s), delivering partial", used, tokenCap, len(prompts)-launched))
+				c.appendCampaignNote(id, fmt.Sprintf("token cap reached (%d/%d) — skipped %d remaining child run(s), delivering partial", used, tokenCap, len(prompts)-launched))
 				break
 			}
 		}
@@ -389,7 +389,7 @@ func (c *Conductor) executeChildren(ctx context.Context, id string, cam run.Camp
 // the child reaches a terminal state or the campaign is paused/stopped.
 func (c *Conductor) launchCampaignChild(ctx context.Context, id string, cam run.Campaign, folders []string, cp childPrompt) string {
 	childID := c.Create(run.Spec{Folders: folders, Prompt: cp.prompt, Title: cp.title})
-	branch := CampaignBranch(cam, folders[0])
+	branch := CampaignBranch(cam)
 	c.Update(childID, func(r *run.Run) {
 		r.CampaignID = id
 		r.Branch = branch
@@ -474,7 +474,7 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 		return
 	}
 	annotations := partialAnnotations(brief, review)
-	branch := CampaignBranch(cam, folders[0])
+	branch := CampaignBranch(cam)
 	title := campaignPRTitle(cam)
 	body := campaignPRBody(cam, brief, annotations)
 
@@ -507,8 +507,8 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 		}
 	}
 	c.UpdateCampaign(id, func(cam *run.Campaign) {
-		if cam.Status == "stopped" {
-			return // a concurrent Stop is authoritative
+		if cam.Status == "stopped" || cam.Status == "done" {
+			return // a concurrent Stop/completion is authoritative
 		}
 		cam.PRs = prs
 		if opened == 0 {
@@ -704,15 +704,14 @@ func (c *Conductor) blockCampaign(id, reason string) {
 	})
 }
 
-// noteCampaign appends a non-blocking note to the campaign's reason (e.g. a token-cap
-// degrade-to-partial), without changing status.
-func (c *Conductor) noteCampaign(id, note string) {
+// appendCampaignNote appends a DURABLE non-blocking note to the campaign (e.g. a
+// token-cap degrade-to-partial), without changing status. Unlike PauseReason — the
+// transient pause/block reason that clean delivery clears and block overwrites —
+// Notes survives delivery, so an operator still learns the campaign delivered
+// partial after a clean PR. It renders in the campaign trace/UI (a campaign field).
+func (c *Conductor) appendCampaignNote(id, note string) {
 	c.UpdateCampaign(id, func(cam *run.Campaign) {
-		if cam.PauseReason == "" {
-			cam.PauseReason = note
-		} else {
-			cam.PauseReason += " | " + note
-		}
+		cam.Notes = append(cam.Notes, note)
 	})
 }
 
@@ -776,6 +775,14 @@ func campaignPRBody(cam run.Campaign, brief run.IntentBrief, partial []string) s
 		b.WriteString("\n## ⚠️ Partially satisfied commitments (intent review)\n\n")
 		for _, p := range partial {
 			fmt.Fprintf(&b, "- %s\n", p)
+		}
+	}
+	if len(cam.Notes) > 0 {
+		// Durable supervisor notes (e.g. a token-cap degrade-to-partial) — surfaced
+		// so the operator learns about a degraded delivery on the PR itself.
+		b.WriteString("\n## ⚠️ Delivery notes\n\n")
+		for _, n := range cam.Notes {
+			fmt.Fprintf(&b, "- %s\n", n)
 		}
 	}
 	b.WriteString("\n🍬 Opened by [candyland](https://github.com/benitogf/candyland).")
@@ -871,7 +878,7 @@ func intentReviewerBriefPrompt(cam run.Campaign, brief run.IntentBrief, base str
 	for _, cm := range brief.Commitments {
 		fmt.Fprintf(&b, "- [%s] %s\n", cm.ID, cm.Statement)
 	}
-	branch := CampaignBranch(cam, "")
+	branch := CampaignBranch(cam)
 	fmt.Fprintf(&b, "\nThe delivered work is on the campaign branch %q. Review it with: git diff %s..%s\n", branch, base, branch)
 	return b.String()
 }

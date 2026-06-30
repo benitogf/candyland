@@ -174,13 +174,59 @@ func TestUpdateCampaignDurable(t *testing.T) {
 	}
 }
 
+// A durable supervisor note (e.g. a token-cap degrade-to-partial) SURVIVES the
+// transient PauseReason lifecycle: clean delivery clears PauseReason and a block
+// overwrites it, but neither wipes Notes — so the operator still learns the campaign
+// delivered partial after a clean PR. This pins the fix for the silently-wiped note.
+func TestCampaignNotesSurviveDeliveryAndBlock(t *testing.T) {
+	c, _ := newCampaignServer(t)
+	id := c.CreateCampaign(run.CampaignSpec{Input: "ship the export across api and web"})
+
+	note := "token cap reached (100/100) — skipped 1 remaining child run(s), delivering partial"
+	c.appendCampaignNote(id, note)
+
+	// Clean delivery clears the transient PauseReason (mirrors deliverCampaign).
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		cam.Status = "done"
+		cam.PauseReason = ""
+	})
+	cam, _ := c.GetCampaign(id)
+	if cam.PauseReason != "" {
+		t.Errorf("clean delivery must clear PauseReason, got %q", cam.PauseReason)
+	}
+	if len(cam.Notes) != 1 || cam.Notes[0] != note {
+		t.Fatalf("the durable degrade note must survive delivery, got %v", cam.Notes)
+	}
+
+	// A subsequent block overwrites PauseReason but still must not wipe Notes.
+	c.blockCampaign(id, "some later blocker")
+	cam, _ = c.GetCampaign(id)
+	// (blockCampaign no-ops on a done campaign; flip to a non-terminal status first.)
+	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Status = "running" })
+	c.blockCampaign(id, "some later blocker")
+	cam, _ = c.GetCampaign(id)
+	if cam.PauseReason != "some later blocker" {
+		t.Errorf("block must set its own PauseReason, got %q", cam.PauseReason)
+	}
+	if len(cam.Notes) != 1 || cam.Notes[0] != note {
+		t.Errorf("the durable degrade note must survive a block, got %v", cam.Notes)
+	}
+
+	// appendCampaignNote accumulates rather than replacing.
+	c.appendCampaignNote(id, "second note")
+	cam, _ = c.GetCampaign(id)
+	if len(cam.Notes) != 2 {
+		t.Errorf("appendCampaignNote must accumulate notes, got %v", cam.Notes)
+	}
+}
+
 // CampaignBranch derives campaign/<id> for a campaign with an id, and "" when the
 // id is unset.
 func TestCampaignBranchDerivation(t *testing.T) {
-	if b := CampaignBranch(run.Campaign{ID: "c42"}, "/repo"); b != "campaign/c42" {
+	if b := CampaignBranch(run.Campaign{ID: "c42"}); b != "campaign/c42" {
 		t.Errorf("campaign branch = %q, want campaign/c42", b)
 	}
-	if b := CampaignBranch(run.Campaign{}, "/repo"); b != "" {
+	if b := CampaignBranch(run.Campaign{}); b != "" {
 		t.Errorf("unset-id campaign branch = %q, want empty", b)
 	}
 }

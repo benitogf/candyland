@@ -386,9 +386,13 @@ type Campaign struct {
 	// until the intent-review phase (a later task) populates it.
 	IntentReview IntentReview `json:"intentReview"`
 	// Status is the lifecycle state: running|paused|stopped|blocked|done.
-	// PauseReason carries the human-readable reason when paused/blocked.
+	// PauseReason carries the transient human-readable reason when paused/blocked
+	// (delivery/block overwrite or clear it). Notes carries DURABLE non-blocking
+	// notes (e.g. a token-cap degrade-to-partial) that delivery/block never clear,
+	// so an operator still learns the campaign delivered partial after a clean PR.
 	Status        string        `json:"status"`
 	PauseReason   string        `json:"pauseReason,omitempty"`
+	Notes         []string      `json:"notes,omitempty"`
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"`
 	TokensUsed    int           `json:"tokensUsed"`

@@ -85,10 +85,10 @@ func (c *Conductor) BeginQuest(id string) bool {
 // PauseQuest halts future ticks without deleting the quest: it cancels the running
 // drive and records Status=paused + the reason. ResumeQuest restarts the drive.
 func (c *Conductor) PauseQuest(id, reason string) bool {
-	if !c.haltQuestDrive(id) {
-		// Not currently driving — still allow pausing a quest that exists (so a
-		// quest paused between drives stays paused). Unknown quest → false.
-	}
+	// Halt any live drive. A quest not currently driving is still allowed to pause
+	// (so a quest paused between drives stays paused); the UpdateQuest below decides
+	// the outcome (unknown quest → false), so the halt result is intentionally unused.
+	c.haltQuestDrive(id)
 	return c.UpdateQuest(id, func(q *run.Quest) {
 		if q.Status == "stopped" || q.Status == "done" {
 			return // terminal stays terminal

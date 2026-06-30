@@ -103,6 +103,7 @@ func cloneCampaign(cam run.Campaign) run.Campaign {
 	cam.RunIDs = append([]string(nil), cam.RunIDs...)
 	cam.PRs = append([]run.PR(nil), cam.PRs...)
 	cam.ReviewRouting = append([]string(nil), cam.ReviewRouting...)
+	cam.Notes = append([]string(nil), cam.Notes...)
 
 	b := cam.IntentBrief
 	b.ScopeByDomain = append([]string(nil), b.ScopeByDomain...)
@@ -177,15 +178,14 @@ func (c *Conductor) ListCampaigns() []run.Campaign {
 	return campaigns
 }
 
-// CampaignBranch derives a campaign's shared per-repo branch. A campaign delivers
-// one PR per repo at the end (after intent review); its child quests/runs commit
-// onto this shared per-repo branch and open no PR. The branch is DERIVED from the
-// campaign id (campaign/<id>) — never a scalar branch name (settled decision, the
-// same format QuestBranch derives for a campaign-owned quest). The repo argument is
-// the impacted repo this branch is for; the format is repo-independent today (one
-// branch name reused across repos), with the parameter present so a later phase can
-// scope per-repo if needed without changing call sites. Returns "" for an unset id.
-func CampaignBranch(cam run.Campaign, repo string) string {
+// CampaignBranch derives a campaign's shared branch. A campaign delivers one PR per
+// repo at the end (after intent review); its child quests/runs commit onto this
+// shared branch and open no PR. The branch is DERIVED from the campaign id
+// (campaign/<id>) — never a scalar branch name (settled decision, the same format
+// QuestBranch derives for a campaign-owned quest). The one branch name is reused
+// across every impacted repo, so the derivation is repo-independent. Returns "" for
+// an unset id.
+func CampaignBranch(cam run.Campaign) string {
 	if cam.ID == "" {
 		return ""
 	}
