@@ -265,6 +265,130 @@ type Quest struct {
 	TraceVersion int `json:"traceVersion"`
 }
 
+// Commitment is one checkable assertion the campaign commits to delivering. The
+// intent-lead derives commitments from the original input during the brief phase;
+// each is later judged by intent review (see CommitmentVerdict). Storing the
+// assertion now lets a later phase attach a verdict without a schema migration.
+type Commitment struct {
+	ID        string `json:"id"`
+	Statement string `json:"statement"` // one checkable assertion (the unit intent review judges)
+}
+
+// IntentBrief is the intent-lead's restatement of the campaign's original input
+// into a structured plan: the goal as understood, scope split by domain, the
+// questions resolved vs still open, a draft task list, dependencies, a rough
+// sizing, suggested review routing, and the checkable commitments. It is built by
+// the brief phase (a later task); this is the data shape it persists to.
+type IntentBrief struct {
+	RestatedGoal      string       `json:"restatedGoal,omitempty"`
+	ScopeByDomain     []string     `json:"scopeByDomain,omitempty"`
+	ResolvedQuestions []string     `json:"resolvedQuestions,omitempty"`
+	OpenQuestions     []string     `json:"openQuestions,omitempty"`
+	DraftTasks        []string     `json:"draftTasks,omitempty"`
+	Dependencies      []string     `json:"dependencies,omitempty"`
+	RoughSizing       string       `json:"roughSizing,omitempty"`
+	ReviewRouting     []string     `json:"reviewRouting,omitempty"` // suggested human review areas/reviewers (suggestions only, not agents)
+	Commitments       []Commitment `json:"commitments,omitempty"`
+}
+
+// GateResult is the outcome of a campaign gate (the post-brief BriefGate and the
+// post-plan PlanGate). It records whether the gate passed, why, and when it was
+// decided. The gates' execution is a later phase; this is the result shape they
+// persist. DecidedAt is empty until the gate has run (Passed==false then means
+// "not yet decided", not "failed").
+type GateResult struct {
+	Passed    bool   `json:"passed"`
+	Reason    string `json:"reason,omitempty"`
+	DecidedAt string `json:"decidedAt,omitempty"` // RFC3339 set when the gate decides
+}
+
+// CommitmentVerdict is intent review's judgment of one Commitment: whether the
+// campaign's delivered work satisfied it, and the evidence. A "missed" verdict
+// blocks that repo's PR; a "partial" annotates it (the gate logic is a later
+// phase — this only carries the data). It is the core/intent-review output shape.
+type CommitmentVerdict struct {
+	CommitmentID string   `json:"commitmentId"`
+	Verdict      string   `json:"verdict"`            // satisfied|partial|missed
+	Evidence     []string `json:"evidence,omitempty"` // what backs the verdict
+}
+
+// IntentReview is the final per-commitment judgment of a campaign's delivered
+// work against its original input, holding one CommitmentVerdict per commitment.
+// A "missed" blocks the affected repo's PR; a "partial" annotates it. The review
+// itself runs in a later phase; this is the persisted output shape.
+type IntentReview struct {
+	Verdicts   []CommitmentVerdict `json:"verdicts,omitempty"`
+	ReviewedAt string              `json:"reviewedAt,omitempty"` // RFC3339 set when the review completes
+}
+
+// CampaignSpec is the launch input for a campaign — the program-level container
+// above quests and runs. Candyland owns the full intent→delivery cycle for a
+// campaign (validation, decomposition into child quests/runs, review, per-repo
+// delivery). This spec carries only the settled launch parameters; the supervisor
+// /intent-lead flow, gates, and intent review are later phases. It mirrors how
+// run.Spec/QuestSpec carry launch input for their persisted-state counterparts.
+type CampaignSpec struct {
+	// Input is the original instruction. It is captured ONCE onto
+	// Campaign.OriginalInput at creation and never rewritten (final intent review
+	// compares delivered work against this).
+	Input   string   `json:"input"`
+	Folders []string `json:"folders,omitempty"` // target folders/repos (optional; folders[0] = the git repo children branch in)
+	// AutonomyLevel gates the campaign's children. Campaigns default to L2 and are
+	// NEVER L1: a report-only campaign would strand with no PR (settled decision).
+	AutonomyLevel AutonomyLevel `json:"autonomyLevel,omitempty"`
+	TokenBudget   int           `json:"tokenBudget,omitempty"` // cap on total tokens across the whole campaign
+}
+
+// Campaign is the full persisted state of a campaign — the object stored at ooo
+// key campaigns/<id>. It is the program-level container above quests and runs:
+// the immutable original input, the intent-lead's structured brief, the post-brief
+// and post-plan gates, the child quests/runs, the final per-repo delivery (one PR
+// per repo after intent review — children commit to the per-repo campaign branch
+// and open no PR), the suggested human review routing, the final intent review,
+// lifecycle status, autonomy/budget, timestamps, and the schema version. The
+// supervisor/intent-lead flow, gate execution, and intent review that populate
+// these fields are later phases — this is the model and its persistence only.
+type Campaign struct {
+	ID string `json:"id"`
+	// OriginalInput is the launch input, set ONCE at creation and never rewritten —
+	// the campaign analogue of Run.OriginalIntent. Final intent review compares the
+	// campaign's delivered work against this, not a mutated input.
+	OriginalInput string `json:"originalInput"`
+	// IntentBrief is the intent-lead's structured restatement of OriginalInput.
+	// Empty until the brief phase (a later task) populates it.
+	IntentBrief IntentBrief `json:"intentBrief"`
+	// BriefGate (post-brief) and PlanGate (post-plan) are the campaign gates. The
+	// gate execution is a later phase; these hold the results.
+	BriefGate GateResult `json:"briefGate"`
+	PlanGate  GateResult `json:"planGate"`
+	// QuestIDs/RunIDs are the campaign's children, linked as they are launched (a
+	// later phase). Children commit onto the per-repo CampaignBranch and open no PR.
+	QuestIDs []string `json:"questIds"`
+	RunIDs   []string `json:"runIds"`
+	// PRs is the final delivery: one PR per impacted repo, opened at the end after
+	// intent review (reusing the run PR type). The per-repo branch the children
+	// commit to is derived by conductor.CampaignBranch.
+	PRs []PR `json:"prs,omitempty"`
+	// ReviewRouting is the suggested human review areas/reviewers (suggestions only,
+	// not agents) — mirrors IntentBrief.ReviewRouting at the campaign level.
+	ReviewRouting []string `json:"reviewRouting,omitempty"`
+	// IntentReview is the final per-commitment judgment of delivered work. Empty
+	// until the intent-review phase (a later task) populates it.
+	IntentReview IntentReview `json:"intentReview"`
+	// Status is the lifecycle state: running|paused|stopped|blocked|done.
+	// PauseReason carries the human-readable reason when paused/blocked.
+	Status        string        `json:"status"`
+	PauseReason   string        `json:"pauseReason,omitempty"`
+	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
+	TokenBudget   int           `json:"tokenBudget,omitempty"`
+	TokensUsed    int           `json:"tokensUsed"`
+	CreatedAt     string        `json:"createdAt"` // RFC3339 set once at creation
+	UpdatedAt     string        `json:"updatedAt"` // RFC3339 set on every persisted mutation
+	// TraceVersion is the schema version of this Campaign record, mirroring how a
+	// Run's exported trace and a Quest carry TraceVersion for future migration.
+	TraceVersion int `json:"traceVersion"`
+}
+
 // RunTrace is the normalized, exportable trace of a single run: the stored Run
 // plus its Audit (when present) and the schema version, in a stable JSONL-friendly
 // shape. It is shape-readiness for a later central store — it embeds the existing

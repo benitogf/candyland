@@ -45,6 +45,9 @@ type Conductor struct {
 	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
 	// highest persisted quest id by reconcileQuestSeq after a restart.
 	questSeq int
+	// campaignSeq mints campaign ids (c<N>) independently of run/quest ids. Seeded
+	// past the highest persisted campaign id by reconcileCampaignSeq after a restart.
+	campaignSeq int
 	// questDrivers tracks each quest's running tick-loop goroutine (id → cancel),
 	// so PauseQuest/StopQuest can halt it — the quest analogue of a run's per-
 	// executor control channel. Guarded by mu.
@@ -258,6 +261,9 @@ func (c *Conductor) ReconcileOrphans() {
 	// Seed the quest-id sequence the same way, so a post-restart CreateQuest can't
 	// overwrite an existing quest record.
 	c.reconcileQuestSeq()
+	// Seed the campaign-id sequence likewise, so a post-restart CreateCampaign can't
+	// overwrite an existing campaign record.
+	c.reconcileCampaignSeq()
 }
 
 // Create registers a new run (status: planning) and publishes it. The build
