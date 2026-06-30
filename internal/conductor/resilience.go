@@ -161,6 +161,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	if err != nil {
 		return attemptOutcome{startErr: err}
 	}
+	afterStart(cmd) // assign to the Windows job object so killTree drops the whole tree (no-op on Unix)
 	// Kill the whole process tree the moment the attempt ends, for any reason.
 	go func() {
 		<-attemptCtx.Done()

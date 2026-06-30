@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/benitogf/candyland/internal/winproc"
 )
 
 // Real git/gh plumbing the claude executor uses to turn agents' edits into a
@@ -43,6 +45,7 @@ func expandHome(p string) string {
 func runCmd(ctx context.Context, dir, bin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	winproc.Configure(cmd) // windowless: no flashing console for git/gh on Windows
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
