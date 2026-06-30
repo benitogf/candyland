@@ -54,7 +54,7 @@ func (c *Conductor) BeginQuest(id string) bool {
 	if !ok {
 		return false
 	}
-	if q.Status == "stopped" || q.Status == "done" {
+	if q.Status == "stopped" || q.Status == "done" || q.Status == "surfaced-only" || q.Status == "reviewed" {
 		return false // terminal — start a new quest instead
 	}
 
@@ -240,13 +240,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	if len(items) == 0 || len(accepted) == 0 {
 		rec.NextAction = "no safe work remaining — stopping"
 		c.recordTick(id, rec, tokens, nil)
-		c.UpdateQuest(id, func(q *run.Quest) {
-			if q.Status == "stopped" {
-				return // a concurrent Stop is authoritative
-			}
-			q.Status = "done"
-			q.LastProgress = time.Now().UTC().Format(time.RFC3339)
-		})
+		c.finishQuest(id)
 		return false
 	}
 
@@ -309,13 +303,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	// Report-only quests have nothing to build — one discovery pass per drive is the
 	// whole job, so stop after surfacing rather than re-discovering the same findings.
 	if q.AutonomyLevel == run.AutonomyReportOnly {
-		c.UpdateQuest(id, func(q *run.Quest) {
-			if q.Status == "stopped" {
-				return // a concurrent Stop is authoritative
-			}
-			q.Status = "done"
-			q.LastProgress = time.Now().UTC().Format(time.RFC3339)
-		})
+		c.finishQuest(id)
 		return false
 	}
 	return true
@@ -343,10 +331,11 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 		Role:   "quest-lead",
 		Prompt: questBriefPrompt(q, tickID),
 	})
-	// A quest lead has no in-memory run.Run to stream into, so it runs against a
-	// nil-run id (mapAgentLine no-ops its c.Update when the run isn't tracked — the
-	// quest's own Tick record is the durable trace). streamOnce still parses the
-	// agent's stdout for us via mapAgentLine's returned text on each line.
+	// A quest lead has no in-memory run.Run; it runs against the quest id, and
+	// mapAgentLine routes its agent state+events onto the quest's own Agents slice
+	// (via updateAgentHost), so the parent shows what it is itself doing. The
+	// quest's Tick record remains the durable work trace. streamOnce still parses
+	// the agent's stdout for us via mapAgentLine's returned text on each line.
 	out := c.streamQuestLead(ctx, id, primary, extra)
 	if ctx.Err() != nil {
 		return nil, "discovery interrupted", out.tokens, ""
@@ -380,9 +369,10 @@ type questLeadOutcome struct {
 // watchdog, ctx kill, bus mcp-config wiring) exactly as runs do — no parallel
 // engine. The quest id is passed so the bus mcp-config / brief are keyed per quest.
 func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string, extra []string) questLeadOutcome {
-	// streamOnce streams into a run's ooo state via c.Update; for a quest there is
-	// no tracked run, so those Updates no-op. We collect the agent's text through a
-	// dedicated single-shot run of streamOnce against the quest id namespace.
+	// streamOnce records agent state+events through mapAgentLine; for a quest id it
+	// routes onto the quest's Agents slice (updateAgentHost), so the quest-lead is
+	// visible on the parent. We run a dedicated single-shot streamOnce against the
+	// quest id namespace and collect the agent's aggregated text.
 	res := streamOnce(ctx, c, questID, questLeadID, questLeadBootstrap, workdir, extra)
 	// allText joins every assistant/result block, so the WORKITEMS verdict is found
 	// wherever the quest lead emitted it (not only on the final block).
@@ -397,23 +387,12 @@ func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string
 // child id, any PRs it opened, and an error string when the child failed.
 func (c *Conductor) launchChildRun(ctx context.Context, q run.Quest, it questWorkItem, tickID string) (childID string, prs []run.PR, errMsg string) {
 	prompt := childRunPrompt(q, it)
-	childID = c.Create(run.Spec{
+	childID = c.linkQuestChild(q, run.Spec{
 		Folders: q.Folders,
 		Prompt:  prompt,
 		Title:   it.Title,
 	})
-	// Stamp the parent link and (campaign-owned) the shared delivery branch. For
-	// branch delivery the child commits onto campaign/<campaignID> and opens NO PR;
-	// the branch is DERIVED via QuestBranch (the single definition of the format).
 	branch := QuestBranch(q)
-	c.Update(childID, func(r *run.Run) {
-		r.QuestID = q.ID
-		r.CampaignID = q.CampaignID
-		if branch != "" {
-			r.Branch = branch
-			r.Deliver = run.DeliverBranch // commit onto the shared branch, open no PR
-		}
-	})
 
 	c.Begin(childID)
 
@@ -440,6 +419,36 @@ func (c *Conductor) launchChildRun(ctx context.Context, q run.Quest, it questWor
 	}
 }
 
+// linkQuestChild creates a child run and stamps its parent link AND delivery mode
+// at launch (O3 both-way linkage + O5 deliver serialized), so the child carries
+// QuestID/CampaignID and a CONCRETE deliver value the moment it exists — never an
+// empty deliver the frontend can't key on. A campaign-owned quest (QuestBranch
+// non-empty) delivers onto the shared branch (Deliver=branch, no PR); a standalone
+// quest child opens its own PR (Deliver=pr, the types.go:163 default made explicit).
+// The parent-side link is the WorkItem.ChildRunID ledger recorded by the tick.
+func (c *Conductor) linkQuestChild(q run.Quest, spec run.Spec) string {
+	childID := c.Create(spec)
+	branch := QuestBranch(q)
+	c.Update(childID, func(r *run.Run) {
+		r.QuestID = q.ID
+		r.CampaignID = q.CampaignID
+		switch {
+		case q.Deliver == run.DeliverFeedback || q.Deliver == run.DeliverReview:
+			// Update an EXISTING PR in place (feedback) / produce findings, no new PR
+			// (review). The target PR rides on the child so fanOut bases its work on
+			// that PR's head and pushes back onto it (or opens nothing, for review).
+			r.Deliver = q.Deliver
+			r.TargetPR = q.TargetPR
+		case branch != "":
+			r.Branch = branch
+			r.Deliver = run.DeliverBranch // commit onto the shared branch, open no PR
+		default:
+			r.Deliver = run.DeliverPR // standalone: open its own PR (serialized, not empty)
+		}
+	})
+	return childID
+}
+
 // childRunPRs returns the PRs a finished child run produced. A branch-delivered
 // (campaign-owned) child opens no PR — its work is a commit on the shared branch,
 // reported as a PR-less record so the tick still shows what landed.
@@ -463,6 +472,90 @@ func (c *Conductor) recordTick(id string, rec run.Tick, addTokens int, items []r
 		}
 		recomputeQuestRollups(q)
 	})
+}
+
+// finishQuest moves a quest to its terminal state, choosing between plain "done"
+// (it shipped, or its delivery is the branch commit by design) and the distinct
+// "surfaced-only" no-op state (Q2) — and annotating an intent↔autonomy mismatch
+// (Q4) when an execute-intent objective produced a report-only no-op. A concurrent
+// Stop is authoritative and left alone.
+func (c *Conductor) finishQuest(id string) {
+	c.UpdateQuest(id, func(q *run.Quest) {
+		if q.Status == "stopped" {
+			return // a concurrent Stop is authoritative
+		}
+		q.Status = questTerminalStatus(q)
+		q.Summary = questTerminalSummary(q)
+		q.LastProgress = time.Now().UTC().Format(time.RFC3339)
+	})
+}
+
+// questIsNoOp reports whether a terminal quest delivered NOTHING in-scope: zero
+// executed items and zero PRs, with items having been surfaced/skipped. The
+// CARVE-OUT: a branch-delivered quest (Deliver=branch) legitimately opens 0 PRs —
+// its delivery IS the branch commit — so a branch quest that completed items is NOT
+// a no-op. The rule keys on actual zero-delivery, never on prsOpened==0 alone.
+func questIsNoOp(q *run.Quest) bool {
+	if q.Deliver == run.DeliverBranch && q.ItemsCompleted > 0 {
+		return false // branch delivery by design — the commit is the delivery
+	}
+	// Feedback/review delivery never open NEW PRs (feedback updates an existing one;
+	// review may apply none) — same family as the branch carve-out. A feedback run
+	// that updated a PR and a review run with no findings are legitimately done /
+	// reviewed, NOT zero-delivery no-ops.
+	if q.Deliver == run.DeliverFeedback || q.Deliver == run.DeliverReview {
+		return false
+	}
+	delivered := q.ItemsCompleted > 0 || q.PRsOpened > 0
+	surfaced := q.ItemsSkipped > 0 || len(q.WorkItems) > 0
+	return !delivered && surfaced
+}
+
+// questTerminalStatus is the terminal status a finished quest should carry:
+// "surfaced-only" for a zero-delivery no-op (Q2), else plain "done".
+func questTerminalStatus(q *run.Quest) string {
+	if q.Deliver == run.DeliverReview {
+		return "reviewed" // a review quest opens no PR — its terminal state is "reviewed", not "done"
+	}
+	if questIsNoOp(q) {
+		return "surfaced-only"
+	}
+	return "done"
+}
+
+// questTerminalSummary names a terminal quest's outcome so a no-op is reported as
+// such instead of an undifferentiated "done". For a no-op it accounts the
+// surfaced/executed/PR counts, and — when the objective IMPLIED execution but the
+// quest ran report-only (L1) — WARNS about the intent↔autonomy mismatch (Q4).
+func questTerminalSummary(q *run.Quest) string {
+	if q.Deliver == run.DeliverReview {
+		if q.ItemsCompleted > 0 {
+			return fmt.Sprintf("reviewed (findings applied to PR #%d)", q.TargetPR)
+		}
+		return "reviewed (no actionable findings)"
+	}
+	if !questIsNoOp(q) {
+		return ""
+	}
+	surfaced := q.ItemsSkipped + q.ItemsBlocked + q.ItemsCompleted
+	summary := fmt.Sprintf("surfaced-only: %d surfaced, 0 executed, 0 PRs", surfaced)
+	if q.AutonomyLevel == run.AutonomyReportOnly && objectiveImpliesExecution(q.Objective) {
+		summary += " — WARNING: intent↔autonomy mismatch (objective implies execution but autonomy is report-only L1; raise autonomy to L2/L3 to execute)"
+	}
+	return summary
+}
+
+// objectiveImpliesExecution reports whether an objective asks for work to be DONE
+// (implement/add/fix/refactor…) rather than merely surfaced (review/audit/report).
+// It is the Q4 misconfig signal, kept separate from the terminal-state computation.
+func objectiveImpliesExecution(objective string) bool {
+	o := strings.ToLower(objective)
+	for _, verb := range []string{"implement", "add ", "fix", "build", "create", "refactor", "write", "migrate", "rename", "delete", "remove", "update", "wire", "integrate"} {
+		if strings.Contains(o, verb) {
+			return true
+		}
+	}
+	return false
 }
 
 // recomputeQuestRollups derives the dashboard counters from the work-item ledger,

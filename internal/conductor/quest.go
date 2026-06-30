@@ -71,10 +71,12 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 		AutonomyLevel:     autonomy,
 		TokenBudget:       spec.TokenBudget,
 		Deliver:           deliver,
+		TargetPR:          spec.TargetPR,
 		// Empty (non-nil) slices marshal to [] not null — the UI reads these as
 		// arrays (.map/.length), matching how runs keep Agents/Tasks non-nil.
 		WorkItems:    []run.WorkItem{},
 		Ticks:        []run.Tick{},
+		Agents:       []run.Agent{},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		TraceVersion: run.TraceVersion,
@@ -120,6 +122,7 @@ func cloneQuest(q run.Quest) run.Quest {
 		ticks[i] = t
 	}
 	q.Ticks = ticks
+	q.Agents = cloneAgents(q.Agents)
 	return q
 }
 

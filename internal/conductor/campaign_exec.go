@@ -365,7 +365,6 @@ func (c *Conductor) executeChildren(ctx context.Context, id string, cam run.Camp
 		}
 		childID := c.launchCampaignChild(ctx, id, cam, folders, cp)
 		launched++
-		c.UpdateCampaign(id, func(cam *run.Campaign) { cam.RunIDs = append(cam.RunIDs, childID) })
 		if ctx.Err() != nil {
 			return false
 		}
@@ -384,19 +383,45 @@ func (c *Conductor) executeChildren(ctx context.Context, id string, cam run.Camp
 	return true
 }
 
+// linkCampaignChild creates a child run and links it BOTH WAYS at launch (O3): the
+// child is stamped with CampaignID, the campaign branch, and Deliver=branch, AND the
+// parent campaign's RunIDs is appended immediately — so the rollup is never empty
+// (runIds:[]) while the campaign runs, not only after a child finishes.
+func (c *Conductor) linkCampaignChild(id string, spec run.Spec) string {
+	childID := c.Create(spec)
+	cam, _ := c.GetCampaign(id)
+	branch := CampaignBranch(cam)
+	c.Update(childID, func(r *run.Run) {
+		r.CampaignID = id
+		if campaignTargetsPR(cam) {
+			// feedback/review campaign: children land on the EXISTING target PR
+			// (feedback updates it in place, review reports) instead of committing
+			// onto the campaign branch and letting the parent open a PR.
+			r.Deliver = cam.Deliver
+			r.TargetPR = cam.TargetPR
+			return
+		}
+		r.Branch = branch
+		r.Deliver = run.DeliverBranch
+	})
+	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.RunIDs = append(cam.RunIDs, childID) })
+	return childID
+}
+
+// campaignTargetsPR reports whether a campaign delivers onto an EXISTING PR
+// (feedback/review) rather than its own campaign branch. Its child runs carry the
+// campaign's Deliver + TargetPR instead of the default branch delivery.
+func campaignTargetsPR(cam run.Campaign) bool {
+	return cam.Deliver == run.DeliverFeedback || cam.Deliver == run.DeliverReview
+}
+
 // launchCampaignChild creates and drives ONE child run via the existing run executor,
 // stamping CampaignID, the campaign branch (campaign/<id> — the same name in each
 // impacted repo), and Deliver=branch (so it commits onto the branch and opens NO PR —
 // children never open PRs). It blocks until
 // the child reaches a terminal state or the campaign is paused/stopped.
 func (c *Conductor) launchCampaignChild(ctx context.Context, id string, cam run.Campaign, folders []string, cp childPrompt) string {
-	childID := c.Create(run.Spec{Folders: folders, Prompt: cp.prompt, Title: cp.title})
-	branch := CampaignBranch(cam)
-	c.Update(childID, func(r *run.Run) {
-		r.CampaignID = id
-		r.Branch = branch
-		r.Deliver = run.DeliverBranch
-	})
+	childID := c.linkCampaignChild(id, run.Spec{Folders: folders, Prompt: cp.prompt, Title: cp.title})
 	c.Begin(childID)
 	for {
 		select {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -235,6 +236,22 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return
 	}
 
+	// ── Feedback delivery: update an EXISTING PR in place. Integration was based on
+	//    each repo's target-PR head; push the accumulated branch back onto that head
+	//    (the PR updates) and record the existing PR's URL — open NO new PR. ──
+	if r.Deliver == run.DeliverFeedback {
+		c.deliverToFeedback(ctx, id, folders, delivered, r.Branch, r.TargetPR)
+		return
+	}
+
+	// ── Review delivery: produce findings, open NO PR. When findings were applied
+	//    it updates the target PR (effectively feedback); otherwise it ends as a
+	//    review-only no-op with an empty prUrl by design. ──
+	if r.Deliver == run.DeliverReview {
+		c.deliverToReview(ctx, id, folders, delivered, r.Branch, r.TargetPR)
+		return
+	}
+
 	// ── Deliver: push + open one PR PER IMPACTED REPO, in folder order. These are
 	//    ENVIRONMENTAL (a missing 'origin' or an unauthenticated gh can't be fixed
 	//    by re-splitting). PARTIAL-FAILURE ISOLATION: one repo's push/PR failure is
@@ -314,6 +331,123 @@ func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []st
 		r.Phase = run.PhasePR
 		r.StatusLine = "Committed onto " + branch + " — the campaign will open the PR after intent review."
 		setAgentState(r, "tl", "done", "committed onto "+branch)
+	})
+}
+
+// feedbackBaseRef resolves the target PR's head branch to a local SHA (fetching it
+// from origin), the base a feedback/review run's coders and integration build on so
+// the work accumulates on top of the existing PR. An actionable error is returned
+// on a resolution/fetch failure (environmental — re-splitting can't fix it).
+func feedbackBaseRef(ctx context.Context, repo string, targetPR int) (string, error) {
+	head, err := prHeadBranch(ctx, repo, targetPR)
+	if err != nil {
+		return "", fmt.Errorf("Couldn't resolve PR #%d's head branch in %s: %v", targetPR, repoBase(repo), err)
+	}
+	if _, err := git(ctx, repo, "fetch", "origin", head); err != nil {
+		return "", fmt.Errorf("Couldn't fetch PR #%d's head branch %q in %s: %v", targetPR, head, repoBase(repo), err)
+	}
+	sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", "FETCH_HEAD")
+	if err != nil || sha == "" {
+		return "", fmt.Errorf("Couldn't resolve PR #%d's head %q to a commit in %s", targetPR, head, repoBase(repo))
+	}
+	return sha, nil
+}
+
+// deliverToFeedback updates EXISTING PRs in place (D1): per impacted repo it
+// pushes the integration worktree's accumulated commits (based on that repo's
+// target-PR head) back onto the PR's head branch, so the PR updates — opening NO
+// new PR. The run's PR result records the existing/updated PR's URL. A push or
+// resolution failure is isolated per repo (partial-failure isolation).
+func (c *Conductor) deliverToFeedback(ctx context.Context, id string, folders []string, delivered map[string]string, branch string, targetPR int) {
+	c.Update(id, func(r *run.Run) {
+		r.StatusLine = fmt.Sprintf("Pushing findings onto PR #%d (no new PR)…", targetPR)
+		setAgentState(r, "tl", "working", fmt.Sprintf("updating PR #%d", targetPR))
+	})
+	prs := make([]run.PR, 0, len(delivered))
+	for _, repo := range orderedRepos(folders, delivered) {
+		integDir := delivered[repo]
+		pr := run.PR{Repo: repoBase(repo)}
+		head, err := prHeadBranch(ctx, repo, targetPR)
+		if err != nil {
+			pr.Err = fmt.Sprintf("resolve PR #%d head failed: %v", targetPR, err)
+			prs = append(prs, pr)
+			continue
+		}
+		// Push the integrated branch's tip onto the PR's head branch in place.
+		if _, err := git(ctx, integDir, "push", "origin", branch+":"+head); err != nil {
+			pr.Err = "push to PR head failed: " + err.Error()
+		} else if url, err := prURL(ctx, repo, targetPR); err != nil {
+			pr.Err = fmt.Sprintf("PR #%d URL lookup failed: %v", targetPR, err)
+		} else {
+			pr.URL = url
+		}
+		prs = append(prs, pr)
+	}
+	opened := 0
+	for _, pr := range prs {
+		if pr.URL != "" {
+			opened++
+		}
+	}
+	c.Update(id, func(r *run.Run) {
+		r.PRs = prs
+		for _, pr := range prs {
+			if pr.URL != "" {
+				r.PrURL = pr.URL
+				break
+			}
+		}
+		if opened == 0 {
+			r.Error = fmt.Sprintf("Couldn't update PR #%d. %s", targetPR, firstPRErr(prs))
+			setAgentState(r, "tl", "blocked", "no PR updated")
+			return
+		}
+		r.Phase = run.PhasePR
+		r.StatusLine = fmt.Sprintf("Updated PR #%d in place (no new PR).", targetPR)
+		setAgentState(r, "tl", "done", fmt.Sprintf("updated PR #%d", targetPR))
+	})
+}
+
+// deliverToReview is the review-delivery terminal step (D2): a review run opens NO
+// PR. When the review/fix loop applied findings (the integration tip diverges from
+// the target-PR head), it updates that PR in place — terminal "reviewed (findings
+// applied to PR #N)". When nothing was applied it is a review-only no-op —
+// "reviewed (no actionable findings)" with an empty prUrl by design.
+func (c *Conductor) deliverToReview(ctx context.Context, id string, folders []string, delivered map[string]string, branch string, targetPR int) {
+	applied := false
+	if targetPR > 0 {
+		for _, repo := range orderedRepos(folders, delivered) {
+			if head, err := prHeadBranch(ctx, repo, targetPR); err == nil {
+				if _, ferr := git(ctx, repo, "fetch", "origin", head); ferr == nil {
+					// A non-empty DIFF between the PR head and the integrated branch means
+					// a finding turned into a real change (a commit alone, with no content
+					// delta, is not an applied finding).
+					if out, err := git(ctx, delivered[repo], "diff", "--name-only", "FETCH_HEAD.."+branch); err == nil && strings.TrimSpace(out) != "" {
+						applied = true
+						break
+					}
+				}
+			}
+		}
+	}
+	if applied {
+		// Findings were applied: update the PR in place (effectively feedback) and
+		// record the honest terminal state.
+		c.deliverToFeedback(ctx, id, folders, delivered, branch, targetPR)
+		c.Update(id, func(r *run.Run) {
+			if r.Error == "" {
+				r.StatusLine = fmt.Sprintf("reviewed (findings applied to PR #%d)", targetPR)
+				setAgentState(r, "tl", "done", r.StatusLine)
+			}
+		})
+		return
+	}
+	c.Update(id, func(r *run.Run) {
+		r.PRs = nil
+		r.PrURL = "" // review-only: no PR by design
+		r.Phase = run.PhasePR
+		r.StatusLine = "reviewed (no actionable findings)"
+		setAgentState(r, "tl", "done", "reviewed (no actionable findings)")
 	})
 }
 
@@ -403,6 +537,17 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 			fail(ctx, c, id, "tl", "Couldn't read "+repoBase(repo)+"'s current branch: "+err.Error())
 			return attemptDeliveryResult{}
 		}
+		// Feedback/review base their coders AND integration on the target PR's head
+		// (fetched), so the work accumulates on top of the PR — not off the default
+		// branch (which would add/add-conflict against files the PR already changed).
+		if cr, _ := c.Get(id); (cr.Deliver == run.DeliverFeedback || cr.Deliver == run.DeliverReview) && cr.TargetPR > 0 {
+			head, herr := feedbackBaseRef(ctx, repo, cr.TargetPR)
+			if herr != nil {
+				fail(ctx, c, id, "tl", herr.Error())
+				return attemptDeliveryResult{}
+			}
+			base = head
+		}
 		repoWt := filepath.Join(wtRoot, repoBase(repo))
 		extra := extraDirsFor(repo, folders)
 		rtasks := byRepo[repo]
@@ -451,6 +596,9 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 			base = sha
 		}
 	}
+	// Feedback/review base resolution (the target-PR head SHA) is done by the caller
+	// (attemptDelivery) and passed in as `base`, so coders and this integration share
+	// the same base — no add/add conflict against files the PR already changed.
 	if err := addWorktree(ctx, repo, integDir, branch, base); err != nil {
 		fail(ctx, c, id, "tl", "Couldn't create the integration worktree for "+repoBase(repo)+": "+err.Error())
 		return "", "", false
@@ -803,6 +951,42 @@ func parseReview(text string) (verdict reviewVerdict, ok bool) {
 	return verdict, ok
 }
 
+// blockerAdmissions are blocker-class phrases that, if present in a verdict's
+// narration, mean the reviewer DESCRIBED a real defect — so a REVIEW_CLEAN
+// alongside them is self-contradicting and must not be accepted.
+var blockerAdmissions = []string{
+	"not wired", "not yet wired", "dead code", "no consumer", "unreachable", "regression",
+}
+
+// hedgeWords are confidence-laundering phrases: when a REVIEW_CLEAN leans on
+// them it never PROVED the change works (it guessed), which the doctrine treats
+// as an unproven pass — bounce it back demanding cited evidence.
+var hedgeWords = []string{
+	"plausibly", "presumably", "likely", "should be", "probably", "seems",
+	"i assume", "sibling branch", "other branch", "not a genuine blocker",
+}
+
+// cleanVerdictContradictsNarration reports whether a REVIEW_CLEAN's own narration
+// undermines it: it contains a blocker-class admission (the reviewer described a
+// real defect) OR a hedge word (the reviewer guessed rather than proved). It is a
+// pure, separately-testable detector — the structural backstop behind the parsed
+// verdict, so a model that narrates a problem then stamps CLEAN can't slip a PR
+// through. reason names the first offending phrase for the bounced-back finding.
+func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
+	lower := strings.ToLower(text)
+	for _, p := range blockerAdmissions {
+		if strings.Contains(lower, p) {
+			return true, "blocker-class admission in narration: " + strconv.Quote(p)
+		}
+	}
+	for _, h := range hedgeWords {
+		if strings.Contains(lower, h) {
+			return true, "hedged narration (no proof the change works): " + strconv.Quote(h)
+		}
+	}
+	return false, ""
+}
+
 // reviewUntilClean runs a REAL review phase after integration and before any PR:
 // a SEPARATE reviewer agent hard-reviews each repo's integrated diff (loading the
 // detritus review doctrine via kb_get, not an inlined rubric), and any blockers
@@ -817,7 +1001,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 		r.StatusLine = "Reviewing the integrated changes before opening a pull request…"
 		r.Agents = append(r.Agents, run.Agent{ID: reviewerID, Role: "Reviewer", Emoji: "🔎",
 			Task: "review the integrated diff", State: "working", Activity: "loading review doctrine",
-			Budget: 400, Worktree: "wt/review", Model: "opus-4-8",
+			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: "opus-4-8",
 			Events: []run.Event{{T: "system", Text: "reviewer · kb_get core/review-rigor + truthseeker"}}})
 	})
 	folders := orderedDelivered(delivered)
@@ -833,7 +1017,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 				setAgentState(r, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
 			})
 			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch})
-			out := streamOnce(ctx, c, id, reviewerID, reviewBootstrap, integDir, extraDirsForDelivered(repo, folders))
+			out := streamOnce(ctx, c, id, reviewerID, reviewBootstrap, integDir, extraDirsForDelivered(repo, folders), spawnOpts{maxTurns: reviewFixTurns()})
 			if ctx.Err() != nil {
 				return false // stopped mid-review
 			}
@@ -846,6 +1030,20 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 				return false
 			}
 			verdict := *out.review
+			// V3 verdict-integrity gate: a REVIEW_CLEAN that contradicts its own
+			// narration (a blocker-class admission, or a hedge that means the reviewer
+			// never proved the change works) is NOT accepted as clean. Bounce it back
+			// as a synthesized blocker so the fix→re-review loop demands cited
+			// evidence or an explicit blocker — it costs a round, like any non-clean
+			// verdict, rather than papering over an unproven pass.
+			if len(verdict.Blockers) == 0 {
+				if bad, reason := cleanVerdictContradictsNarration(out.allText); bad {
+					c.Update(id, func(r *run.Run) {
+						appendToAgent(r, reviewerID, run.Event{T: "system", Text: "rejected REVIEW_CLEAN for " + repoBase(repo) + ": " + reason}, 0)
+					})
+					verdict.Blockers = []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration (" + reason + ") — cite mitigating evidence the change is wired and works, or emit an explicit blocker"}}
+				}
+			}
 			if len(verdict.Blockers) == 0 {
 				c.Update(id, func(r *run.Run) {
 					setAgentState(r, reviewerID, "green", "review clean: "+repoBase(repo))
@@ -878,13 +1076,22 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 // returns true when the fixes were made and committed, false when the agent failed
 // to act (error recorded) or the run was stopped.
 func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int) bool {
+	// C2 fail-fast: a fix pass with NO findings has nothing to act on. Never let it
+	// run and silently re-derive its own task list (a context-blind agent then
+	// explores the whole tree); record an explicit error and abort the pass.
+	if len(blockers) == 0 {
+		fail(ctx, c, id, reviewerID, "A fix pass was requested for "+repoBase(repo)+" with no review findings — aborting (no PR is opened, and the pass does not silently re-derive work).")
+		return false
+	}
 	c.Update(id, func(r *run.Run) {
 		r.StatusLine = fmt.Sprintf("Addressing %d review %s in %s…", len(blockers), plural(len(blockers), "finding", "findings"), repoBase(repo))
 		setAgentState(r, reviewerID, "working", "fixing review findings in "+repoBase(repo))
 		appendToAgent(r, reviewerID, run.Event{T: "system", Text: fmt.Sprintf("round %d: %d blocker(s) — fixing: %s", round, len(blockers), firstFinding(blockers))}, 0)
 	})
 	c.putBrief(reviewerID, bus.Brief{Role: "fix", Title: "address review findings in " + repoBase(repo), Findings: findingLines(blockers)})
-	out := streamOnce(ctx, c, id, reviewerID, reviewFixBootstrap, integDir, extra)
+	// C2 belt-and-suspenders: also carry the cited findings in the prompt text
+	// itself, so they're impossible to miss even if the brief render drops them.
+	out := streamOnce(ctx, c, id, reviewerID, reviewFixPrompt(blockers), integDir, extra, spawnOpts{maxTurns: reviewFixTurns()})
 	if ctx.Err() != nil {
 		return false // stopped mid-fix
 	}
@@ -958,6 +1165,8 @@ const reviewerID = "review"
 const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
 	"Load the detritus review doctrine via the kb_get tool: kb_get name=\"core/review-rigor\" AND kb_get name=\"flows/principles/truthseeker\"; apply that rubric, do NOT improvise your own. " +
 	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
+	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
+	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
 	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
@@ -966,6 +1175,53 @@ const reviewFixBootstrap = "You are addressing review findings on an integrated 
 	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
 	"Fix every cited blocker with your editing tools — make the changes, do not just describe them — and keep the existing tests green. " +
 	"Do not ask questions and do not defer; resolve all the findings in this run."
+
+// reviewFixCeiling is the hard per-pass turn ceiling for the review/fix identity
+// (C3). A context-blind fix agent left uncapped can blow up — the incident saw
+// ~84 tool calls plus a sub-agent escalation. This ceiling is enforced two ways
+// that AGREE: the review and fix spawns pass it as claude's --max-turns (a real,
+// process-level hard cap that aborts the run after this many agentic turns — see
+// reviewFixTurns / streamOnce's spawnOpts), and the agent's displayed Budget is
+// clamped to it. maxReviewRounds() separately bounds the TOTAL number of passes.
+const reviewFixCeiling = 40
+
+// reviewFixTurns is the hard --max-turns cap threaded into every review and fix
+// spawn — the SAME value as the displayed budget clamp (clampReviewBudget), so the
+// real enforcement and the shown ceiling never diverge. Tunable downward via
+// CANDYLAND_REVIEW_BUDGET (clampReviewBudget honors it), never above the ceiling.
+func reviewFixTurns() int { return clampReviewBudget(reviewFixCeiling) }
+
+// clampReviewBudget caps a proposed reviewer/fix budget at reviewFixCeiling so a
+// single pass has an explicit, testable per-pass ceiling. Tunable downward via
+// CANDYLAND_REVIEW_BUDGET, but never above the hard ceiling.
+func clampReviewBudget(proposed int) int {
+	ceiling := reviewFixCeiling
+	if v := envInt("CANDYLAND_REVIEW_BUDGET", 0); v > 0 && v < ceiling {
+		ceiling = v
+	}
+	if proposed > ceiling {
+		return ceiling
+	}
+	return proposed
+}
+
+// reviewFixPrompt builds the fix-pass prompt, carrying the cited findings inline
+// (C2 belt-and-suspenders) and restating the per-pass ceiling (C3) so a
+// context-blind agent self-limits its exploration. The prompt text is advisory;
+// the HARD bound is the --max-turns cap streamOnce passes (reviewFixTurns) plus
+// maxReviewRounds() on the pass count.
+func reviewFixPrompt(blockers []reviewFinding) string {
+	var b strings.Builder
+	b.WriteString(reviewFixBootstrap)
+	b.WriteString("\n\n--- CITED FINDINGS (also in your brief) ---\n")
+	for _, ln := range findingLines(blockers) {
+		b.WriteString("- ")
+		b.WriteString(ln)
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "\nStay focused: address ONLY these findings. Do not explore the wider tree or spawn sub-agents; this pass is budget-capped at %d tool calls.", reviewFixCeiling)
+	return b.String()
+}
 
 const conflictBootstrap = "You are the tech lead resolving a git merge conflict while integrating parallel work into one branch. " +
 	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
@@ -991,17 +1247,19 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 					review = &vv
 				}
 				if pass, fail, ok := parseTest(b.Text); ok {
-					c.Update(id, func(r *run.Run) {
-						appendToAgent(r, agentID, run.Event{T: "test", Pass: pass, Fail: fail}, 0)
+					c.updateAgentHost(id, func(agents *[]run.Agent) {
+						appendToAgentIn(agents, agentID, run.Event{T: "test", Pass: pass, Fail: fail}, 0)
 					})
 				}
 				text = b.Text
-				c.Update(id, func(r *run.Run) { appendToAgent(r, agentID, run.Event{T: "text", Text: b.Text}, 0) })
+				c.updateAgentHost(id, func(agents *[]run.Agent) {
+					appendToAgentIn(agents, agentID, run.Event{T: "text", Text: b.Text}, 0)
+				})
 			}
 			if b.Type == "tool_use" {
 				sawTool = true
-				c.Update(id, func(r *run.Run) {
-					appendToAgent(r, agentID, run.Event{T: "tool", Name: b.Name, Input: truncate(string(b.Input), 200)}, 0)
+				c.updateAgentHost(id, func(agents *[]run.Agent) {
+					appendToAgentIn(agents, agentID, run.Event{T: "tool", Name: b.Name, Input: truncate(string(b.Input), 200)}, 0)
 				})
 			}
 		}
@@ -1010,8 +1268,8 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 		if l.Result != "" {
 			text = l.Result
 		}
-		c.Update(id, func(r *run.Run) {
-			appendToAgent(r, agentID, run.Event{T: "result", Text: truncate(l.Result, 300)}, l.Usage.OutputTokens/1000)
+		c.updateAgentHost(id, func(agents *[]run.Agent) {
+			appendToAgentIn(agents, agentID, run.Event{T: "result", Text: truncate(l.Result, 300)}, l.Usage.OutputTokens/1000)
 		})
 	}
 	return partition, review, sawTool, text
@@ -1079,13 +1337,32 @@ func parseTest(text string) (pass, fail int, ok bool) {
 }
 
 func setAgentState(r *run.Run, agentID, state, activity string) {
-	for i := range r.Agents {
-		if r.Agents[i].ID == agentID {
-			r.Agents[i].State = state
-			r.Agents[i].Activity = activity
-			return
+	setAgentStateIn(&r.Agents, agentID, state, activity)
+}
+
+// setAgentStateIn sets an agent's state/activity on any host's agent slice (a
+// run's, a quest's, or a campaign's), seeding a minimal agent entry when the id is
+// not yet present. A run's agents are pre-seeded by the executor, so seeding only
+// ever fires for a campaign/quest's coordinating agent (intent-lead/reviewer,
+// quest-lead), which the supervisor spawns without a pre-seeded entry.
+func setAgentStateIn(agents *[]run.Agent, agentID, state, activity string) {
+	a := ensureAgent(agents, agentID)
+	a.State = state
+	a.Activity = activity
+}
+
+// ensureAgent returns a pointer to the agent with agentID in the slice, appending
+// a minimal entry when it is absent (so a campaign/quest coordinating agent the
+// supervisor never pre-seeded is recorded rather than dropped). The pointer is
+// valid only until the next append to the slice — callers mutate and return.
+func ensureAgent(agents *[]run.Agent, agentID string) *run.Agent {
+	for i := range *agents {
+		if (*agents)[i].ID == agentID {
+			return &(*agents)[i]
 		}
 	}
+	*agents = append(*agents, run.Agent{ID: agentID})
+	return &(*agents)[len(*agents)-1]
 }
 
 func setTaskState(r *run.Run, taskID, state string) {
@@ -1098,19 +1375,21 @@ func setTaskState(r *run.Run, taskID, state string) {
 }
 
 func appendToAgent(r *run.Run, agentID string, e run.Event, addTokens int) {
-	// Stamp the append time centrally so every event carries an ordering aid
-	// without threading a timestamp through each call site. TaskID is left
-	// best-effort (empty) here; the per-agent slice order already gives sequence.
+	appendToAgentIn(&r.Agents, agentID, e, addTokens)
+}
+
+// appendToAgentIn appends an event (and adds tokens) to an agent on any host's
+// agent slice, seeding the agent when absent (same self-seeding rationale as
+// setAgentStateIn). It stamps the append time centrally so every event carries an
+// ordering aid without threading a timestamp through each call site; TaskID is
+// left best-effort (empty) — the per-agent slice order already gives sequence.
+func appendToAgentIn(agents *[]run.Agent, agentID string, e run.Event, addTokens int) {
 	if e.Ts == "" {
 		e.Ts = time.Now().UTC().Format(time.RFC3339)
 	}
-	for i := range r.Agents {
-		if r.Agents[i].ID == agentID {
-			r.Agents[i].Events = append(r.Agents[i].Events, e)
-			r.Agents[i].Tokens += addTokens
-			return
-		}
-	}
+	a := ensureAgent(agents, agentID)
+	a.Events = append(a.Events, e)
+	a.Tokens += addTokens
 }
 
 func orDefault(v, def string) string {

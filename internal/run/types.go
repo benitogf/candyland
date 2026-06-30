@@ -72,8 +72,14 @@ type Run struct {
 	// and open NO PR; the parent opens the PR at the end after intent review). Empty ==
 	// "pr" (a standalone run). A branch-delivered run's branch is that campaign branch
 	// (set by the parent at launch).
-	Deliver Delivery `json:"deliver,omitempty"`
-	Prompt  string   `json:"prompt"` // the instruction actually sent to the agents
+	// (always serialized — no omitempty — so the frontend can key UI on r.deliver
+	// even for a standalone "pr" run, where the field would otherwise be absent).
+	Deliver Delivery `json:"deliver"`
+	// TargetPR is the existing PR number a "feedback"/"review" run updates in place
+	// (0 for "pr"/"branch", which open/own their own delivery). The run resolves the
+	// PR's head branch, bases its work on it, and pushes back — never opening a new PR.
+	TargetPR int    `json:"targetPr,omitempty"`
+	Prompt   string `json:"prompt"` // the instruction actually sent to the agents
 	// OriginalIntent is the launch prompt, set ONCE at run creation and never
 	// rewritten (an Edit changes Prompt, not this). Final review compares output
 	// against the original intent, not just task completion. For a standalone run
@@ -170,6 +176,15 @@ type Delivery string
 const (
 	DeliverPR     Delivery = "pr"     // standalone quest: one PR per child run
 	DeliverBranch Delivery = "branch" // campaign-owned: commit onto campaign/<campaignID>
+	// DeliverFeedback updates an EXISTING PR in place: the run bases its work on
+	// that PR's head branch and pushes back onto it, opening NO new PR. The target
+	// PR number rides on TargetPR. Multi-repo: each repo's findings land on that
+	// repo's existing PR.
+	DeliverFeedback Delivery = "feedback"
+	// DeliverReview produces findings and opens NO PR. When it had findings to apply
+	// it behaves like feedback (updates TargetPR); when it had none it ends as a
+	// review-only no-op with an empty prUrl by design.
+	DeliverReview Delivery = "review"
 )
 
 // QuestSpec is the launch input for a quest — a Candyland-native iterative loop
@@ -198,6 +213,9 @@ type QuestSpec struct {
 	// "pr" at creation. When "branch", the branch is campaign/<campaignID> — the same
 	// name in each impacted repo.
 	Deliver Delivery `json:"deliver,omitempty"`
+	// TargetPR is the existing PR number a "feedback"/"review" quest's child runs
+	// update in place (required >0 for those modes; 0 for "pr"/"branch").
+	TargetPR int `json:"targetPr,omitempty"`
 	// CampaignID is the parent campaign link, set when this quest is launched under a
 	// campaign. Empty for a standalone quest.
 	CampaignID string `json:"campaignId,omitempty"`
@@ -251,24 +269,42 @@ type Quest struct {
 	Safety            string   `json:"safety,omitempty"`
 	Verify            []string `json:"verify,omitempty"`
 	Stop              string   `json:"stop,omitempty"`
-	// Status is the lifecycle state: running|paused|stopped|blocked|done. PauseReason
-	// carries the human-readable reason when paused/blocked.
-	Status        string        `json:"status"`
+	// Status is the lifecycle state: running|paused|stopped|blocked|done|surfaced-only.
+	// "surfaced-only" is a distinct TERMINAL state (like done) for a quest that
+	// delivered nothing in-scope — it discovered/surfaced or skipped items but
+	// executed 0 and opened 0 PRs (and was NOT branch-delivery-by-design). A
+	// branch-delivered quest with prsOpened:0 is legitimately done, not surfaced-only.
+	// PauseReason carries the human-readable reason when paused/blocked.
+	Status string `json:"status"`
+	// Summary is a human-readable description of a terminal outcome (e.g. the
+	// report-only no-op accounting, or the intent↔autonomy mismatch warning). It is
+	// stamped when the quest reaches a terminal/blocked state so the dashboard and
+	// CLI can name a no-op as such rather than show an undifferentiated "done".
+	Summary       string        `json:"summary,omitempty"`
 	PauseReason   string        `json:"pauseReason,omitempty"`
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"`
 	TokensUsed    int           `json:"tokensUsed"`
 	Deliver       Delivery      `json:"deliver"`
-	WorkItems     []WorkItem    `json:"workItems"`
-	Ticks         []Tick        `json:"ticks"`
+	// TargetPR is the existing PR number "feedback"/"review" child runs update in
+	// place (0 for "pr"/"branch"). Stamped from the spec at creation.
+	TargetPR  int        `json:"targetPr,omitempty"`
+	WorkItems []WorkItem `json:"workItems"`
+	Ticks     []Tick     `json:"ticks"`
 	// Rollup fields for the dashboard, recomputed from WorkItems/Ticks by the loop.
-	PRsOpened      int    `json:"prsOpened"`
-	ItemsCompleted int    `json:"itemsCompleted"`
-	ItemsSkipped   int    `json:"itemsSkipped"`
-	ItemsBlocked   int    `json:"itemsBlocked"`
-	LastProgress   string `json:"lastProgress,omitempty"` // RFC3339 of the last forward step
-	CreatedAt      string `json:"createdAt"`              // RFC3339 set once at creation
-	UpdatedAt      string `json:"updatedAt"`              // RFC3339 set on every persisted mutation
+	PRsOpened      int `json:"prsOpened"`
+	ItemsCompleted int `json:"itemsCompleted"`
+	ItemsSkipped   int `json:"itemsSkipped"`
+	ItemsBlocked   int `json:"itemsBlocked"`
+	// Agents are the quest's OWN coordinating agents (the quest-lead that runs the
+	// discovery/triage pass each tick) — distinct from the agents of its child runs.
+	// The recording path routes a quest-lead's state+events here so the dashboard can
+	// show what the quest itself is doing, beyond its child runs. Non-nil at creation
+	// so it marshals to [] not null (matching Run.Agents).
+	Agents       []Agent `json:"agents"`
+	LastProgress string  `json:"lastProgress,omitempty"` // RFC3339 of the last forward step
+	CreatedAt    string  `json:"createdAt"`              // RFC3339 set once at creation
+	UpdatedAt    string  `json:"updatedAt"`              // RFC3339 set on every persisted mutation
 	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
 	// exported trace carries TraceVersion so a future store can detect/migrate.
 	TraceVersion int `json:"traceVersion"`
@@ -346,6 +382,14 @@ type CampaignSpec struct {
 	// NEVER L1: a report-only campaign would strand with no PR (settled decision).
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel,omitempty"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"` // cap on total tokens across the whole campaign
+	// Deliver is how the campaign's child runs ship their work. Empty defaults to
+	// "pr" (the campaign opens one PR per impacted repo at the end; children commit
+	// onto the campaign branch). "feedback"/"review" land on an EXISTING PR
+	// (TargetPR) instead of opening a new one — the child runs carry that mode.
+	Deliver Delivery `json:"deliver,omitempty"`
+	// TargetPR is the existing PR number a "feedback"/"review" campaign's child runs
+	// update in place (required >0 for those modes; 0 for "pr").
+	TargetPR int `json:"targetPr,omitempty"`
 }
 
 // Campaign is the full persisted state of a campaign — the object stored at ooo
@@ -402,8 +446,24 @@ type Campaign struct {
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"`
 	TokensUsed    int           `json:"tokensUsed"`
-	CreatedAt     string        `json:"createdAt"` // RFC3339 set once at creation
-	UpdatedAt     string        `json:"updatedAt"` // RFC3339 set on every persisted mutation
+	// Deliver is how the campaign's child runs ship their work: "pr" (the default —
+	// children commit onto the campaign branch, the campaign opens one PR per impacted
+	// repo at the end) or "feedback"/"review" (children land on the EXISTING TargetPR
+	// instead of the campaign branch — see launchCampaignChild's propagation). Set at
+	// creation, defaulted to "pr" when empty. Always serialized (no omitempty) so the
+	// frontend can key UI on cam.deliver even for a default "pr" campaign.
+	Deliver Delivery `json:"deliver"`
+	// TargetPR is the existing PR number "feedback"/"review" child runs update in
+	// place (0 for "pr"). Stamped from the spec at creation.
+	TargetPR int `json:"targetPr,omitempty"`
+	// Agents are the campaign's OWN coordinating agents (the supervisor's intent-lead
+	// and intent-reviewer) — distinct from the agents of its child quests/runs. The
+	// recording path routes their state+events here so the dashboard can show what the
+	// campaign itself is doing, beyond its children. Non-nil at creation so it marshals
+	// to [] not null (matching Run.Agents).
+	Agents    []Agent `json:"agents"`
+	CreatedAt string  `json:"createdAt"` // RFC3339 set once at creation
+	UpdatedAt string  `json:"updatedAt"` // RFC3339 set on every persisted mutation
 	// TraceVersion is the schema version of this Campaign record, mirroring how a
 	// Run's exported trace and a Quest carry TraceVersion for future migration.
 	TraceVersion int `json:"traceVersion"`

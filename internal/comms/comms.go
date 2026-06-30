@@ -234,6 +234,12 @@ func formatBrief(b bus.Brief) string {
 	if b.Feedback != "" {
 		fmt.Fprintf(&sb, "previous attempt failed — avoid this: %s\n", b.Feedback)
 	}
+	if len(b.Findings) > 0 {
+		sb.WriteString("findings:\n")
+		for _, f := range b.Findings {
+			fmt.Fprintf(&sb, "- %s\n", f)
+		}
+	}
 	if b.Prompt != "" {
 		fmt.Fprintf(&sb, "\n%s", b.Prompt)
 	}

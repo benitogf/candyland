@@ -20,9 +20,11 @@ import StopCircleIcon from '@mui/icons-material/StopCircle'
 import ReplayIcon from '@mui/icons-material/Replay'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import EditIcon from '@mui/icons-material/Edit'
+import CallMergeIcon from '@mui/icons-material/CallMerge'
 
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
+import { deliverOf } from '../data/ooo'
 import { StateChip, StateLegend } from '../components/StatusBits'
 import EditRunDialog from '../components/EditRunDialog'
 import RunSwitcher from './RunSwitcher'
@@ -115,9 +117,74 @@ const panelFor = (key, run) => {
 
 // ── Header controls — Stop / Restart, gated by status. Candyland keeps a lean,
 //    flow-level control surface (no per-agent control, no resume). ────────────
+// A branch-delivered child commits to the shared campaign branch and opens no PR
+// of its own — the parent opens the PR. Show this as a POSITIVE outcome, never a
+// missing-PR. Branch label falls back to the run's branch.
+const BranchDelivered = ({ run }) => (
+    <Tooltip title="Committed to the campaign branch — the parent campaign opens the PR">
+        <Chip
+            icon={<CallMergeIcon />}
+            label={`committed to ${run.branch || 'branch'}`}
+            size="small" color="secondary" variant="outlined" sx={{ flexShrink: 0, maxWidth: 280 }}
+        />
+    </Tooltip>
+)
+
+// Feedback delivery: the run addressed review feedback and UPDATED an existing
+// PR in place — it opens NO new PR. run.prUrl is the existing/updated PR, so we
+// link it as a positive "updated in place" outcome, never a new-PR affordance
+// and never a missing/failed PR.
+const FeedbackDelivered = ({ run }) => {
+    const num = run.prUrl ? run.prUrl.split('/').pop() : null
+    return run.prUrl
+        ? (
+            <Tooltip title="Addressed review feedback and updated the existing PR in place">
+                <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>
+                    Updated PR #{num}
+                </Button>
+            </Tooltip>
+        )
+        : (
+            <Chip label="feedback applied" size="small" color="success" variant="outlined" sx={{ flexShrink: 0 }} />
+        )
+}
+
+// Review delivery: the run reviewed a PR. Either findings were applied to that
+// PR (link it), or there were no actionable findings — a clean, intentional
+// no-PR outcome, NOT a missing/failed PR.
+const ReviewDelivered = ({ run }) => {
+    const num = run.prUrl ? run.prUrl.split('/').pop() : null
+    return run.prUrl
+        ? (
+            <Tooltip title="Reviewed — findings applied to the PR">
+                <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>
+                    Reviewed · PR #{num}
+                </Button>
+            </Tooltip>
+        )
+        : (
+            <Tooltip title="Reviewed — no actionable findings; nothing to apply">
+                <Chip label="reviewed · no findings" size="small" color="success" variant="outlined" sx={{ flexShrink: 0, maxWidth: 280 }} />
+            </Tooltip>
+        )
+}
+
+// The positive terminal rendering for a finished run, keyed on its delivery
+// shape. Returns null when the shape is a plain PR run, so callers keep their
+// own PR / completed handling for the default case.
+const DeliveryOutcome = ({ run }) => {
+    const shape = deliverOf(run)
+    if (shape === 'branch') return <BranchDelivered run={run} />
+    if (shape === 'feedback') return <FeedbackDelivered run={run} />
+    if (shape === 'review') return <ReviewDelivered run={run} />
+    return null
+}
+
 const RunControls = ({ run, controls, done, onEdit }) => {
     const offline = controls.reachable === false
     const offlineTip = 'Server unreachable — start ./candyland to control this run'
+    const outcome = <DeliveryOutcome run={run} />
+    const hasOutcome = deliverOf(run) !== 'pr'
     const RestartButton = ({ label }) => (
         <Tooltip title={offline ? offlineTip : 'Re-run this task as-is'} disableHoverListener={false}>
             <Box component="span">
@@ -136,6 +203,7 @@ const RunControls = ({ run, controls, done, onEdit }) => {
     )
 
     if (!controls.controllable) {
+        if (done && hasOutcome) return outcome
         return done && run.prUrl
             ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
             : <Chip label="snapshot" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
@@ -148,9 +216,11 @@ const RunControls = ({ run, controls, done, onEdit }) => {
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                 {run.error
                     ? <><Chip label="failed" size="small" color="error" variant="outlined" /><RestartButton label="Restart" /></>
-                    : run.prUrl
-                        ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
-                        : <Chip label="completed" size="small" color="success" variant="outlined" />}
+                    : hasOutcome
+                        ? outcome
+                        : run.prUrl
+                            ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
+                            : <Chip label="completed" size="small" color="success" variant="outlined" />}
                 <EditButton />
             </Box>
         )
@@ -187,6 +257,14 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = !isPlanning
+    // The final phase isn't always a "PR" step — relabel it per delivery shape so
+    // it never reads as a missing PR: branch runs commit to a shared branch,
+    // feedback runs update an existing PR in place, review runs apply findings.
+    const FINAL_PHASE_LABEL = { branch: 'Commit', feedback: 'Update PR', review: 'Review' }
+    const finalLabel = FINAL_PHASE_LABEL[deliverOf(run)]
+    const phaseLabels = finalLabel
+        ? PHASES.map((p, i) => (i === PHASES.length - 1 ? finalLabel : p))
+        : PHASES
     // Real, functional completion — moves over the live run (elapsed-driven), or
     // reflects the phase for a static snapshot.
     const progressPct = Math.round(100 * (run.progress ?? (run.phase / (PHASES.length - 1))))
@@ -212,12 +290,12 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
 
                     <Box sx={{ maxWidth: 720, mx: 'auto', mt: 2 }}>
                         <Stepper activeStep={run.phase} alternativeLabel>
-                            {PHASES.map((p) => <Step key={p}><StepLabel>{p}</StepLabel></Step>)}
+                            {phaseLabels.map((p) => <Step key={p}><StepLabel>{p}</StepLabel></Step>)}
                         </Stepper>
                         {/* Functional progress — moves with the run, not a legend */}
                         <Box sx={{ mt: 1 }}>
                             <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                                <Typography variant="caption" color="text.secondary">{isPlanning ? 'Planning…' : `${PHASES[run.phase]} · ${progressPct}%`}</Typography>
+                                <Typography variant="caption" color="text.secondary">{isPlanning ? 'Planning…' : `${phaseLabels[run.phase]} · ${progressPct}%`}</Typography>
                                 <Typography variant="caption" color="text.secondary">{run.tasksGreen}/{run.tasksTotal} tasks</Typography>
                             </Box>
                             <LinearProgress

@@ -89,6 +89,30 @@ func TestBriefRoundTrip(t *testing.T) {
 	}
 }
 
+// A fix-pass brief carries reviewer-cited blockers in Findings. formatBrief must
+// surface each finding under a clear `findings:` label so the fix agent reads them
+// — otherwise the fix pass never sees what it must address (tests-as-theatre gap).
+func TestFormatBriefRendersFindings(t *testing.T) {
+	b := bus.Brief{
+		Role:  "fix",
+		Repo:  "/repo",
+		Title: "address review blockers",
+		Findings: []string{
+			"nil deref in handler when body is empty",
+			"missing auth check on DELETE",
+		},
+	}
+	rendered := formatBrief(b)
+	if !strings.Contains(rendered, "findings:") {
+		t.Errorf("formatBrief must render a findings: label, got %q", rendered)
+	}
+	for _, f := range b.Findings {
+		if !strings.Contains(rendered, f) {
+			t.Errorf("formatBrief dropped finding %q, got %q", f, rendered)
+		}
+	}
+}
+
 // CPB1 + CPB2 (inbox): A sends to B; B's inbox returns it over io.Remote*, and a
 // second read is empty (cursor advanced — server-side seq>cursor scoping).
 func TestCommsSendInboxRoundTrip(t *testing.T) {

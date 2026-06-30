@@ -21,6 +21,24 @@ const useOoo = (key) => {
     return cache
 }
 
+// Delivery mode of a run, keyed on run.deliver (NOT on "has a parent"). Each
+// shape is its OWN terminal outcome the UI renders distinctly so none reads as a
+// missing/failed PR:
+//   'pr'       — standalone run opens its own PR (the default).
+//   'branch'   — campaign / campaign-owned-quest child commits to a shared
+//                campaign branch and opens NO PR of its own; the parent opens it.
+//   'feedback' — addressed review feedback and UPDATED an existing PR in place
+//                (no new PR; run.prUrl points at the updated PR).
+//   'review'   — reviewed a PR; any findings were applied to that PR, or there
+//                were no actionable findings (a clean, intentional no-PR outcome).
+// Default to "pr" so older runs without the field — or any unknown value — are
+// unaffected.
+const DELIVER_SHAPES = ['pr', 'branch', 'feedback', 'review']
+export const deliverOf = (run) => (DELIVER_SHAPES.includes(run?.deliver) ? run.deliver : 'pr')
+export const isBranchDelivered = (run) => deliverOf(run) === 'branch'
+export const isFeedbackDelivered = (run) => deliverOf(run) === 'feedback'
+export const isReviewDelivered = (run) => deliverOf(run) === 'review'
+
 // Normalize a run for the UI: agents/tasks are always arrays, so panels can
 // .map/.length them safely no matter what the backend (or older persisted data)
 // sent — a null there would otherwise crash the whole view.

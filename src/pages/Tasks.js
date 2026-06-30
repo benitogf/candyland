@@ -16,7 +16,7 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
 import { PHASES, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
-import { useRuns, useQuests, useCampaigns } from '../data/ooo'
+import { useRuns, useQuests, useCampaigns, deliverOf } from '../data/ooo'
 import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
 
@@ -42,15 +42,40 @@ const StatusChip = ({ status, text }) => (
     <Chip size="small" variant="outlined" color={STATUS_COLOR[status] || 'default'} label={text} sx={{ height: 22 }} />
 )
 
-const PrCell = ({ url, count }) => (
-    <TableCell onClick={(e) => e.stopPropagation()}>
-        {url
-            ? <Link href={url} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
-            : count
-                ? <Typography variant="caption" color="text.secondary">{count} PR{count > 1 ? 's' : ''}</Typography>
-                : <Typography variant="caption" color="text.secondary">—</Typography>}
-    </TableCell>
+// A small outlined chip used for the non-PR delivery shapes in the PR column.
+const DeliveryChip = ({ label, title }) => (
+    <Chip size="small" variant="outlined" color="secondary" label={label} title={title} sx={{ height: 20, fontSize: 10 }} />
 )
+
+// PR cell. A run's delivery SHAPE (deliver) is its own terminal state — each is
+// distinct from "has a PR" and from a PR-less (failed/pending) run, so none ever
+// reads as a missing PR:
+//   branch   — committed to a shared campaign branch; the parent opens the PR.
+//   feedback — updated an existing PR in place (links that PR).
+//   review   — reviewed a PR; findings applied to it, or no actionable findings.
+// `shape` is only passed for runs; quests/campaigns fall through to count/url.
+const PrCell = ({ url, count, shape }) => {
+    const num = url ? url.split('/').pop() : null
+    return (
+        <TableCell onClick={(e) => e.stopPropagation()}>
+            {shape === 'branch'
+                ? <DeliveryChip label="committed" title="Committed to the campaign branch — the parent opens the PR" />
+                : shape === 'feedback'
+                    ? (url
+                        ? <Link href={url} target="_blank" rel="noreferrer" title="Updated the existing PR in place" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>updated PR #{num} <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                        : <DeliveryChip label="feedback applied" title="Addressed review feedback in place" />)
+                    : shape === 'review'
+                        ? (url
+                            ? <Link href={url} target="_blank" rel="noreferrer" title="Reviewed — findings applied to the PR" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>reviewed #{num} <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                            : <DeliveryChip label="no findings" title="Reviewed — no actionable findings" />)
+                        : url
+                            ? <Link href={url} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                            : count
+                                ? <Typography variant="caption" color="text.secondary">{count} PR{count > 1 ? 's' : ''}</Typography>
+                                : <Typography variant="caption" color="text.secondary">—</Typography>}
+        </TableCell>
+    )
+}
 
 // A clickable parent link that pivots the section to the parent level, filtered
 // to that parent — keeping the rest of the current filters intact.
@@ -105,7 +130,7 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                         {!r.campaignId && !r.questId && <Typography variant="caption" color="text.secondary">—</Typography>}
                     </TableCell>
                     <TableCell><FolderText folder={folderOf(r)} /></TableCell>
-                    <PrCell url={r.prUrl} />
+                    <PrCell url={r.prUrl} shape={deliverOf(r)} />
                 </TableRow>
             ))}
         </TableBody>
@@ -193,9 +218,24 @@ const Tasks = () => {
     const campaigns = useCampaigns()
     const items = level === 'runs' ? runs : level === 'quests' ? quests : campaigns
 
+    // Each run delivery SHAPE (branch / feedback / review) is its OWN PR state,
+    // distinct from has-PR and from a PR-less/failed run. Handle them here on top of
+    // the shared filters so a shaped run never collapses into "no PR": pr=<shape>
+    // keeps only runs of that shape; pr=none excludes every shaped run (they're not
+    // a missing PR — they legitimately deliver another way).
+    const prState = filters.pr
+    const SHAPE_FILTERS = ['branch', 'feedback', 'review']
     const filtered = useMemo(
-        () => items.filter((it) => matchFilters(it, filters, level, textFieldsFor(it, level))),
-        [items, filters, level],
+        () => items.filter((it) => {
+            if (level === 'runs') {
+                const shape = deliverOf(it)
+                const shaped = shape !== 'pr'
+                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, level, textFieldsFor(it, level))
+                if (prState === 'none' && shaped) return false
+            }
+            return matchFilters(it, filters, level, textFieldsFor(it, level))
+        }),
+        [items, filters, level, prState],
     )
 
     // Pivot/filter mutations all go through the URL so links preserve filters.
