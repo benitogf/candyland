@@ -402,6 +402,7 @@ func (c *Conductor) launchChildRun(ctx context.Context, q run.Quest, it questWor
 		r.CampaignID = q.CampaignID
 		if branch != "" {
 			r.Branch = branch
+			r.Deliver = run.DeliverBranch // commit onto the shared branch, open no PR
 		}
 	})
 

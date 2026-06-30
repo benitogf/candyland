@@ -202,6 +202,119 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 	})
 
 	registerQuestEndpoints(server, c)
+	registerCampaignEndpoints(server, c)
+}
+
+// registerCampaignEndpoints mounts the campaign REST surface, mirroring the quest
+// endpoints: create, begin (kick the supervisor), read status, pause/resume, stop,
+// and the child quests/runs rollups. Campaign state is served from storage (so it
+// works for untracked campaigns too), exactly like the run/quest snapshot endpoints.
+func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
+	post := ooo.Methods{"POST": ooo.MethodSpec{}}
+	get := ooo.Methods{"GET": ooo.MethodSpec{}}
+
+	// Create a campaign (input/folders/autonomy/budget).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			var spec run.CampaignSpec
+			if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(spec.Input) == "" || len(spec.Folders) == 0 {
+				http.Error(w, "an input and at least one folder are required", http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]string{"id": c.CreateCampaign(spec)})
+		},
+	})
+
+	// Read a single campaign's snapshot (served from storage, like a run/quest).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			obj, err := server.Storage.Get("campaigns/" + mux.Vars(r)["id"])
+			if err != nil {
+				http.Error(w, "campaign not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(obj.Data)
+		},
+	})
+
+	// Begin / continue execution: kick (or resume) the supervisor.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/begin",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.BeginCampaign(mux.Vars(r)["id"]) {
+				http.Error(w, "campaign not found or not begin-able (stopped/done)", http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Pause the supervisor (no delete) with a reason.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/pause",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.PauseCampaign(mux.Vars(r)["id"], reasonFromBody(r)) {
+				http.Error(w, "campaign not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Resume a paused (or blocked) campaign.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/resume",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.ResumeCampaign(mux.Vars(r)["id"]) {
+				http.Error(w, "campaign not found or not paused", http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Stop: terminal halt with a reason.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/stop",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.StopCampaign(mux.Vars(r)["id"], reasonFromBody(r)) {
+				http.Error(w, "campaign not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// The campaign's child quests (quests whose CampaignID == id).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/quests",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, c.CampaignChildQuests(mux.Vars(r)["id"]))
+		},
+	})
+
+	// The campaign's child runs (runs whose CampaignID == id).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/runs",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, c.CampaignChildRuns(mux.Vars(r)["id"]))
+		},
+	})
 }
 
 // registerQuestEndpoints mounts the quest REST surface, mirroring the run

@@ -59,6 +59,7 @@ func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 	cam := run.Campaign{
 		ID:            id,
 		OriginalInput: spec.Input,
+		Folders:       spec.Folders,
 		Status:        "running",
 		AutonomyLevel: autonomy,
 		TokenBudget:   spec.TokenBudget,
@@ -97,6 +98,7 @@ func (c *Conductor) GetCampaign(id string) (run.Campaign, bool) {
 // cloneCampaign deep-copies the slices a campaign carries so a returned campaign is
 // safe to mutate without touching the next read's backing arrays.
 func cloneCampaign(cam run.Campaign) run.Campaign {
+	cam.Folders = append([]string(nil), cam.Folders...)
 	cam.QuestIDs = append([]string(nil), cam.QuestIDs...)
 	cam.RunIDs = append([]string(nil), cam.RunIDs...)
 	cam.PRs = append([]run.PR(nil), cam.PRs...)

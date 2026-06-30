@@ -52,6 +52,10 @@ type Conductor struct {
 	// so PauseQuest/StopQuest can halt it — the quest analogue of a run's per-
 	// executor control channel. Guarded by mu.
 	questDrivers map[string]*questDriver
+	// campaignDrivers tracks each campaign's running supervisor goroutine (id →
+	// cancel), so PauseCampaign/StopCampaign can halt it — the campaign analogue of
+	// questDrivers. Guarded by mu.
+	campaignDrivers map[string]*campaignDriver
 	// folders resolves a run's working folders. Defaults to the folders the run
 	// was launched with (Spec.Folders, carried on the Run); tests override it to
 	// point a run at a throwaway git repo.

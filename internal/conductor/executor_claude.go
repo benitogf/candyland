@@ -225,6 +225,15 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return // findings unresolved (or stopped) — never open a PR on un-reviewed work
 	}
 
+	// ── Branch delivery (campaign/quest-owned child): the run commits its work onto
+	//    the SHARED per-repo branch and opens NO PR — the parent campaign opens one PR
+	//    per repo at the end, after intent review (Delivery & PR Policy: children never
+	//    open PRs). Push the branch so the parent can collect the commits; record no PR. ──
+	if r.Deliver == run.DeliverBranch {
+		c.deliverToBranch(ctx, id, folders, delivered, r.Branch)
+		return
+	}
+
 	// ── Deliver: push + open one PR PER IMPACTED REPO, in folder order. These are
 	//    ENVIRONMENTAL (a missing 'origin' or an unauthenticated gh can't be fixed
 	//    by re-splitting). PARTIAL-FAILURE ISOLATION: one repo's push/PR failure is
@@ -273,6 +282,36 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		r.Phase = run.PhasePR // reached only now that a PR is open
 		r.StatusLine = prStatusLine(prs)
 		setAgentState(r, "tl", "done", prStatusLine(prs))
+	})
+}
+
+// deliverToBranch is the delivery step for a campaign/quest-owned child run: it
+// pushes each impacted repo's reviewed work onto the SHARED per-repo branch and
+// opens NO pull request (children never open PRs — the parent campaign opens one
+// PR per repo at the end, after intent review). The shared branch is r.Branch
+// (campaign/<id>), set by the parent at launch. Pushing it makes the commits
+// collectable by the parent; a push failure is recorded per repo (partial-failure
+// isolation) but never opens a PR. The run reaches the PR phase as its terminal
+// state — its "delivery" is the pushed branch, not a PR.
+func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []string, delivered map[string]string, branch string) {
+	c.Update(id, func(r *run.Run) {
+		r.StatusLine = "Pushing work onto the campaign branch (no PR — the campaign delivers)…"
+		setAgentState(r, "tl", "working", "pushing onto "+branch)
+	})
+	prs := make([]run.PR, 0, len(delivered))
+	for _, repo := range orderedRepos(folders, delivered) {
+		integDir := delivered[repo]
+		pr := run.PR{Repo: repoBase(repo)} // no URL: a branch-delivered child opens no PR
+		if err := pushBranch(ctx, integDir, branch); err != nil {
+			pr.Err = "push failed: " + err.Error()
+		}
+		prs = append(prs, pr)
+	}
+	c.Update(id, func(r *run.Run) {
+		r.PRs = prs
+		r.Phase = run.PhasePR
+		r.StatusLine = "Committed onto " + branch + " — the campaign will open the PR after intent review."
+		setAgentState(r, "tl", "done", "committed onto "+branch)
 	})
 }
 
@@ -401,6 +440,15 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 		setAgentState(r, "tl", "integrating", "merging the slices")
 	})
 	integDir := filepath.Join(repoWt, "integrate")
+	// A branch-delivered child shares ONE branch (campaign/<id>) with its siblings,
+	// who run sequentially. If the shared branch already carries an earlier child's
+	// commits, base this integration off that tip (resolved to a SHA so addWorktree's
+	// branch -D doesn't strand the base) so the work ACCUMULATES rather than resets.
+	if cr, _ := c.Get(id); cr.Deliver == run.DeliverBranch {
+		if sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err == nil && sha != "" {
+			base = sha
+		}
+	}
 	if err := addWorktree(ctx, repo, integDir, branch, base); err != nil {
 		fail(ctx, c, id, "tl", "Couldn't create the integration worktree for "+repoBase(repo)+": "+err.Error())
 		return "", "", false

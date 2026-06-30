@@ -66,7 +66,13 @@ type Run struct {
 	// can populate them without a schema migration.
 	QuestID    string `json:"questId,omitempty"`
 	CampaignID string `json:"campaignId,omitempty"`
-	Prompt     string `json:"prompt"` // the instruction actually sent to the agents
+	// Deliver is how the run ships its work: "pr" (the default — open one PR per
+	// impacted repo) or "branch" (a campaign/quest-owned child run — commit + push
+	// onto the shared per-repo branch and open NO PR; the parent opens the PR at the
+	// end after intent review). Empty == "pr" (a standalone run). A branch-delivered
+	// run's branch is the shared campaign branch (set by the parent at launch).
+	Deliver Delivery `json:"deliver,omitempty"`
+	Prompt  string   `json:"prompt"` // the instruction actually sent to the agents
 	// OriginalIntent is the launch prompt, set ONCE at run creation and never
 	// rewritten (an Edit changes Prompt, not this). Final review compares output
 	// against the original intent, not just task completion. For a standalone run
@@ -354,6 +360,10 @@ type Campaign struct {
 	// the campaign analogue of Run.OriginalIntent. Final intent review compares the
 	// campaign's delivered work against this, not a mutated input.
 	OriginalInput string `json:"originalInput"`
+	// Folders are the campaign's target folders/repos, carried from the spec
+	// (folders[0] = the git repo children branch in). The supervisor runs its
+	// intent-lead/reviewer agents and launches child runs against these.
+	Folders []string `json:"folders,omitempty"`
 	// IntentBrief is the intent-lead's structured restatement of OriginalInput.
 	// Empty until the brief phase (a later task) populates it.
 	IntentBrief IntentBrief `json:"intentBrief"`
