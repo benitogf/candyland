@@ -45,6 +45,10 @@ type Conductor struct {
 	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
 	// highest persisted quest id by reconcileQuestSeq after a restart.
 	questSeq int
+	// questDrivers tracks each quest's running tick-loop goroutine (id → cancel),
+	// so PauseQuest/StopQuest can halt it — the quest analogue of a run's per-
+	// executor control channel. Guarded by mu.
+	questDrivers map[string]*questDriver
 	// folders resolves a run's working folders. Defaults to the folders the run
 	// was launched with (Spec.Folders, carried on the Run); tests override it to
 	// point a run at a throwaway git repo.

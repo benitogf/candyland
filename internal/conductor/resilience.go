@@ -117,6 +117,8 @@ type attemptOutcome struct {
 	startErr  error          // process could not be started (binary missing / not authenticated)
 	runErr    error          // process exited non-zero on its own
 	stderr    string         // the process's stderr (why it exited), surfaced on failure
+	tokens    int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
+	allText   string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
 }
 
 // streamOnce runs a single claude process, streaming its stream-json into the
@@ -212,6 +214,9 @@ loop:
 			if json.Unmarshal(b, &line) != nil {
 				continue
 			}
+			if line.Type == "result" {
+				out.tokens += line.Usage.OutputTokens / 1000 // same 1k scaling appendToAgent uses
+			}
 			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {
 				out.partition = p
@@ -224,6 +229,7 @@ loop:
 			}
 			if text != "" {
 				out.lastText = text
+				out.allText += text + "\n"
 			}
 		case <-stall.C:
 			out.stalled = true

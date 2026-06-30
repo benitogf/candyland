@@ -199,4 +199,135 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 			w.WriteHeader(http.StatusNoContent)
 		},
 	})
+
+	registerQuestEndpoints(server, c)
+}
+
+// registerQuestEndpoints mounts the quest REST surface, mirroring the run
+// endpoints' style: create, begin (kick the tick loop), read status, pause/resume,
+// stop, and the child-runs / findings rollups. Quest state is served from storage
+// (so it works for untracked quests too), exactly like the run snapshot endpoint.
+func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
+	post := ooo.Methods{"POST": ooo.MethodSpec{}}
+	get := ooo.Methods{"GET": ooo.MethodSpec{}}
+
+	// Create a quest (objective/folders/scope/safety/verify/autonomy/deliver/…).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			var spec run.QuestSpec
+			if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(spec.Objective) == "" || len(spec.Folders) == 0 {
+				http.Error(w, "an objective and at least one folder are required", http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]string{"id": c.CreateQuest(spec)})
+		},
+	})
+
+	// Read a single quest's snapshot + rollup (served from storage, like a run).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			obj, err := server.Storage.Get("quests/" + mux.Vars(r)["id"])
+			if err != nil {
+				http.Error(w, "quest not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(obj.Data)
+		},
+	})
+
+	// Begin / continue execution: kick (or resume) the tick loop.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/begin",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.BeginQuest(mux.Vars(r)["id"]) {
+				http.Error(w, "quest not found or not begin-able (stopped/done)", http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Pause future ticks (no delete) with a reason.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/pause",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.PauseQuest(mux.Vars(r)["id"], reasonFromBody(r)) {
+				http.Error(w, "quest not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Resume a paused quest.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/resume",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.ResumeQuest(mux.Vars(r)["id"]) {
+				http.Error(w, "quest not found or not paused", http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Stop: terminal halt with a reason.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/stop",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.StopQuest(mux.Vars(r)["id"], reasonFromBody(r)) {
+				http.Error(w, "quest not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// The quest's child runs (runs whose QuestID == id).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/runs",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, c.QuestChildRuns(mux.Vars(r)["id"]))
+		},
+	})
+
+	// The quest's work items (findings).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/findings",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			q, ok := c.GetQuest(mux.Vars(r)["id"])
+			if !ok {
+				http.Error(w, "quest not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, q.WorkItems)
+		},
+	})
+}
+
+// reasonFromBody pulls an optional {"reason":"…"} from a pause/stop request body.
+// An empty/absent body is fine — the conductor records a default reason then.
+func reasonFromBody(r *http.Request) string {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	return body.Reason
 }
