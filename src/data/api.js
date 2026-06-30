@@ -36,6 +36,14 @@ export const archiveRun = (id) => post(`/runs/${id}/archive`)
 // re-runs. Distinct from restart (re-run as-is).
 export const editRun = (id, spec) => post(`/runs/${id}/edit`, spec)
 
+// Quest control. Candyland observes quests the same way it observes runs;
+// pause/resume/stop are the only quest controls the backend exposes. Pause and
+// stop carry an optional reason recorded on the quest. Campaigns have no control
+// endpoints yet — they are surfaced read-only.
+export const pauseQuest = (id, reason) => post(`/quests/${id}/pause`, reason ? { reason } : undefined)
+export const resumeQuest = (id) => post(`/quests/${id}/resume`)
+export const stopQuest = (id, reason) => post(`/quests/${id}/stop`, reason ? { reason } : undefined)
+
 // System info: platform, dependency state (claude/git/gh), recommendations.
 // Doubles as the backend reachability probe.
 export const fetchSystem = async () => {
