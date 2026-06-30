@@ -197,14 +197,41 @@ func (c *Conductor) Get(id string) (run.Run, bool) {
 // cloneRun deep-copies the slices that get mutated in place so a returned run is
 // safe to read without holding rt.mu.
 func cloneRun(r run.Run) run.Run {
-	agents := make([]run.Agent, len(r.Agents))
-	for i, a := range r.Agents {
-		a.Events = append([]run.Event(nil), a.Events...)
-		agents[i] = a
-	}
-	r.Agents = agents
+	r.Agents = cloneAgents(r.Agents)
 	r.Tasks = append([]run.Task(nil), r.Tasks...)
 	return r
+}
+
+// cloneAgents deep-copies an agent slice and each agent's Events so a returned
+// copy is safe to read/mutate without racing the backing arrays. Quests and
+// campaigns reuse it for their own Agents (their coordinating agents), exactly as
+// cloneRun uses it for a run's. A nil input yields an empty slice (the agents
+// fields marshal to [] not null).
+func cloneAgents(in []run.Agent) []run.Agent {
+	out := make([]run.Agent, len(in))
+	for i, a := range in {
+		a.Events = append([]run.Event(nil), a.Events...)
+		out[i] = a
+	}
+	return out
+}
+
+// updateAgentHost routes an agent-slice mutation to the record that OWNS id,
+// detected by id-kind prefix: a run (r<N>) → the in-memory runtime via Update; a
+// quest (q<N>) → the persisted Quest.Agents via UpdateQuest; a campaign (c<N>) →
+// the persisted Campaign.Agents via UpdateCampaign. The agent-recording path
+// (mapAgentLine) goes through this so a campaign/quest host id lands its
+// coordinating agents' state on the parent record instead of being dropped onto a
+// non-existent run runtime. Behavior for run ids is unchanged — same Update path.
+func (c *Conductor) updateAgentHost(id string, mutate func(*[]run.Agent)) {
+	switch {
+	case strings.HasPrefix(id, "q"):
+		c.UpdateQuest(id, func(q *run.Quest) { mutate(&q.Agents) })
+	case strings.HasPrefix(id, "c"):
+		c.UpdateCampaign(id, func(cam *run.Campaign) { mutate(&cam.Agents) })
+	default:
+		c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
+	}
 }
 
 // ReconcileOrphans marks any persisted run left non-terminal by a previous

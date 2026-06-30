@@ -148,3 +148,99 @@ func TestReviewNeverCleanFailsWithoutPR(t *testing.T) {
 		t.Errorf("a review-blocked run should rest in the Review phase, got phase=%d", r.Phase)
 	}
 }
+
+// C3: the reviewer/fix identity's per-pass budget is clamped to a hard ceiling so a
+// context-blind fix agent can't blow up (the incident saw ~84 tool calls). The
+// default 400 spawn budget must be clamped down, and an env override never raises
+// it above the ceiling.
+func TestReviewFixBudgetClampedToCeiling(t *testing.T) {
+	if got := clampReviewBudget(400); got != reviewFixCeiling {
+		t.Errorf("a 400 budget must clamp to the ceiling %d, got %d", reviewFixCeiling, got)
+	}
+	if got := clampReviewBudget(5); got != 5 {
+		t.Errorf("a budget already under the ceiling must pass through, got %d", got)
+	}
+	t.Setenv("CANDYLAND_REVIEW_BUDGET", "10")
+	if got := clampReviewBudget(400); got != 10 {
+		t.Errorf("an env override below the ceiling must apply, got %d", got)
+	}
+	t.Setenv("CANDYLAND_REVIEW_BUDGET", "9999")
+	if got := clampReviewBudget(400); got != reviewFixCeiling {
+		t.Errorf("an env override above the ceiling must NOT exceed it (%d), got %d", reviewFixCeiling, got)
+	}
+}
+
+// C2: a fix pass invoked with NO findings must fail fast (explicit error, no PR),
+// never silently run an unconstrained agent that re-derives its own task list.
+func TestFixReviewFindingsFailsFastOnEmptyFindings(t *testing.T) {
+	c, _ := deliveryConductor(t, reviewThenCleanClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	// Call the fix pass directly with empty blockers — it must abort fast.
+	if c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1) {
+		t.Fatal("a fix pass with no findings must return false (fail fast), not true")
+	}
+	r, _ := c.Get(id)
+	if r.Error == "" {
+		t.Fatal("an empty-findings fix pass must record an explicit error")
+	}
+	if !strings.Contains(strings.ToLower(r.Error), "no review findings") {
+		t.Errorf("the error should name the empty findings, got %q", r.Error)
+	}
+}
+
+// C5: when the reviewer cannot prove a wiring-dependent feature is reachable from
+// the entrypoint, it emits a blocker (not REVIEW_CLEAN). That blocker drives a fix
+// pass; once wiring is proven, the review goes clean and the PR opens. The stub
+// reviewer reports a "wiring unproven" blocker on its first spawn and clean after.
+const reviewWiringUnprovenClaude = `#!/usr/bin/env bash
+prompt="$2"
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  n=$(cat "$CANDYLAND_REVIEW_COUNT" 2>/dev/null || echo 0)
+  n=$((n+1)); echo "$n" > "$CANDYLAND_REVIEW_COUNT"
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go build ./... && ./bin"}}]}}'
+  if [[ "$n" -le 1 ]]; then
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_FINDINGS {\"blockers\":[{\"file\":\"main.go\",\"line\":1,\"issue\":\"wiring unproven: feature not shown reachable from entrypoint\"}]}"}]}}'
+  else
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  fi
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"review findings"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file":"a.txt"}}]}}'
+  printf 'wired in\n' >> "a.txt"
+  echo '{"type":"result","subtype":"success","result":"fixed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+else
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
+  echo "content" > "a.txt"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+fi
+`
+
+func TestReviewWiringUnprovenBlocksThenFixOpensPR(t *testing.T) {
+	c, repo := deliveryConductor(t, reviewWiringUnprovenClaude)
+	t.Setenv("CANDYLAND_REVIEW_COUNT", t.TempDir()+"/n")
+	t.Setenv("CANDYLAND_REVIEW_ROUNDS", "3")
+	id := c.Create(run.Spec{Prompt: "wire a feature"})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" {
+		t.Fatalf("run did not finish: status=%q error=%q", r.Status, r.Error)
+	}
+	if r.Error != "" {
+		t.Fatalf("review should clear once wiring is proven, but errored: %q", r.Error)
+	}
+	// The fix pass committed the wiring fix onto the run branch.
+	out, err := exec.Command("git", "-C", repo, "show", r.Branch+":a.txt").CombinedOutput()
+	if err != nil {
+		t.Fatalf("reading a.txt on the run branch: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "wired in") {
+		t.Errorf("the wiring fix must be committed before the PR:\n%s", out)
+	}
+	if r.PrURL == "" {
+		t.Error("once wiring is proven clean, the run must open a PR")
+	}
+}

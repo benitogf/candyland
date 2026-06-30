@@ -54,6 +54,10 @@ func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 		// strand with no PR) — settled decision.
 		autonomy = run.AutonomyGatePR
 	}
+	deliver := spec.Deliver
+	if deliver == "" {
+		deliver = run.DeliverPR
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	cam := run.Campaign{
@@ -63,10 +67,13 @@ func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 		Status:        "running",
 		AutonomyLevel: autonomy,
 		TokenBudget:   spec.TokenBudget,
+		Deliver:       deliver,
+		TargetPR:      spec.TargetPR,
 		// Empty (non-nil) slices marshal to [] not null — the UI reads these as
 		// arrays (.map/.length), matching how quests keep WorkItems/Ticks non-nil.
 		QuestIDs:     []string{},
 		RunIDs:       []string{},
+		Agents:       []run.Agent{},
 		CreatedAt:    now,
 		UpdatedAt:    now,
 		TraceVersion: run.TraceVersion,
@@ -121,6 +128,7 @@ func cloneCampaign(cam run.Campaign) run.Campaign {
 		verdicts[i] = v
 	}
 	cam.IntentReview.Verdicts = verdicts
+	cam.Agents = cloneAgents(cam.Agents)
 	return cam
 }
 

@@ -227,6 +227,11 @@ func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
 				http.Error(w, "an input and at least one folder are required", http.StatusBadRequest)
 				return
 			}
+			// feedback/review land on an EXISTING PR — they require its number.
+			if (spec.Deliver == run.DeliverFeedback || spec.Deliver == run.DeliverReview) && spec.TargetPR <= 0 {
+				http.Error(w, "deliver \""+string(spec.Deliver)+"\" requires targetPr > 0 (the existing PR to update)", http.StatusBadRequest)
+				return
+			}
 			writeJSON(w, map[string]string{"id": c.CreateCampaign(spec)})
 		},
 	})
@@ -337,6 +342,11 @@ func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
 			}
 			if strings.TrimSpace(spec.Objective) == "" || len(spec.Folders) == 0 {
 				http.Error(w, "an objective and at least one folder are required", http.StatusBadRequest)
+				return
+			}
+			// feedback/review update an EXISTING PR — they require its number.
+			if (spec.Deliver == run.DeliverFeedback || spec.Deliver == run.DeliverReview) && spec.TargetPR <= 0 {
+				http.Error(w, "deliver \""+string(spec.Deliver)+"\" requires targetPr > 0 (the existing PR to update)", http.StatusBadRequest)
 				return
 			}
 			writeJSON(w, map[string]string{"id": c.CreateQuest(spec)})

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/benitogf/candyland/internal/winproc"
@@ -190,6 +191,35 @@ func pushBranch(ctx context.Context, repo, branch string) error {
 func commentPR(ctx context.Context, repo, prURL, body string) error {
 	_, err := runCmd(ctx, repo, ghBin(), "pr", "comment", prURL, "--body", body)
 	return err
+}
+
+// prHeadBranch resolves an existing PR's head branch name via gh, so a feedback
+// run can base its work on (and push back onto) that branch — updating the PR in
+// place rather than opening a new one.
+func prHeadBranch(ctx context.Context, repo string, n int) (string, error) {
+	out, err := runCmd(ctx, repo, ghBin(), "pr", "view", strconv.Itoa(n), "--json", "headRefName", "--jq", ".headRefName")
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(out)
+	if head == "" {
+		return "", fmt.Errorf("gh pr view %d produced no head branch", n)
+	}
+	return head, nil
+}
+
+// prURL resolves an existing PR's web URL via gh, so a feedback/review run records
+// the PR it UPDATED as its delivery result (never opening a new one).
+func prURL(ctx context.Context, repo string, n int) (string, error) {
+	out, err := runCmd(ctx, repo, ghBin(), "pr", "view", strconv.Itoa(n), "--json", "url", "--jq", ".url")
+	if err != nil {
+		return "", err
+	}
+	url := strings.TrimSpace(out)
+	if url == "" {
+		return "", fmt.Errorf("gh pr view %d produced no URL", n)
+	}
+	return url, nil
 }
 
 func openPR(ctx context.Context, repo, base, head, title, body string) (string, error) {

@@ -78,6 +78,9 @@ const FilterBar = ({ level, filters, runs, quests, campaigns, onChange, onClear 
             <Select label="PR" value={filters.pr} onChange={(v) => onChange('pr', v)} width={120}>
                 <MenuItem value="">Any PR</MenuItem>
                 <MenuItem value="open">Has PR</MenuItem>
+                {level === 'runs' && <MenuItem value="branch">Branch-committed</MenuItem>}
+                {level === 'runs' && <MenuItem value="feedback">Updated PR</MenuItem>}
+                {level === 'runs' && <MenuItem value="review">Review findings</MenuItem>}
                 <MenuItem value="none">No PR</MenuItem>
             </Select>
 

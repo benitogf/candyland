@@ -121,6 +121,37 @@ type attemptOutcome struct {
 	allText   string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
 }
 
+// spawnOpts are optional per-spawn knobs for streamOnce. The zero value is
+// today's behavior for every existing caller, so the options are purely additive.
+type spawnOpts struct {
+	// maxTurns hard-caps the agentic turns claude takes in this one non-interactive
+	// run (claude's --max-turns). 0 means NO cap — the historical behavior, kept for
+	// the tech-lead/coder/conflict spawns. The review/fix identity passes a real
+	// ceiling here so a context-blind pass cannot run away (C3).
+	maxTurns int
+}
+
+// claudeArgs builds the argv for one claude spawn. It is a pure, separately
+// testable function (no process, no I/O) so a test can assert the review/fix
+// identity gets a real --max-turns cap on its argv. busCfg, when non-empty, wires
+// the coordination bus via --mcp-config. maxTurns>0 appends the hard turn cap.
+func claudeArgs(prompt string, extraDirs []string, busCfg string, maxTurns int) []string {
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--model", "claude-opus-4-8", "--dangerously-skip-permissions"}
+	for _, d := range extraDirs {
+		args = append(args, "--add-dir", d)
+	}
+	// A real, hard per-pass containment: claude's --max-turns aborts the run after
+	// this many agentic turns. Only set when a caller asks for it (review/fix);
+	// 0 leaves the spawn uncapped, exactly as before.
+	if maxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(maxTurns))
+	}
+	if busCfg != "" {
+		args = append(args, "--mcp-config", busCfg)
+	}
+	return args
+}
+
 // streamOnce runs a single claude process, streaming its stream-json into the
 // agent's live ooo state, and reports what happened. The process is killed if it
 // stalls (no output within stallTimeout), exceeds the per-attempt wall clock, or
@@ -131,23 +162,24 @@ type attemptOutcome struct {
 // the agent via --add-dir. The agent runs with --dangerously-skip-permissions
 // because a headless run has no human to approve tool use — without it a coder
 // can't edit files and silently does nothing.
-func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, workdir string, extraDirs []string) attemptOutcome {
+//
+// opts carries optional per-spawn knobs (e.g. a hard --max-turns cap); omit it for
+// the historical uncapped behavior used by the tech-lead/coder/conflict spawns.
+func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, workdir string, extraDirs []string, opts ...spawnOpts) attemptOutcome {
 	attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
 	defer cancel()
 
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--model", "claude-opus-4-8", "--dangerously-skip-permissions"}
-	for _, d := range extraDirs {
-		args = append(args, "--add-dir", d)
+	var o spawnOpts
+	if len(opts) > 0 {
+		o = opts[0]
 	}
 	// Coordination bus: give the agent the comms_*/graph_*/brief_get MCP tools
 	// wired to the conductor's ooo bus as this agentID (no-op when no bus is
 	// running). The agent reads its initial context (the plan/task spec) via
 	// brief_get rather than from argv — so a large plan can't overflow the
-	// command line.
+	// command line. claudeArgs wires --mcp-config when busCfg is non-empty.
 	busCfg := c.busMCPConfig(id, agentID)
-	if busCfg != "" {
-		args = append(args, "--mcp-config", busCfg)
-	}
+	args := claudeArgs(prompt, extraDirs, busCfg, o.maxTurns)
 	cmd := exec.Command(claudeBin(), args...)
 	cmd.Dir = workdir
 	cmd.Env = claudeEnv()

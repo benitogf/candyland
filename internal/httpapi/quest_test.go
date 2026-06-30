@@ -40,6 +40,39 @@ func post(t *testing.T, url string, body any) *http.Response {
 	return resp
 }
 
+// feedback/review delivery requires an existing PR number; the create handler
+// rejects them when targetPr is missing and accepts them (stamping Deliver+TargetPR
+// onto the quest) when present.
+func TestQuestCreateFeedbackRequiresTargetPR(t *testing.T) {
+	c, srv := questServer(t)
+	base := "http://" + srv.Address
+
+	// Missing targetPr → 400 for feedback and review.
+	for _, d := range []run.Delivery{run.DeliverFeedback, run.DeliverReview} {
+		resp := post(t, base+"/api/quests", run.QuestSpec{Objective: "fix the PR", Folders: []string{"/repo"}, Deliver: d})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("deliver %q without targetPr: status = %d, want 400", d, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// With targetPr → 200, and the quest carries Deliver + TargetPR.
+	resp := post(t, base+"/api/quests", run.QuestSpec{Objective: "fix the PR", Folders: []string{"/repo"}, Deliver: run.DeliverFeedback, TargetPR: 42})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("feedback with targetPr: status = %d, want 200", resp.StatusCode)
+	}
+	var created struct{ ID string }
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+	q, ok := c.GetQuest(created.ID)
+	if !ok {
+		t.Fatal("created quest not found")
+	}
+	if q.Deliver != run.DeliverFeedback || q.TargetPR != 42 {
+		t.Fatalf("quest deliver/targetPr = %q/%d, want feedback/42", q.Deliver, q.TargetPR)
+	}
+}
+
 // The quest REST surface mirrors the run endpoints: create returns {id}, the
 // snapshot is served from storage, and pause/resume/stop drive the lifecycle.
 func TestQuestEndpointsLifecycle(t *testing.T) {
