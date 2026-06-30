@@ -68,9 +68,10 @@ type Run struct {
 	CampaignID string `json:"campaignId,omitempty"`
 	// Deliver is how the run ships its work: "pr" (the default — open one PR per
 	// impacted repo) or "branch" (a campaign/quest-owned child run — commit + push
-	// onto the shared per-repo branch and open NO PR; the parent opens the PR at the
-	// end after intent review). Empty == "pr" (a standalone run). A branch-delivered
-	// run's branch is the shared campaign branch (set by the parent at launch).
+	// onto the campaign branch (campaign/<id> — the same name in each impacted repo)
+	// and open NO PR; the parent opens the PR at the end after intent review). Empty ==
+	// "pr" (a standalone run). A branch-delivered run's branch is that campaign branch
+	// (set by the parent at launch).
 	Deliver Delivery `json:"deliver,omitempty"`
 	Prompt  string   `json:"prompt"` // the instruction actually sent to the agents
 	// OriginalIntent is the launch prompt, set ONCE at run creation and never
@@ -160,9 +161,10 @@ const (
 )
 
 // Delivery is how a quest's child runs ship their work. A standalone quest opens
-// a PR per child run ("pr"); a campaign-owned quest commits onto a shared per-repo
-// branch ("branch") derived as campaign/<campaignID> (NOT a scalar branch name —
-// settled decision). The derivation lives in conductor.QuestBranch.
+// a PR per child run ("pr"); a campaign-owned quest commits onto the campaign branch
+// ("branch") derived as campaign/<campaignID> — the same name in each impacted repo
+// (NOT a scalar branch name — settled decision). The derivation lives in
+// conductor.QuestBranch.
 type Delivery string
 
 const (
@@ -193,7 +195,8 @@ type QuestSpec struct {
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel,omitempty"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"` // cap on total tokens across all ticks/child runs
 	// Deliver is "pr" (standalone) or "branch" (campaign-owned). Empty defaults to
-	// "pr" at creation. When "branch", the per-repo branch is campaign/<campaignID>.
+	// "pr" at creation. When "branch", the branch is campaign/<campaignID> — the same
+	// name in each impacted repo.
 	Deliver Delivery `json:"deliver,omitempty"`
 	// CampaignID is the parent campaign link, set when this quest is launched under a
 	// campaign. Empty for a standalone quest.
@@ -349,8 +352,9 @@ type CampaignSpec struct {
 // key campaigns/<id>. It is the program-level container above quests and runs:
 // the immutable original input, the intent-lead's structured brief, the post-brief
 // and post-plan gates, the child quests/runs, the final per-repo delivery (one PR
-// per repo after intent review — children commit to the per-repo campaign branch
-// and open no PR), the suggested human review routing, the final intent review,
+// per repo after intent review — children commit to the campaign branch
+// (campaign/<id> — the same name in each impacted repo) and open no PR), the
+// suggested human review routing, the final intent review,
 // lifecycle status, autonomy/budget, timestamps, and the schema version. The
 // supervisor/intent-lead flow, gate execution, and intent review that populate
 // these fields are later phases — this is the model and its persistence only.
@@ -372,12 +376,14 @@ type Campaign struct {
 	BriefGate GateResult `json:"briefGate"`
 	PlanGate  GateResult `json:"planGate"`
 	// QuestIDs/RunIDs are the campaign's children, linked as they are launched (a
-	// later phase). Children commit onto the per-repo CampaignBranch and open no PR.
+	// later phase). Children commit onto the campaign branch (campaign/<id> — the same
+	// name in each impacted repo) and open no PR.
 	QuestIDs []string `json:"questIds"`
 	RunIDs   []string `json:"runIds"`
 	// PRs is the final delivery: one PR per impacted repo, opened at the end after
-	// intent review (reusing the run PR type). The per-repo branch the children
-	// commit to is derived by conductor.CampaignBranch.
+	// intent review (reusing the run PR type). The branch the children commit to —
+	// campaign/<id>, the same name in each impacted repo — is derived by
+	// conductor.CampaignBranch.
 	PRs []PR `json:"prs,omitempty"`
 	// ReviewRouting is the suggested human review areas/reviewers (suggestions only,
 	// not agents) — mirrors IntentBrief.ReviewRouting at the campaign level.

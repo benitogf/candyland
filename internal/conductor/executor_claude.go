@@ -226,9 +226,10 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	}
 
 	// ── Branch delivery (campaign/quest-owned child): the run commits its work onto
-	//    the SHARED per-repo branch and opens NO PR — the parent campaign opens one PR
-	//    per repo at the end, after intent review (Delivery & PR Policy: children never
-	//    open PRs). Push the branch so the parent can collect the commits; record no PR. ──
+	//    the campaign branch (campaign/<id> — the same name in each impacted repo) and
+	//    opens NO PR — the parent campaign opens one PR per repo at the end, after intent
+	//    review (Delivery & PR Policy: children never open PRs). Push the branch so the
+	//    parent can collect the commits; record no PR. ──
 	if r.Deliver == run.DeliverBranch {
 		c.deliverToBranch(ctx, id, folders, delivered, r.Branch)
 		return
@@ -286,10 +287,11 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 }
 
 // deliverToBranch is the delivery step for a campaign/quest-owned child run: it
-// pushes each impacted repo's reviewed work onto the SHARED per-repo branch and
-// opens NO pull request (children never open PRs — the parent campaign opens one
-// PR per repo at the end, after intent review). The shared branch is r.Branch
-// (campaign/<id>), set by the parent at launch. Pushing it makes the commits
+// pushes each impacted repo's reviewed work onto the campaign branch (campaign/<id> —
+// the same name in each impacted repo) and opens NO pull request (children never open
+// PRs — the parent campaign opens one PR per repo at the end, after intent review).
+// The branch is r.Branch (campaign/<id>), set by the parent at launch. Pushing it
+// makes the commits
 // collectable by the parent; a push failure is recorded per repo (partial-failure
 // isolation) but never opens a PR. The run reaches the PR phase as its terminal
 // state — its "delivery" is the pushed branch, not a PR.

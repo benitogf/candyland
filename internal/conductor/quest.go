@@ -177,10 +177,11 @@ func (c *Conductor) ListQuests() []run.Quest {
 	return quests
 }
 
-// QuestBranch derives a campaign-owned quest's shared per-repo branch. A quest
-// that delivers onto a campaign branch (Deliver=="branch") commits all its child
-// runs onto campaign/<campaignID> — a settled decision: the branch is DERIVED from
-// the parent campaign, never a scalar branch name on the spec. A standalone quest
+// QuestBranch derives a campaign-owned quest's campaign branch (campaign/<id> — the
+// same name in each impacted repo). A quest that delivers onto a campaign branch
+// (Deliver=="branch") commits all its child runs onto campaign/<campaignID> — a
+// settled decision: the branch is DERIVED from the parent campaign, never a scalar
+// branch name on the spec. A standalone quest
 // (Deliver=="pr") has no shared branch (each child run opens its own PR on its own
 // branch), so this returns "". Delivery itself is wired in a later phase; this is
 // the single definition of the format so that phase derives it identically.

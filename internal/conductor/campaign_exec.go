@@ -26,7 +26,8 @@ import (
 //	   intent lead (bounded) — it never asks the user.
 //	3. DECOMPOSE     — the brief's draft tasks become direct child RUNS, each
 //	   launched via the EXISTING run executor with CampaignID set and Deliver=branch
-//	   so it COMMITS onto the per-repo CampaignBranch and opens NO PR.
+//	   so it COMMITS onto the campaign branch (campaign/<id> — the same name in each
+//	   impacted repo) and opens NO PR.
 //	4. PLAN GATE     — a deterministic check that the proposed children would
 //	   plausibly deliver the brief before executing.
 //	5. EXECUTE       — run the children sequentially (so their work accumulates on
@@ -384,8 +385,9 @@ func (c *Conductor) executeChildren(ctx context.Context, id string, cam run.Camp
 }
 
 // launchCampaignChild creates and drives ONE child run via the existing run executor,
-// stamping CampaignID, the shared per-repo CampaignBranch, and Deliver=branch (so it
-// commits onto the branch and opens NO PR — children never open PRs). It blocks until
+// stamping CampaignID, the campaign branch (campaign/<id> — the same name in each
+// impacted repo), and Deliver=branch (so it commits onto the branch and opens NO PR —
+// children never open PRs). It blocks until
 // the child reaches a terminal state or the campaign is paused/stopped.
 func (c *Conductor) launchCampaignChild(ctx context.Context, id string, cam run.Campaign, folders []string, cp childPrompt) string {
 	childID := c.Create(run.Spec{Folders: folders, Prompt: cp.prompt, Title: cp.title})
