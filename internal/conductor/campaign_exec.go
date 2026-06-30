@@ -279,6 +279,9 @@ func (c *Conductor) briefUntilGated(ctx context.Context, id string, cam run.Camp
 			return run.IntentBrief{}, false
 		}
 		c.UpdateCampaign(id, func(cam *run.Campaign) {
+			if cam.Status == "stopped" || cam.Status == "done" {
+				return // a concurrent Stop/completion is authoritative — don't resurrect
+			}
 			cam.Status = "running"
 			cam.PauseReason = ""
 		})
@@ -501,6 +504,9 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 		}
 	}
 	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		if cam.Status == "stopped" {
+			return // a concurrent Stop is authoritative
+		}
 		cam.PRs = prs
 		if opened == 0 {
 			cam.Status = "blocked"
@@ -687,6 +693,9 @@ func (c *Conductor) recordPlanGate(id string, passed bool, reason string) bool {
 func (c *Conductor) blockCampaign(id, reason string) {
 	log.Printf("candyland: campaign %s blocked: %s", id, reason)
 	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		if cam.Status == "stopped" || cam.Status == "done" {
+			return // a concurrent Stop/completion is authoritative
+		}
 		cam.Status = "blocked"
 		cam.PauseReason = reason
 	})

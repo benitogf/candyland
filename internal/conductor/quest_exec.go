@@ -226,6 +226,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		rec.NextAction = "blocked — discovery failed"
 		c.recordTick(id, rec, tokens, nil)
 		c.UpdateQuest(id, func(q *run.Quest) {
+			if q.Status == "stopped" || q.Status == "done" {
+				return // a concurrent Stop/completion is authoritative — don't resurrect
+			}
 			q.Status = "blocked"
 			q.PauseReason = perr
 		})
@@ -238,6 +241,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		rec.NextAction = "no safe work remaining — stopping"
 		c.recordTick(id, rec, tokens, nil)
 		c.UpdateQuest(id, func(q *run.Quest) {
+			if q.Status == "stopped" {
+				return // a concurrent Stop is authoritative
+			}
 			q.Status = "done"
 			q.LastProgress = time.Now().UTC().Format(time.RFC3339)
 		})
@@ -304,6 +310,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	// whole job, so stop after surfacing rather than re-discovering the same findings.
 	if q.AutonomyLevel == run.AutonomyReportOnly {
 		c.UpdateQuest(id, func(q *run.Quest) {
+			if q.Status == "stopped" {
+				return // a concurrent Stop is authoritative
+			}
 			q.Status = "done"
 			q.LastProgress = time.Now().UTC().Format(time.RFC3339)
 		})
@@ -489,6 +498,9 @@ func (c *Conductor) pauseQuestForBudget(id string, used, budget int) {
 	reason := fmt.Sprintf("token budget exceeded: used %d of %d — paused", used, budget)
 	log.Printf("candyland: quest %s %s", id, reason)
 	c.UpdateQuest(id, func(q *run.Quest) {
+		if q.Status == "stopped" || q.Status == "done" {
+			return // a concurrent Stop/completion is authoritative
+		}
 		q.Status = "paused"
 		q.PauseReason = reason
 	})

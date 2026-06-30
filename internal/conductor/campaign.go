@@ -132,6 +132,8 @@ func (c *Conductor) UpdateCampaign(id string, mutate func(*run.Campaign)) bool {
 	if c.server == nil {
 		return false
 	}
+	c.storeMu.Lock() // serialize Get→mutate→publish so concurrent updates can't lose writes
+	defer c.storeMu.Unlock()
 	obj, err := c.server.Storage.Get("campaigns/" + id)
 	if err != nil {
 		return false

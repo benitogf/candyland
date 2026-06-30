@@ -42,6 +42,13 @@ type Conductor struct {
 	mu     sync.Mutex
 	runs   map[string]*runtime
 	seq    int
+	// storeMu serializes the read-modify-write of quest/campaign records in ooo
+	// storage (UpdateQuest/UpdateCampaign). Unlike runs — which hold an in-memory
+	// runtime with its own mu — quests and campaigns live only in storage, so
+	// concurrent Get→mutate→publish would lose updates (e.g. a halting drive's
+	// status write clobbering StopQuest's "stopped"). Held only inside those two
+	// Update funcs, so it never nests with mu.
+	storeMu sync.Mutex
 	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
 	// highest persisted quest id by reconcileQuestSeq after a restart.
 	questSeq int
