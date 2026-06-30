@@ -33,7 +33,7 @@ func TestCancelDuringPlanningRemovesRun(t *testing.T) {
 		t.Error("Cancel of an already-cancelled run should report false")
 	}
 	// A cancelled run can't be resurrected by a late Begin.
-	c.Begin(id, nil)
+	c.Begin(id)
 	if _, ok := c.Get(id); ok {
 		t.Error("Begin must not recreate a cancelled run")
 	}
@@ -49,7 +49,7 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
 
 	id := c.Create(run.Spec{Prompt: "original"})
-	c.Begin(id, nil)
+	c.Begin(id)
 	working := func(r run.Run) bool {
 		for _, a := range r.Agents {
 			if a.ID == "a" && a.State == "working" {
@@ -77,7 +77,7 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 
 	// Begin again → a fresh executor on a fresh channel runs the new task; if a
 	// stale quit had reached it, it would die instead of reaching a working coder.
-	c.Begin(id, nil)
+	c.Begin(id)
 	if r := waitFor(t, c, id, working, 20*time.Second); !working(r) {
 		st := []string{}
 		for _, a := range r.Agents {
@@ -102,6 +102,46 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	// untracked, so the deliveryConductor teardown drain won't cover it).
 	if _, err := os.Stat(wtRoot); !os.IsNotExist(err) {
 		t.Errorf("cancel after edit-rerun did not clean up worktrees at %s", wtRoot)
+	}
+}
+
+// Edit resets a finished run to planning with empty (non-nil) slices and refuses
+// an actively running run. The reset must use []run.Agent{}/[]run.Task{}: nil
+// marshals to JSON null and crashes the UI's .map/.length.
+func TestEditResetsToPlanning(t *testing.T) {
+	c := New(nil)
+	id := c.Create(run.Spec{Prompt: "first prompt"})
+	c.Update(id, func(r *run.Run) { r.Status = "done"; r.Error = "boom" })
+
+	if !c.Edit(id, run.Spec{Prompt: "a totally different request"}) {
+		t.Fatal("Edit should succeed for a finished run")
+	}
+	r, _ := c.Get(id)
+	if r.Status != "planning" {
+		t.Errorf("edit should reset status to planning, got %q", r.Status)
+	}
+	if r.Prompt != "a totally different request" {
+		t.Errorf("edit did not apply the new task: %+v", r)
+	}
+	if r.Error != "" {
+		t.Errorf("edit should clear the prior error, got %q", r.Error)
+	}
+	// Check the runtime's own run (what publish marshals) — Get/cloneRun would mask
+	// a nil by rebuilding it.
+	c.mu.Lock()
+	rt := c.runs[id]
+	c.mu.Unlock()
+	rt.mu.Lock()
+	nilAgents, nilTasks := rt.r.Agents == nil, rt.r.Tasks == nil
+	rt.mu.Unlock()
+	if nilAgents || nilTasks {
+		t.Errorf("edit must reset Agents/Tasks to [] (non-nil), got agents-nil=%v tasks-nil=%v", nilAgents, nilTasks)
+	}
+
+	// An actively running build must be stopped first.
+	c.Update(id, func(r *run.Run) { r.Status = "running" })
+	if c.Edit(id, run.Spec{Prompt: "x"}) {
+		t.Error("Edit must refuse an actively running run")
 	}
 }
 
@@ -181,7 +221,7 @@ func TestCancelRunningRunStopsAndDropsFromTracking(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
 	id := c.Create(run.Spec{Prompt: "do the thing"})
-	c.Begin(id, nil)
+	c.Begin(id)
 
 	// Wait until the coder is actually in flight.
 	r := waitFor(t, c, id, func(r run.Run) bool {

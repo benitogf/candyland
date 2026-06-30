@@ -118,14 +118,3 @@ const (
 	PhaseReview    = 2
 	PhasePR        = 3
 )
-
-// Question is one planning question. They are generated from the run's prompt by
-// Claude (see conductor.GenerateQuestions) — never a hardcoded set.
-type Question struct {
-	ID          string   `json:"id"`
-	Question    string   `json:"question"`
-	Multi       bool     `json:"multi,omitempty"`
-	Options     []string `json:"options,omitempty"`
-	Placeholder string   `json:"placeholder,omitempty"`
-	Suggestions []string `json:"suggestions,omitempty"`
-}

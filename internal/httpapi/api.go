@@ -71,20 +71,13 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
-	// Begin the build after the planning Q&A completes.
+	// Begin the build. This is the detritus trigger (POST after POST /api/runs):
+	// it just starts the run. The body is ignored; an empty body is fine.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs/{id}/begin",
 		Methods: post,
 		Handler: func(w http.ResponseWriter, r *http.Request) {
-			var body struct {
-				Answers map[string]any `json:"answers"`
-			}
-			// Tolerate an empty body (no answers); reject a malformed one.
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			c.Begin(mux.Vars(r)["id"], body.Answers)
+			c.Begin(mux.Vars(r)["id"])
 			w.WriteHeader(http.StatusNoContent)
 		},
 	})
@@ -138,9 +131,8 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
-	// Edit: change a finished run's task in place and reset it to planning (the
-	// questions regenerate from the new prompt). Distinct from restart, which
-	// re-runs the task as-is.
+	// Edit: change a finished run's task in place and reset it to planning.
+	// Distinct from restart, which re-runs the task as-is.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs/{id}/edit",
 		Methods: post,
@@ -173,21 +165,6 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-
-	// Planning questions for a run — GENERATED from the run's own prompt by Claude
-	// (conductor.GenerateQuestions), never a canned set. Returns [] when Claude
-	// isn't available or produces nothing, so the UI goes straight to the build.
-	server.Endpoint(ooo.EndpointConfig{
-		Path:    "/api/runs/{id}/questions",
-		Methods: get,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			qs := c.GenerateQuestions(mux.Vars(r)["id"])
-			if qs == nil {
-				qs = []run.Question{}
-			}
-			writeJSON(w, qs)
 		},
 	})
 }

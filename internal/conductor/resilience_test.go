@@ -247,7 +247,7 @@ func TestRetryRecoversNonCompliantAgent(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "3")
 
 	id := c.Create(run.Spec{Prompt: "add a CSV export"})
-	c.Begin(id, nil)
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
 	if r.Status != "done" {
@@ -306,7 +306,7 @@ func TestStallFailsHonestly(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
 	id := c.Create(run.Spec{Prompt: "do the thing"})
-	c.Begin(id, nil)
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 12*time.Second)
 	if r.Status != "done" {
@@ -374,7 +374,7 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 
 	id := c.Create(run.Spec{Prompt: "do the thing"})
-	c.Begin(id, nil)
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
 	if r.Error == "" {
@@ -411,7 +411,7 @@ func TestRestartRecoversFailedRun(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // fail fast on the first run
 
 	id := c.Create(run.Spec{Prompt: "do the thing"})
-	c.Begin(id, nil)
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
 	if r.Error == "" {
@@ -438,7 +438,7 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
 	id := c.Create(run.Spec{Prompt: "do the thing"})
-	c.Begin(id, nil)
+	c.Begin(id)
 
 	// Wait until the coder is spawned and in flight, then stop the run.
 	waitFor(t, c, id, func(r run.Run) bool {

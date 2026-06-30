@@ -10,8 +10,8 @@ import HowItWorks from '../pages/HowItWorks'
 
 // The whole product is one dashboard. Opening a run is a route-driven full-screen
 // view that overlays the dashboard (/run/:id/:tab). Tasks is the full run
-// history; spec is the docs. Runs are launched from the editor (the candyland
-// MCP) or from the dashboard's secondary "start one here".
+// history; spec is the docs. Runs are launched by detritus over REST — the
+// dashboard only observes them.
 export const navItems = [
     { path: '/', label: 'Dashboard', icon: DashboardIcon, match: (p) => p === '/' || p.startsWith('/run') },
     { path: '/tasks', label: 'Tasks', icon: HistoryIcon, match: (p) => p.startsWith('/tasks') },
@@ -30,7 +30,6 @@ const Router = () => (
         <Route path="/how-it-works" element={<HowItWorks />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/" element={<Dashboard />} />
-        <Route path="/new" element={<Dashboard />} />
         <Route path="/run/:runId" element={<Dashboard />} />
         <Route path="/run/:runId/:tab" element={<Dashboard />} />
         <Route path="*" element={<Navigate to="/" replace />} />

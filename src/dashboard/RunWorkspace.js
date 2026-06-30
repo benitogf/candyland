@@ -125,8 +125,8 @@ const RunControls = ({ run, controls, done, onEdit }) => {
             </Box>
         </Tooltip>
     )
-    // Edit re-opens the task setup (changing it re-asks the questions) — distinct
-    // from Restart (re-run as-is). Offered on finished runs.
+    // Edit re-opens the task setup (changing it re-plans) — distinct from Restart
+    // (re-run as-is). Offered on finished runs.
     const EditButton = () => (
         <Tooltip title={offline ? offlineTip : 'Change the request and re-plan'} disableHoverListener={false}>
             <Box component="span">
@@ -175,7 +175,7 @@ const RunControls = ({ run, controls, done, onEdit }) => {
 
 // Cancel is the flow-level control during planning: the run hasn't started, so
 // there's nothing to "stop" — Cancel abandons it (deletes it) and returns to the
-// dashboard. Always enabled so the user is never trapped on the questions.
+// dashboard. Always enabled so the user is never trapped.
 const CancelControl = ({ onCancel }) => (
     <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} sx={{ flexShrink: 0 }} onClick={onCancel}>Cancel run</Button>
 )

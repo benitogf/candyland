@@ -22,7 +22,7 @@ import Section, { DiagramCard, SpecNote } from '../components/Section'
 
 const ARCHITECTURE = `
 flowchart TB
-  U["🧑‍💻 You — launch from your editor · monitor · review the PR"]:::you
+  U["🧑‍💻 You — monitor · review the PR"]:::you
 
   subgraph DASH["🍬 Candyland dashboard"]
     direction LR
@@ -47,7 +47,7 @@ flowchart TB
 
   PR["🌳 one feature branch → one PR"]
 
-  U <-->|"launch · monitor · review"| DASH
+  U <-->|"monitor · review"| DASH
   DASH <-->|"WebSocket · ooo client"| EVT
   EVT --- CO
   CO -->|"settled plan"| TL
@@ -247,8 +247,8 @@ const mapping = [
 ]
 
 const steps = [
-    { label: 'Launch from your editor', body: 'In your Claude Code session, settle the work with /plan, then call the candyland MCP\'s launch_run to start a run in your current folder. No workspace setup — the run uses the folder you\'re in. (You can also start one from the dashboard by naming the repo.)' },
-    { label: 'Candyland takes it from here', body: 'The conductor spawns the tech lead and coders and streams their live state to the dashboard — you watch, audit, and stop here while your editor session stays free. A run started from the dashboard answers its planning questions here first.' },
+    { label: 'detritus launches the run', body: 'detritus settles the work and starts a run over REST (POST /api/runs → begin). No workspace setup in the dashboard — the run uses the folders detritus hands it.' },
+    { label: 'Candyland takes it from here', body: 'The conductor spawns the tech lead and coders and streams their live state to the dashboard — you watch, audit, and stop here.' },
     { label: 'The tech lead takes over', body: 'For each feature, a tech lead partitions the work by file/module and a test engineer writes the failing tests that define each task.' },
     { label: 'Coders run in parallel', body: 'Backend and frontend coders work simultaneously, each in its own worktree, each making its tests green. You watch them flow on the Board.' },
     { label: 'The tech lead integrates', body: 'It pulls the worktrees together sequentially, resolves conflicts, re-runs the tests, and runs a self-review until the diff reads clean.' },
@@ -295,7 +295,7 @@ const DeveloperGuide = () => (
                 Conduct many agents. Watch all of it. 🍬
             </Typography>
             <Typography variant="h6" color="text.secondary" sx={{ fontWeight: 400, maxWidth: 840 }}>
-                Candyland is a solo orchestration sidecar. You launch a run from your editor (the candyland MCP);
+                Candyland is a solo orchestration sidecar. detritus launches a run over REST;
                 a tech lead then splits each feature across focused coders running in parallel, integrates their
                 work, and candyland shows everything live — so you stop juggling sessions by hand, watch and audit
                 the build here, and review one finished PR instead.
@@ -330,17 +330,16 @@ const DeveloperGuide = () => (
         <Section
             kicker="the big picture"
             title="How the pieces fit"
-            intro="In plain terms: you say what you want, a planner asks a few simple questions to pin it down, a lead splits the job into independent pieces, a team builds each piece and proves it works, the lead fits them together and double-checks, and you get one finished change to review. Candyland is the screen that runs all of this and shows it live."
+            intro="In plain terms: detritus settles what you want, a lead splits the job into independent pieces, a team builds each piece and proves it works, the lead fits them together and double-checks, and you get one finished change to review. Candyland is the screen that shows all of this live."
         >
             <DiagramCard caption="You describe it; a lead and a small team build it; you review one finished change.">
                 <MermaidDiagram chart={PLAIN} />
             </DiagramCard>
             <SpecNote>
-                Under the hood: you converse with the dashboard, which mirrors the orchestrator's
-                state over a WebSocket. The conductor routes each goal into a planning flow; once a plan is
-                settled, a per-feature tech lead spawns parallel coders in isolated git worktrees, integrates
-                their work, and ships one PR. Every agent is a process Candyland launches and watches — the
-                behaviors themselves are detritus skills.
+                Under the hood: detritus launches a run over REST and the dashboard mirrors the orchestrator's
+                state over a WebSocket. Once a plan is settled, a per-feature tech lead spawns parallel coders in
+                isolated git worktrees, integrates their work, and ships one PR. Every agent is a process Candyland
+                launches and watches — the behaviors themselves are detritus skills.
             </SpecNote>
             <DiagramCard caption="The same flow, drawn for engineers: goal in, one PR out, every event mirrored to the dashboard in between.">
                 <MermaidDiagram chart={ARCHITECTURE} />
@@ -375,16 +374,15 @@ const DeveloperGuide = () => (
         <Section
             kicker="goal in, one PR out"
             title="The whole loop, start to finish — inside the dashboard"
-            intro="It doesn't stop at a plan. You settle scope in your editor (or answer the dashboard wizard's questions); then candyland shows the tech lead partition the work, the coders build it in parallel, the tech lead integrate and self-review, and one PR open for you to review — all live."
+            intro="It doesn't stop at a plan. detritus settles scope and launches the run; then candyland shows the tech lead partition the work, the coders build it in parallel, the tech lead integrate and self-review, and one PR open for you to review — all live."
         >
-            <DiagramCard caption="One session, end to end: plan interactively, watch the parallel build, review one PR. Planning settles scope; then the build runs to one PR.">
+            <DiagramCard caption="One session, end to end: detritus launches the run, you watch the parallel build, review one PR. Planning settles scope; then the build runs to one PR.">
                 <MermaidDiagram chart={JOURNEY} />
             </DiagramCard>
             <SpecNote>
-                The dashboard mediates the planning loop both ways: it relays the conductor's questions to you and
-                your answers back. Once you have answered the questions and scope is settled, the conductor hands
-                off to the tech lead and the build runs to a single PR without further prompts; reviewing and
-                merging stay your call.
+                detritus settles scope and starts the run over REST; the conductor then hands off to the tech lead
+                and the build runs to a single PR without further prompts. The dashboard observes every event over
+                a WebSocket; reviewing and merging stay your call.
             </SpecNote>
         </Section>
 
@@ -519,7 +517,7 @@ const DeveloperGuide = () => (
         <Section
             kicker="built on what you already have"
             title="How it maps to your stack"
-            intro="Candyland is the sidecar — you launch a run from your editor, and it spawns each agent as a process it watches, then visualizes state for you to monitor, audit, and stop. It contains no agent logic of its own: every behavior below is a detritus skill it invokes via kb_get."
+            intro="Candyland is the sidecar — detritus launches a run over REST, and it spawns each agent as a process it watches, then visualizes state for you to monitor, audit, and stop. It contains no agent logic of its own: every behavior below is a detritus skill it invokes via kb_get."
         >
             <Card>
                 <Table size="small">

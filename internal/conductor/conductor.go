@@ -34,10 +34,6 @@ type runtime struct {
 	// command can never cross from a terminated executor to its replacement.
 	control   chan string
 	cancelled bool // set by Cancel — a cancelled run must never publish again
-	// Planning questions are generated once per run and cached, so a refresh or
-	// retry reuses them (deterministic + one Claude call) instead of regenerating.
-	questions     []run.Question
-	questionsDone bool
 }
 
 // Conductor is the orchestrator. Safe for concurrent use.
@@ -286,9 +282,9 @@ func (c *Conductor) Create(spec run.Spec) string {
 	return id
 }
 
-// Begin starts the build executor for a run once planning is done. The planning
-// answers (if any) are folded into the prompt that drives the agents.
-func (c *Conductor) Begin(id string, answers map[string]any) {
+// Begin starts the build executor for a run. It is the trigger detritus posts
+// over REST (POST /api/runs/{id}/begin) once a run has been created.
+func (c *Conductor) Begin(id string) {
 	c.mu.Lock()
 	rt := c.runs[id]
 	c.mu.Unlock()
@@ -309,13 +305,9 @@ func (c *Conductor) Begin(id string, answers map[string]any) {
 	rt.mu.Unlock()
 
 	ex := &ClaudeExecutor{}
-	extra := formatAnswers(answers)
 	c.Update(id, func(r *run.Run) {
 		r.Status = "running"
 		r.Executor = ex.Name()
-		if extra != "" {
-			r.Prompt = strings.TrimSpace(r.Prompt + "\n\n" + extra)
-		}
 	})
 	log.Printf("candyland: run %s started", id)
 	go ex.Execute(c, id, ctrl)
@@ -339,18 +331,6 @@ func (c *Conductor) signal(rt *runtime, cmd string) bool {
 	default:
 		return false
 	}
-}
-
-// formatAnswers renders planning answers as a readable addendum to the prompt.
-func formatAnswers(answers map[string]any) string {
-	if len(answers) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(answers))
-	for k, v := range answers {
-		parts = append(parts, fmt.Sprintf("- %s: %v", k, v))
-	}
-	return "Planning answers:\n" + strings.Join(parts, "\n")
 }
 
 // Command forwards stop|restart to the run's executor.
@@ -488,9 +468,6 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 	// nil would marshal to null and crash the planning view's .map/.length.
 	rt.r.Agents = []run.Agent{}
 	rt.r.Tasks = []run.Task{}
-	// Regenerate questions from the new prompt next time they're requested.
-	rt.questions = nil
-	rt.questionsDone = false
 	recompute(&rt.r)
 	c.publish(rt.r)
 	log.Printf("candyland: run %s edited — re-planning", id)

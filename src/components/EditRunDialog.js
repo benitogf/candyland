@@ -16,8 +16,8 @@ import { useToast } from '../feedback'
 import CommandInput from './CommandInput'
 
 // Edit a finished task IN PLACE: change the request (and title), save, and the
-// run resets to planning — the questions regenerate from the new prompt and it
-// re-runs in the same folders. Distinct from Restart, which re-runs as-is.
+// run resets to planning and re-runs in the same folders. Distinct from Restart,
+// which re-runs as-is.
 const EditRunDialog = ({ run, open, onClose }) => {
     const toast = useToast()
     const [prompt, setPrompt] = useState(run.prompt)
@@ -43,7 +43,7 @@ const EditRunDialog = ({ run, open, onClose }) => {
             <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, pr: 1.5 }}>
                 <Box sx={{ flexGrow: 1 }}>
                     <Typography variant="h6" sx={{ fontWeight: 800 }}>Edit task</Typography>
-                    <Typography variant="caption" color="text.secondary">Changing it re-asks the planning questions, then re-runs this same task.</Typography>
+                    <Typography variant="caption" color="text.secondary">Changing it re-plans, then re-runs this same task.</Typography>
                 </Box>
                 <IconButton onClick={onClose} aria-label="close"><CloseIcon /></IconButton>
             </DialogTitle>
