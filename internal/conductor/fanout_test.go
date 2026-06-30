@@ -16,7 +16,11 @@ import (
 // → two parallel coder worktrees → integrate (merge) → push → PR.
 const fanOutClaude = `#!/usr/bin/env bash
 prompt="$2"
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   echo '{"type":"system","subtype":"init","session_id":"s1"}'
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"role\":\"Backend\",\"emoji\":\"X\",\"files\":[\"a.txt\"],\"test\":\"a_test\"},{\"id\":\"b\",\"title\":\"task b\",\"role\":\"Frontend\",\"emoji\":\"Y\",\"files\":[\"b.txt\"],\"test\":\"b_test\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"partition emitted","usage":{"output_tokens":1000}}'
@@ -74,7 +78,11 @@ func TestParsePartitionSlugsIDsAndDeps(t *testing.T) {
 const argvCaptureClaude = `#!/usr/bin/env bash
 printf '%s\n' "$2" >> "$CANDYLAND_ARGV_CAPTURE"
 prompt="$2"
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"the whole thing\",\"role\":\"fullstack\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
 else
@@ -93,8 +101,8 @@ func TestSpawnArgvCarriesNoPlanBody(t *testing.T) {
 	c, _ := deliveryConductor(t, argvCaptureClaude)
 
 	plan := strings.Repeat("PLANBODY ", 6000) // ~54k — well over the 32k argv ceiling
-	id := c.Create(run.Spec{Mode: "developer", Prompt: plan})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: plan})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
 	if r.Status != "done" || r.Error != "" {
@@ -127,7 +135,11 @@ func TestSpawnArgvCarriesNoPlanBody(t *testing.T) {
 const multiRepoClaude = `#!/usr/bin/env bash
 prompt="$2"
 brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"alpha task\",\"files\":[\"a.txt\"],\"test\":\"t\",\"repo\":\"alpha\"},{\"id\":\"b\",\"title\":\"beta task\",\"files\":[\"b.txt\"],\"test\":\"t\",\"repo\":\"beta\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
 else
@@ -156,8 +168,8 @@ func writeGh(t *testing.T, script string) {
 func TestMultiRepoOnePRPerImpactedRepo(t *testing.T) {
 	c, repos := multiRepoConductor(t, multiRepoClaude, "alpha", "beta")
 	writeGh(t, perRepoGh)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "ship across two repos"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "ship across two repos"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
 	if r.Status != "done" || r.Error != "" {
@@ -194,8 +206,8 @@ func TestMultiRepoPartialFailureIsolation(t *testing.T) {
 	c, _ := multiRepoConductor(t, multiRepoClaude, "alpha", "beta")
 	// gh fails only for beta (its integration worktree path contains /beta/).
 	writeGh(t, "#!/usr/bin/env bash\nif [[ \"$PWD\" == *\"/beta/\"* ]]; then echo 'gh: beta not authenticated' >&2; exit 1; fi\necho 'https://github.com/example/alpha/pull/7'\n")
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "ship across two repos"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "ship across two repos"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
 	if r.Status != "done" {
@@ -224,8 +236,8 @@ func TestMultiRepoPartialFailureIsolation(t *testing.T) {
 
 func TestClaudeFanOut(t *testing.T) {
 	c, repo := deliveryConductor(t, fanOutClaude)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "add a CSV export"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
 	if r.Status != "done" {
@@ -237,9 +249,18 @@ func TestClaudeFanOut(t *testing.T) {
 	if len(r.Tasks) != 2 {
 		t.Fatalf("partition not parsed: got %d tasks, want 2", len(r.Tasks))
 	}
-	// agents = tech-lead + one coder per task.
-	if len(r.Agents) != 3 {
-		t.Fatalf("fan-out wrong: got %d agents, want 3 (tl + 2 coders)", len(r.Agents))
+	// agents = tech-lead + one coder per task + the reviewer (review phase).
+	if len(r.Agents) != 4 {
+		t.Fatalf("fan-out wrong: got %d agents, want 4 (tl + 2 coders + reviewer)", len(r.Agents))
+	}
+	hasReviewer := false
+	for _, a := range r.Agents {
+		if a.ID == reviewerID {
+			hasReviewer = true
+		}
+	}
+	if !hasReviewer {
+		t.Errorf("the review phase must spawn a separate reviewer agent (%q), agents: %+v", reviewerID, r.Agents)
 	}
 	byID := map[string]run.Agent{}
 	for _, a := range r.Agents {
@@ -300,7 +321,11 @@ func TestClaudeFanOut(t *testing.T) {
 // overlap. The reconciled content must land (no leftover conflict markers).
 const conflictResolvedClaude = `#!/usr/bin/env bash
 prompt="$2"
-if [[ "$prompt" == *"git merge conflict"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"git merge conflict"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file":"shared.txt"}}]}}'
   printf 'reconciled: a + b\n' > "shared.txt"
   echo '{"type":"result","subtype":"success","result":"resolved","usage":{"output_tokens":3}}'
@@ -316,8 +341,8 @@ fi
 
 func TestIntegrationConflictResolved(t *testing.T) {
 	c, repo := deliveryConductor(t, conflictResolvedClaude)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
 	if r.Status != "done" {
@@ -368,8 +393,8 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 	c, _ := deliveryConductor(t, conflictUnresolvableClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")  // one resolution attempt per integrate
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "2") // reassess once, then give an honest failure
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
 	if r.Status != "done" {
@@ -413,7 +438,11 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 const replanRecoverClaude = `#!/usr/bin/env bash
 prompt="$2"
 brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
-if [[ "$prompt" == *"git merge conflict"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"git merge conflict"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I cannot reconcile this."}]}}'
   echo '{"type":"result","subtype":"success","result":"x","usage":{"output_tokens":1}}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
@@ -440,7 +469,11 @@ fi
 const coderFailReplanClaude = `#!/usr/bin/env bash
 prompt="$2"
 brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
-if [[ "$prompt" == *"git merge conflict"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"git merge conflict"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"resolve"}]}}'
   echo '{"type":"result","subtype":"success","result":"x","usage":{"output_tokens":1}}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
@@ -468,8 +501,8 @@ func TestCoderFailureTriggersReplan(t *testing.T) {
 	c, repo := deliveryConductor(t, coderFailReplanClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // the impossible coder fails in one attempt
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
 	if r.Status != "done" {
@@ -491,8 +524,8 @@ func TestReplanRecoversFromBadSplit(t *testing.T) {
 	c, repo := deliveryConductor(t, replanRecoverClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
 	if r.Status != "done" {

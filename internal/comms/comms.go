@@ -50,8 +50,8 @@ func (c *Client) Send(to, msgType, body, conversationID, correlationID string) e
 // Inbox returns this agent's new messages (the server scopes to seq>cursor),
 // then advances the cursor so the next call returns only newer ones.
 //
-// Each agent has exactly one bus client — the spawned comms-mcp process — and an
-// MCP server handles its tool calls serially, so comms_inbox is the single,
+// Each agent reaches the bus over its own /mcp/comms/<agentID> HTTP MCP session,
+// whose tool calls the server handles serially, so comms_inbox is the single,
 // sequential writer of this agent's cursor: the read-then-advance has no
 // concurrent reader to race, and maxSeq only grows. Delivery is at-least-once:
 // if the cursor write fails the messages are still returned (and re-delivered

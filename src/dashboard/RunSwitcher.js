@@ -9,18 +9,15 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import IconButton from '@mui/material/IconButton'
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz'
-import AddIcon from '@mui/icons-material/Add'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 
 import { PHASES } from '../meta/run'
 import { useRuns } from '../data/ooo'
 import { runLabel } from '../util'
-import { ModeBadge } from '../components/StatusBits'
 
-// Quick task switcher — jump between active runs without going back to the
+// Quick task switcher — jump between observed runs without going back to the
 // dashboard (VSCode-style). Opens on click or ⌘/Ctrl+K; lists running tasks plus
-// shortcuts to start a new run or return to the dashboard. Keeps the guided flow
-// flexible: you're never locked into one task.
+// a shortcut back to the dashboard. You're never locked into one task.
 const isRunning = (r) => r.status !== 'done'
 
 const RunSwitcher = ({ current }) => {
@@ -54,19 +51,16 @@ const RunSwitcher = ({ current }) => {
                 <Typography variant="overline" color="text.secondary" sx={{ px: 2, py: 0.5, display: 'block' }}>active tasks</Typography>
                 <MenuItem selected disabled sx={{ opacity: 1 }}>
                     <ListItemText primary={current.label} primaryTypographyProps={{ noWrap: true, fontWeight: 700 }} secondary="this task" />
-                    <ModeBadge mode={current.mode} />
                 </MenuItem>
                 {others.map((r) => (
                     <MenuItem key={r.id} onClick={() => go(`/run/${r.id}`)}>
                         <ListItemText primary={runLabel(r)} primaryTypographyProps={{ noWrap: true }} secondary={PHASES[r.phase]} />
-                        <ModeBadge mode={r.mode} />
                     </MenuItem>
                 ))}
                 {others.length === 0 && (
                     <Typography variant="body2" color="text.secondary" sx={{ px: 2, py: 1 }}>No other running tasks.</Typography>
                 )}
                 <Divider />
-                <MenuItem onClick={() => go('/new')}><AddIcon fontSize="small" sx={{ mr: 1.5 }} /> Start a new run</MenuItem>
                 <MenuItem onClick={() => go('/')}><DashboardIcon fontSize="small" sx={{ mr: 1.5 }} /> All runs (dashboard)</MenuItem>
             </Menu>
         </>

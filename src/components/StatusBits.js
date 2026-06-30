@@ -11,7 +11,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import TaskAltIcon from '@mui/icons-material/TaskAlt'
 
 import { candy } from '../config'
-import { STATE_META, MODES } from '../meta/run'
+import { STATE_META } from '../meta/run'
 
 // A distinct shape per state, so the rainbow is readable without relying on
 // color alone: queued/working/blocked/integrating read as "in progress",
@@ -80,17 +80,6 @@ export const StateLegend = () => (
         <LegendGroup title="Done" keys={DONE} />
     </Box>
 )
-
-// A clear developer / non-developer badge — same look wherever a run is shown.
-export const ModeBadge = ({ mode, withTagline = false }) => {
-    const m = MODES[mode]
-    return (
-        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
-            <Chip size="small" label={m.label} sx={{ height: 20, fontSize: 11, fontWeight: 700, color: m.accent, borderColor: m.accent }} variant="outlined" />
-            {withTagline && <Typography variant="caption" color="text.secondary">{m.tagline}</Typography>}
-        </Box>
-    )
-}
 
 // A context/token usage bar against the agent's budget.
 export const TokenMeter = ({ used, budget }) => {

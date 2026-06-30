@@ -17,7 +17,7 @@ import (
 // covers against the real binary.
 func TestCancelDuringPlanningRemovesRun(t *testing.T) {
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Prompt: "do the thing"})
 
 	if _, ok := c.Get(id); !ok {
 		t.Fatal("run should exist after Create")
@@ -33,7 +33,7 @@ func TestCancelDuringPlanningRemovesRun(t *testing.T) {
 		t.Error("Cancel of an already-cancelled run should report false")
 	}
 	// A cancelled run can't be resurrected by a late Begin.
-	c.Begin(id, nil)
+	c.Begin(id)
 	if _, ok := c.Get(id); ok {
 		t.Error("Begin must not recreate a cancelled run")
 	}
@@ -48,8 +48,8 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	c, _ := deliveryConductor(t, slowCoder) // tech lead partitions fast; coder then sleeps
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "original"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "original"})
+	c.Begin(id)
 	working := func(r run.Run) bool {
 		for _, a := range r.Agents {
 			if a.ID == "a" && a.State == "working" {
@@ -68,7 +68,7 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	}
 
 	// Edit the stopped run → quits the parked executor and re-plans.
-	if !c.Edit(id, run.Spec{Mode: "developer", Prompt: "edited request"}) {
+	if !c.Edit(id, run.Spec{Prompt: "edited request"}) {
 		t.Fatal("Edit should succeed for a paused run")
 	}
 	if r, _ := c.Get(id); r.Status != "planning" || r.Prompt != "edited request" {
@@ -77,7 +77,7 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 
 	// Begin again → a fresh executor on a fresh channel runs the new task; if a
 	// stale quit had reached it, it would die instead of reaching a working coder.
-	c.Begin(id, nil)
+	c.Begin(id)
 	if r := waitFor(t, c, id, working, 20*time.Second); !working(r) {
 		st := []string{}
 		for _, a := range r.Agents {
@@ -105,6 +105,46 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 	}
 }
 
+// Edit resets a finished run to planning with empty (non-nil) slices and refuses
+// an actively running run. The reset must use []run.Agent{}/[]run.Task{}: nil
+// marshals to JSON null and crashes the UI's .map/.length.
+func TestEditResetsToPlanning(t *testing.T) {
+	c := New(nil)
+	id := c.Create(run.Spec{Prompt: "first prompt"})
+	c.Update(id, func(r *run.Run) { r.Status = "done"; r.Error = "boom" })
+
+	if !c.Edit(id, run.Spec{Prompt: "a totally different request"}) {
+		t.Fatal("Edit should succeed for a finished run")
+	}
+	r, _ := c.Get(id)
+	if r.Status != "planning" {
+		t.Errorf("edit should reset status to planning, got %q", r.Status)
+	}
+	if r.Prompt != "a totally different request" {
+		t.Errorf("edit did not apply the new task: %+v", r)
+	}
+	if r.Error != "" {
+		t.Errorf("edit should clear the prior error, got %q", r.Error)
+	}
+	// Check the runtime's own run (what publish marshals) — Get/cloneRun would mask
+	// a nil by rebuilding it.
+	c.mu.Lock()
+	rt := c.runs[id]
+	c.mu.Unlock()
+	rt.mu.Lock()
+	nilAgents, nilTasks := rt.r.Agents == nil, rt.r.Tasks == nil
+	rt.mu.Unlock()
+	if nilAgents || nilTasks {
+		t.Errorf("edit must reset Agents/Tasks to [] (non-nil), got agents-nil=%v tasks-nil=%v", nilAgents, nilTasks)
+	}
+
+	// An actively running build must be stopped first.
+	c.Update(id, func(r *run.Run) { r.Status = "running" })
+	if c.Edit(id, run.Spec{Prompt: "x"}) {
+		t.Error("Edit must refuse an actively running run")
+	}
+}
+
 // The progress bar must actually MOVE during a run, not sit at 0 until the end.
 // recompute derives it from phase (+ coder completion during Build); the Go zero
 // value would otherwise pin it at 0 for the whole run (the "stale, no feedback"
@@ -112,25 +152,26 @@ func TestEditPausedThenBeginRunsCleanly(t *testing.T) {
 func TestProgressMovesWithPhaseAndTasks(t *testing.T) {
 	last := len(run.Phases) - 1
 
-	r := run.Run{Phase: 0}
-	recompute(&r)
-	if r.Progress != 0 {
-		t.Errorf("planning (phase 0) progress should be 0, got %v", r.Progress)
-	}
-
-	// Build with no coder green yet: already off zero (the bar shows the run started).
-	r = run.Run{Phase: 1}
+	// Build (phase 0) with no coder green yet: the bar sits at the Build start.
+	r := run.Run{Phase: run.PhaseBuild}
 	recompute(&r)
 	buildStart := r.Progress
-	if buildStart <= 0 {
-		t.Errorf("Build progress should be > 0 even before a coder finishes, got %v", buildStart)
+	if buildStart < 0 || buildStart >= 1 {
+		t.Errorf("Build start progress should be in [0,1), got %v", buildStart)
 	}
 
-	// Build, half the coders green: strictly between the Build start and Integrate.
-	r = run.Run{Phase: 1, Tasks: []run.Task{{State: "green"}, {State: "working"}}}
+	// Build, half the coders green: advances past the Build start, short of done.
+	r = run.Run{Phase: run.PhaseBuild, Tasks: []run.Task{{State: "green"}, {State: "working"}}}
 	recompute(&r)
 	if !(r.Progress > buildStart && r.Progress < 1) {
 		t.Errorf("half-green Build progress should advance past the Build start, got %v", r.Progress)
+	}
+
+	// A later phase (Integrate) moves the bar strictly forward from the Build start.
+	r = run.Run{Phase: run.PhaseIntegrate}
+	recompute(&r)
+	if !(r.Progress > buildStart && r.Progress < 1) {
+		t.Errorf("Integrate progress should be past Build start and below 1, got %v", r.Progress)
 	}
 
 	// PR phase (a clean finish) → fully complete.
@@ -154,7 +195,7 @@ func TestProgressMovesWithPhaseAndTasks(t *testing.T) {
 // terminal-run storage path is covered live by check-history.mjs.)
 func TestArchiveTrackedRunSticks(t *testing.T) {
 	c := New(nil)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "x"})
+	id := c.Create(run.Spec{Prompt: "x"})
 
 	if !c.Archive(id) {
 		t.Fatal("Archive should succeed for a tracked run")
@@ -179,8 +220,8 @@ func TestCancelRunningRunStopsAndDropsFromTracking(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	// Wait until the coder is actually in flight.
 	r := waitFor(t, c, id, func(r run.Run) bool {

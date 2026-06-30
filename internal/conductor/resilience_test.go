@@ -229,7 +229,11 @@ func TestBootstrapsCarryRoleContractNotContext(t *testing.T) {
 // Exercises the non-compliance → retry-with-firmer-prompt → success path.
 const flakyThenCompliant = `#!/usr/bin/env bash
 prompt="$2"
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"role\":\"Backend\",\"emoji\":\"X\",\"files\":[\"a.txt\"],\"test\":\"a_test\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"partition emitted","usage":{"output_tokens":10}}'
 elif [[ "$prompt" == *"AUTONOMY REQUIRED"* ]]; then
@@ -246,8 +250,8 @@ func TestRetryRecoversNonCompliantAgent(t *testing.T) {
 	c, _ := deliveryConductor(t, flakyThenCompliant)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "3")
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "add a CSV export"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
 	if r.Status != "done" {
@@ -305,8 +309,8 @@ func TestStallFailsHonestly(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "4000")
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 12*time.Second)
 	if r.Status != "done" {
@@ -373,8 +377,8 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 	c, _ := deliveryConductor(t, exitWithStderr)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
 	if r.Error == "" {
@@ -389,7 +393,11 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 // SECOND (marker present) — so a restart of the failed run recovers and delivers.
 const failFirstThenSucceed = `#!/usr/bin/env bash
 prompt="$2"
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   if [[ -f "$CANDYLAND_TEST_MARKER" ]]; then
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"a_test\"}]"}]}}'
     echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
@@ -410,8 +418,8 @@ func TestRestartRecoversFailedRun(t *testing.T) {
 	t.Setenv("CANDYLAND_TEST_MARKER", filepath.Join(t.TempDir(), "marker"))
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // fail fast on the first run
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
 	if r.Error == "" {
@@ -437,8 +445,8 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000") // don't let the stall watchdog fire during the test
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
 
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
-	c.Begin(id, nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
 
 	// Wait until the coder is spawned and in flight, then stop the run.
 	waitFor(t, c, id, func(r run.Run) bool {

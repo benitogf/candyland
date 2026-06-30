@@ -1,14 +1,13 @@
 import { createTheme } from '@mui/material/styles'
-import { candy, modeAccent } from './config'
+import { candy } from './config'
 
 // Candyland runs on a near-black canvas with neon candy accents. The dominant
-// accent (primary) swaps with the active mode: cyan for developer, hot pink for
-// non-developer — so switching modes visibly recolors the whole app.
-export const makeTheme = (mode = 'non-developer') =>
+// accent (primary) is cyan.
+export const makeTheme = () =>
     createTheme({
         palette: {
             mode: 'dark',
-            primary: { main: modeAccent(mode) },
+            primary: { main: candy.sky },
             secondary: { main: candy.mint },
             info: { main: candy.sky },
             warning: { main: candy.lemon },
@@ -38,7 +37,6 @@ export const makeTheme = (mode = 'non-developer') =>
     })
 
 // Mermaid theme variables, derived from the palette so diagrams match the UI.
-// Mode-independent (the spec diagrams read the same in either mode).
 export const mermaidTheme = {
     background: candy.bgPaper,
     primaryColor: candy.bgPaperHi,

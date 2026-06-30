@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/benitogf/candyland/internal/bus"
@@ -13,9 +15,9 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// CPB5: at spawn the conductor generates a --mcp-config that launches
-// `candyland comms-mcp` wired (via env) to the bus as the given agent, and
-// registers that agent's inbox live. The conductor itself never calls a model.
+// CPB5: at spawn the conductor generates a --mcp-config pointing the agent at the
+// app-hosted comms MCP endpoint over HTTP, identified by the agentID in the URL
+// path. The conductor itself never calls a model.
 func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
@@ -26,30 +28,53 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	}
 	defer srv.Close(os.Interrupt)
 
+	// DETRITUS_BIN unset: the comms entry is always present; the detritus entry is
+	// absent only when `detritus` is also not on PATH (gate that case on LookPath).
+	os.Unsetenv("DETRITUS_BIN")
 	path := c.busMCPConfig("run1", "coder-1")
 	if path == "" {
 		t.Fatal("expected a --mcp-config path when the bus is wired")
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("config not written: %v", err)
-	}
-	var cfg mcpConfigFile
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("config not valid JSON: %v", err)
-	}
+	cfg := readConfig(t, path)
 	spec, ok := cfg.MCPServers["candyland-comms"]
 	if !ok {
-		t.Fatalf("config missing candyland-comms server: %s", data)
+		t.Fatalf("config missing candyland-comms server: %+v", cfg)
 	}
-	if len(spec.Args) != 1 || spec.Args[0] != "comms-mcp" {
-		t.Errorf("expected args [comms-mcp], got %v", spec.Args)
+	if spec.Type != "http" {
+		t.Errorf("comms entry type = %q, want http", spec.Type)
 	}
-	if spec.Env["CANDYLAND_BUS_ADDR"] != srv.Address {
-		t.Errorf("BUS_ADDR = %q, want server address %q", spec.Env["CANDYLAND_BUS_ADDR"], srv.Address)
+	wantSuffix := "/mcp/comms/coder-1"
+	if !strings.HasPrefix(spec.URL, "http://"+srv.Address) || !strings.HasSuffix(spec.URL, wantSuffix) {
+		t.Errorf("comms url = %q, want http://%s...%s", spec.URL, srv.Address, wantSuffix)
 	}
-	if spec.Env["CANDYLAND_AGENT_ID"] != "coder-1" || spec.Env["CANDYLAND_ORCHESTRATOR"] != OrchestratorID {
-		t.Errorf("agent/orchestrator env wrong: %v", spec.Env)
+	if _, onPath := exec.LookPath("detritus"); onPath != nil {
+		// Neither DETRITUS_BIN nor PATH resolves detritus → entry omitted (degraded).
+		if _, has := cfg.MCPServers["detritus"]; has {
+			t.Errorf("detritus entry must be absent when DETRITUS_BIN unset and detritus not on PATH: %+v", cfg)
+		}
+	}
+
+	// DETRITUS_BIN set: a `detritus` STDIO entry is added so the agent has
+	// kb_*/code_*/skill_* (the Composition Constraint). It is {command, args:[]} —
+	// a passive stdio child the agent spawns, like a VSCode session.
+	const detBin = "/opt/detritus/bin/detritus"
+	t.Setenv("DETRITUS_BIN", detBin)
+	cfg = readConfig(t, c.busMCPConfig("run1", "coder-2"))
+	det, ok := cfg.MCPServers["detritus"]
+	if !ok {
+		t.Fatalf("config missing detritus server when DETRITUS_BIN is set: %+v", cfg)
+	}
+	if det.Command != detBin {
+		t.Errorf("detritus entry command = %q, want %q", det.Command, detBin)
+	}
+	if len(det.Args) != 0 {
+		t.Errorf("detritus entry args = %v, want empty", det.Args)
+	}
+	if det.Type != "" || det.URL != "" {
+		t.Errorf("detritus stdio entry must not carry type/url, got %+v", det)
+	}
+	if comm := cfg.MCPServers["candyland-comms"]; !strings.HasSuffix(comm.URL, "/mcp/comms/coder-2") {
+		t.Errorf("comms url for coder-2 = %q, want suffix /mcp/comms/coder-2", comm.URL)
 	}
 
 	// The agent's inbox is live via the global filters registered at StartBus: a
@@ -62,6 +87,22 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	if err != nil || len(msgs) != 1 || msgs[0].Data.Seq == 0 {
 		t.Errorf("expected one seq'd message in coder-1's live inbox, got %d (err %v)", len(msgs), err)
 	}
+}
+
+func readConfig(t *testing.T, path string) mcpConfigFile {
+	t.Helper()
+	if path == "" {
+		t.Fatal("expected a --mcp-config path")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	var cfg mcpConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("config not valid JSON: %v", err)
+	}
+	return cfg
 }
 
 // Without a bus (serverless test conductor), no --mcp-config is produced.

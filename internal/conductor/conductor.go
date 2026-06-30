@@ -34,10 +34,6 @@ type runtime struct {
 	// command can never cross from a terminated executor to its replacement.
 	control   chan string
 	cancelled bool // set by Cancel — a cancelled run must never publish again
-	// Planning questions are generated once per run and cached, so a refresh or
-	// retry reuses them (deterministic + one Claude call) instead of regenerating.
-	questions     []run.Question
-	questionsDone bool
 }
 
 // Conductor is the orchestrator. Safe for concurrent use.
@@ -46,6 +42,27 @@ type Conductor struct {
 	mu     sync.Mutex
 	runs   map[string]*runtime
 	seq    int
+	// storeMu serializes the read-modify-write of quest/campaign records in ooo
+	// storage (UpdateQuest/UpdateCampaign). Unlike runs — which hold an in-memory
+	// runtime with its own mu — quests and campaigns live only in storage, so
+	// concurrent Get→mutate→publish would lose updates (e.g. a halting drive's
+	// status write clobbering StopQuest's "stopped"). Held only inside those two
+	// Update funcs, so it never nests with mu.
+	storeMu sync.Mutex
+	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
+	// highest persisted quest id by reconcileQuestSeq after a restart.
+	questSeq int
+	// campaignSeq mints campaign ids (c<N>) independently of run/quest ids. Seeded
+	// past the highest persisted campaign id by reconcileCampaignSeq after a restart.
+	campaignSeq int
+	// questDrivers tracks each quest's running tick-loop goroutine (id → cancel),
+	// so PauseQuest/StopQuest can halt it — the quest analogue of a run's per-
+	// executor control channel. Guarded by mu.
+	questDrivers map[string]*questDriver
+	// campaignDrivers tracks each campaign's running supervisor goroutine (id →
+	// cancel), so PauseCampaign/StopCampaign can halt it — the campaign analogue of
+	// questDrivers. Guarded by mu.
+	campaignDrivers map[string]*campaignDriver
 	// folders resolves a run's working folders. Defaults to the folders the run
 	// was launched with (Spec.Folders, carried on the Run); tests override it to
 	// point a run at a throwaway git repo.
@@ -252,6 +269,12 @@ func (c *Conductor) ReconcileOrphans() {
 		c.seq = maxSeq // next Create mints r<maxSeq+1>, never an existing id
 	}
 	c.mu.Unlock()
+	// Seed the quest-id sequence the same way, so a post-restart CreateQuest can't
+	// overwrite an existing quest record.
+	c.reconcileQuestSeq()
+	// Seed the campaign-id sequence likewise, so a post-restart CreateCampaign can't
+	// overwrite an existing campaign record.
+	c.reconcileCampaignSeq()
 }
 
 // Create registers a new run (status: planning) and publishes it. The build
@@ -263,11 +286,13 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.mu.Unlock()
 
 	r := run.Run{
-		ID:      id,
-		Title:   spec.Title,
-		Prompt:  spec.Prompt,
-		Mode:    spec.Mode,
-		Folders: spec.Folders,
+		ID:    id,
+		Title: spec.Title,
+		// OriginalIntent captures the launch prompt once; a later Edit changes
+		// Prompt but never this, so review can compare output against intent.
+		OriginalIntent: spec.Prompt,
+		Prompt:         spec.Prompt,
+		Folders:        spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
 		Branch:       runBranch(spec, id),
@@ -283,21 +308,13 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.runs[id] = rt
 	c.mu.Unlock()
 	c.publish(r)
-	log.Printf("candyland: run %s created (%s, folders %v)", id, orEmpty(r.Mode, "?"), r.Folders)
+	log.Printf("candyland: run %s created (folders %v)", id, r.Folders)
 	return id
 }
 
-// orEmpty returns def when s is empty (small logging helper).
-func orEmpty(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
-// Begin starts the build executor for a run once planning is done. The planning
-// answers (if any) are folded into the prompt that drives the agents.
-func (c *Conductor) Begin(id string, answers map[string]any) {
+// Begin starts the build executor for a run. It is the trigger detritus posts
+// over REST (POST /api/runs/{id}/begin) once a run has been created.
+func (c *Conductor) Begin(id string) {
 	c.mu.Lock()
 	rt := c.runs[id]
 	c.mu.Unlock()
@@ -318,13 +335,9 @@ func (c *Conductor) Begin(id string, answers map[string]any) {
 	rt.mu.Unlock()
 
 	ex := &ClaudeExecutor{}
-	extra := formatAnswers(answers)
 	c.Update(id, func(r *run.Run) {
 		r.Status = "running"
 		r.Executor = ex.Name()
-		if extra != "" {
-			r.Prompt = strings.TrimSpace(r.Prompt + "\n\n" + extra)
-		}
 	})
 	log.Printf("candyland: run %s started", id)
 	go ex.Execute(c, id, ctrl)
@@ -348,18 +361,6 @@ func (c *Conductor) signal(rt *runtime, cmd string) bool {
 	default:
 		return false
 	}
-}
-
-// formatAnswers renders planning answers as a readable addendum to the prompt.
-func formatAnswers(answers map[string]any) string {
-	if len(answers) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(answers))
-	for k, v := range answers {
-		parts = append(parts, fmt.Sprintf("- %s: %v", k, v))
-	}
-	return "Planning answers:\n" + strings.Join(parts, "\n")
 }
 
 // Command forwards stop|restart to the run's executor.
@@ -456,7 +457,7 @@ func (c *Conductor) Restart(id string) bool {
 	return true
 }
 
-// Edit changes a run's task (mode/folders/prompt/title) in place and resets it
+// Edit changes a run's task (folders/prompt/title) in place and resets it
 // to planning — clearing the previous result and INVALIDATING the cached planning
 // questions so they regenerate from the new prompt. The run keeps its id (and its
 // row in the Tasks history); the UI's planning flow then re-asks the (new)
@@ -483,7 +484,6 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 		default:
 		}
 	}
-	rt.r.Mode = spec.Mode
 	rt.r.Folders = spec.Folders
 	rt.r.Prompt = spec.Prompt
 	rt.r.Title = spec.Title
@@ -498,9 +498,6 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 	// nil would marshal to null and crash the planning view's .map/.length.
 	rt.r.Agents = []run.Agent{}
 	rt.r.Tasks = []run.Task{}
-	// Regenerate questions from the new prompt next time they're requested.
-	rt.questions = nil
-	rt.questionsDone = false
 	recompute(&rt.r)
 	c.publish(rt.r)
 	log.Printf("candyland: run %s edited — re-planning", id)

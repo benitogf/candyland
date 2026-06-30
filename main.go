@@ -6,19 +6,16 @@
 package main
 
 import (
-	"context"
 	"embed"
 	"flag"
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
-	"github.com/benitogf/candyland/internal/comms"
 	"github.com/benitogf/candyland/internal/conductor"
-	"github.com/benitogf/candyland/internal/control"
+	"github.com/benitogf/candyland/internal/datadir"
 	"github.com/benitogf/candyland/internal/httpapi"
 	"github.com/benitogf/candyland/internal/spa"
 	"github.com/benitogf/candyland/internal/version"
@@ -26,7 +23,6 @@ import (
 	"github.com/benitogf/ooo"
 	"github.com/benitogf/ooo/storage"
 	"github.com/gorilla/mux"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 //go:embed all:build
@@ -36,7 +32,7 @@ var (
 	host     = flag.String("host", "127.0.0.1", "host/interface to bind (default loopback; set 0.0.0.0 to expose on the network)")
 	port     = flag.Int("port", 8888, "ooo realtime + api port")
 	spaPort  = flag.Int("spaPort", 8080, "SPA http port")
-	dataPath = flag.String("dataPath", "db/data", "data storage path")
+	dataPath = flag.String("dataPath", "", "data storage path (default: ~/.candyland/db)")
 	silence  = flag.Bool("silence", true, "silence ooo output")
 
 	// Desktop window (webview build only; ignored by the default headless build).
@@ -47,25 +43,18 @@ var (
 )
 
 func main() {
-	// Hidden subcommand: the per-coder coordination-bus MCP server, launched by
-	// the conductor via --mcp-config. It bridges a claude coder to the
-	// conductor's ooo bus (the comms_*/graph_* tools as io.Remote* clients).
-	if len(os.Args) > 1 && os.Args[1] == "comms-mcp" {
-		runCommsMCP()
-		return
-	}
-
-	// Hidden subcommand: the trigger MCP server a VSCode Claude Code session
-	// launches via its mcp config. It exposes launch_run/run_status/stop_run as a
-	// thin HTTP client to the running candyland sidecar (CANDYLAND_ADDR) — the
-	// editor session triggers a run; candyland spawns + tracks it.
-	if len(os.Args) > 1 && os.Args[1] == "control-mcp" {
-		runControlMCP()
-		return
-	}
-
 	flag.Parse()
 	log.Printf("candyland %s", version.Version)
+
+	// The pinned claude CLI must support `type:http` mcp-config entries (the
+	// coordination bus is now an HTTP MCP endpoint). The installer floats the
+	// latest CLI, so assert a floor at startup — warn (don't hard-fail) if below.
+	conductor.CheckClaudeVersion()
+
+	// Resolve the data directory: an explicit --dataPath wins verbatim; unset
+	// resolves to ~/.candyland/db, creating it and migrating any legacy
+	// project-local ./db/data on a best-effort basis (never fails startup).
+	resolvedDataPath := datadir.Resolve(*dataPath)
 
 	server := &ooo.Server{
 		ReadTimeout:  20 * time.Minute,
@@ -76,7 +65,7 @@ func main() {
 		Workers:      2,
 		Storage: storage.New(storage.LayeredConfig{
 			Memory:   storage.NewMemoryLayer(),
-			Embedded: ko.NewEmbeddedStorage(*dataPath),
+			Embedded: ko.NewEmbeddedStorage(resolvedDataPath),
 		}),
 		Silence: *silence,
 	}
@@ -108,37 +97,4 @@ func main() {
 	log.Printf("candyland API → http://%s:%d (bound to %s; use --host 0.0.0.0 to expose on the network)", *host, *port, *host)
 	cond.ReconcileOrphans() // storage is live only after Start; close out phantom runs from a prior process
 	runUI(server, "http://localhost:"+strconv.Itoa(*spaPort), *headless, *windowW, *windowH, *debugWebview)
-}
-
-// runCommsMCP serves the per-coder coordination-bus MCP over stdio. The
-// conductor passes the bus address + this agent's identity via env when it
-// generates the --mcp-config; identity rides in the payload `from`.
-func runCommsMCP() {
-	addr := os.Getenv("CANDYLAND_BUS_ADDR")
-	self := os.Getenv("CANDYLAND_AGENT_ID")
-	orchestrator := os.Getenv("CANDYLAND_ORCHESTRATOR")
-	if addr == "" || self == "" {
-		log.Fatal("comms-mcp: CANDYLAND_BUS_ADDR and CANDYLAND_AGENT_ID are required")
-	}
-	srv := mcp.NewServer(&mcp.Implementation{Name: "candyland-comms", Version: version.Version}, nil)
-	comms.RegisterTools(srv, comms.NewClient(addr, self, orchestrator))
-	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		log.Fatalf("comms-mcp: %v", err)
-	}
-}
-
-// runControlMCP serves the trigger MCP over stdio. A VSCode Claude Code session
-// registers it (alongside detritus) and calls launch_run to start a candyland
-// multi-agent run, run_status to check it, and stop_run to halt a hung/wrong one.
-// CANDYLAND_ADDR points at the running sidecar's api (default 127.0.0.1:8888).
-func runControlMCP() {
-	addr := os.Getenv("CANDYLAND_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:8888" // the default --port the sidecar binds
-	}
-	srv := mcp.NewServer(&mcp.Implementation{Name: "candyland-control", Version: version.Version}, nil)
-	control.RegisterTools(srv, control.NewClient(addr))
-	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		log.Fatalf("control-mcp: %v", err)
-	}
 }

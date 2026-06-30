@@ -91,6 +91,13 @@ func maxAttempts() int              { return envInt("CANDYLAND_AGENT_ATTEMPTS", 
 // converge. Tunable via CANDYLAND_REPLAN_ATTEMPTS.
 func maxReplans() int { return envInt("CANDYLAND_REPLAN_ATTEMPTS", 3) }
 
+// maxReviewRounds bounds the review→fix→re-review loop run AFTER integration and
+// BEFORE any PR opens: the initial review plus every fix-then-re-review cycle. The
+// default 3 means one review and up to two fix passes before the run fails
+// honestly with the findings still open (no PR on un-reviewed work). Tunable via
+// CANDYLAND_REVIEW_ROUNDS.
+func maxReviewRounds() int { return envInt("CANDYLAND_REVIEW_ROUNDS", 3) }
+
 // startFailurePrefix marks the one run error that is ENVIRONMENTAL rather than a
 // fault of the tech lead's plan: the claude binary couldn't even start (missing or
 // unauthenticated). Re-partitioning can't fix that, so attemptDelivery treats a
@@ -103,12 +110,15 @@ const startFailurePrefix = "Claude Code failed to start: "
 // whether it actually complied with its instructions.
 type attemptOutcome struct {
 	partition []partitionTask
-	sawTool   bool   // the model used at least one tool (i.e. did real work)
-	lastText  string // most recent assistant/result text (for deferral/question detection)
-	stalled   bool   // killed for producing no output, or exceeding the wall clock
-	startErr  error  // process could not be started (binary missing / not authenticated)
-	runErr    error  // process exited non-zero on its own
-	stderr    string // the process's stderr (why it exited), surfaced on failure
+	review    *reviewVerdict // the reviewer's structured verdict (review phase only)
+	sawTool   bool           // the model used at least one tool (i.e. did real work)
+	lastText  string         // most recent assistant/result text (for deferral/question detection)
+	stalled   bool           // killed for producing no output, or exceeding the wall clock
+	startErr  error          // process could not be started (binary missing / not authenticated)
+	runErr    error          // process exited non-zero on its own
+	stderr    string         // the process's stderr (why it exited), surfaced on failure
+	tokens    int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
+	allText   string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
 }
 
 // streamOnce runs a single claude process, streaming its stream-json into the
@@ -161,6 +171,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	if err != nil {
 		return attemptOutcome{startErr: err}
 	}
+	afterStart(cmd) // assign to the Windows job object so killTree drops the whole tree (no-op on Unix)
 	// Kill the whole process tree the moment the attempt ends, for any reason.
 	go func() {
 		<-attemptCtx.Done()
@@ -203,15 +214,22 @@ loop:
 			if json.Unmarshal(b, &line) != nil {
 				continue
 			}
-			p, sawTool, text := mapAgentLine(c, id, agentID, line)
+			if line.Type == "result" {
+				out.tokens += line.Usage.OutputTokens / 1000 // same 1k scaling appendToAgent uses
+			}
+			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {
 				out.partition = p
+			}
+			if rv != nil {
+				out.review = rv
 			}
 			if sawTool {
 				out.sawTool = true
 			}
 			if text != "" {
 				out.lastText = text
+				out.allText += text + "\n"
 			}
 		case <-stall.C:
 			out.stalled = true

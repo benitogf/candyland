@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benitogf/candyland/internal/version"
+	"github.com/benitogf/candyland/internal/winproc"
 	"github.com/benitogf/ooo"
 )
 
@@ -107,7 +108,9 @@ func depVersion(bin string) (string, string, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, bin, "--version").Output()
+	cmd := exec.CommandContext(ctx, bin, "--version")
+	winproc.Configure(cmd) // windowless: no flashing console for the probe on Windows
+	out, _ := cmd.Output()
 	return path, strings.TrimSpace(string(out)), true
 }
 

@@ -42,10 +42,10 @@ func TestWriteAuditDerivesQueryableRecord(t *testing.T) {
 	}
 	defer srv.Close(os.Interrupt)
 
-	id := c.Create(run.Spec{Prompt: "do the thing", Mode: "developer"})
+	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Update(id, func(r *run.Run) {
 		r.Status = "done"
-		r.Phase = 4
+		r.Phase = run.PhasePR
 		r.PrURL = "https://github.com/benitogf/candyland/pull/2"
 		r.Tasks = []run.Task{{ID: "t1", State: "green"}, {ID: "t2", State: "green"}}
 		// TokensUsed is derived (recompute sums agent tokens) → 2800 + 1400 = 4200.
@@ -68,7 +68,7 @@ func TestWriteAuditDerivesQueryableRecord(t *testing.T) {
 	if err := json.Unmarshal(obj.Data, &a); err != nil {
 		t.Fatalf("audit not valid JSON: %v", err)
 	}
-	if a.RunID != id || a.Status != "done" || a.Phase != 4 || a.Tokens != 4200 {
+	if a.RunID != id || a.Status != "done" || a.Phase != run.PhasePR || a.Tokens != 4200 {
 		t.Errorf("audit header wrong: %+v", a)
 	}
 	if a.PrURL == "" {

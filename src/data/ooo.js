@@ -47,3 +47,34 @@ export const useAudit = (id) => {
     const cache = useOoo(id ? `audits/${encodeURIComponent(id)}` : null)
     return cache?.data || null
 }
+
+// ── Quests & Campaigns ───────────────────────────────────────────────────────
+// The work/history section pivots Runs ↔ Quests ↔ Campaigns over three open ooo
+// filters (runs/*, quests/*, campaigns/*), all read live the same way as runs —
+// the conductor is the single source of truth, no polling, no client-side mock.
+
+// All quests, newest first by sequence id (q1, q2, …), mirroring useRuns.
+export const useQuests = () => {
+    const cache = useOoo('quests/*')
+    if (!Array.isArray(cache)) return []
+    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => seq(b) - seq(a))
+}
+
+// One quest, live.
+export const useQuest = (id) => {
+    const cache = useOoo(id ? `quests/${encodeURIComponent(id)}` : null)
+    return cache?.data || null
+}
+
+// All campaigns, newest first by sequence id (c1, c2, …), mirroring useRuns.
+export const useCampaigns = () => {
+    const cache = useOoo('campaigns/*')
+    if (!Array.isArray(cache)) return []
+    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => seq(b) - seq(a))
+}
+
+// One campaign, live.
+export const useCampaign = (id) => {
+    const cache = useOoo(id ? `campaigns/${encodeURIComponent(id)}` : null)
+    return cache?.data || null
+}

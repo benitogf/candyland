@@ -8,6 +8,7 @@ require (
 	github.com/benitogf/ooo v0.0.0-20260616085443-cb886859c622
 	github.com/gorilla/mux v1.8.1
 	github.com/modelcontextprotocol/go-sdk v1.4.0
+	golang.org/x/sys v0.40.0
 )
 
 require (
@@ -27,5 +28,4 @@ require (
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
 )
