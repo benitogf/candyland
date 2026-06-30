@@ -71,14 +71,11 @@ git worktrees, but that isolates the *git state*, not the OS: an agent can run
 shell and read/write anything the candyland process can. Run it on your own
 machine against your own repositories; treat the prompt as code you're executing.
 
-## Install (released binary)
+## Install
 
-```bash
-# Linux / macOS / WSL
-curl -fsSL https://raw.githubusercontent.com/benitogf/candyland/main/install.sh | sh
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/benitogf/candyland/main/install.ps1 | iex
-```
+Detritus owns the candyland lifecycle. `detritus --setup` fetches the released
+candyland binary, places it beside detritus, and drives it over REST — there is
+no candyland install script and no MCP registration.
 
 ## Run (from source)
 
