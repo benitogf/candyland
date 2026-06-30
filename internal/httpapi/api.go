@@ -28,6 +28,10 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 	server.OpenFilter("audits/*") // per-run verification audits (audits/* list + audits/<id> item)
 	registerSystem(server)
 	registerHealth(server)
+	// Host the per-agent coordination-bus comms tools over HTTP at
+	// /mcp/comms/{agentID}; spawned coders reach it via an http mcp-config entry
+	// instead of a per-agent stdio process.
+	RegisterCommsMCP(server)
 
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}

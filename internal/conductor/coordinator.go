@@ -2,12 +2,50 @@ package conductor
 
 import (
 	"encoding/json"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 
 	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/ooo"
 )
+
+// minClaudeMajor is the floor major version of the claude CLI: `type:http`
+// mcp-config support (which the coordination bus now relies on) lands in 2.x.
+// The installer floats the latest CLI, so this is asserted at startup, not
+// pinned — a mismatch warns rather than hard-failing the whole app.
+const minClaudeMajor = 2
+
+// claudeVersionRe pulls the leading semver out of `claude --version` output
+// (e.g. "2.1.4 (Claude Code)" → "2", "1", "4").
+var claudeVersionRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// CheckClaudeVersion probes the pinned claude CLI and logs a WARNING if it is
+// below the floor that supports `type:http` mcp-config entries. It never fails
+// the app: a missing or unparseable CLI is left to surface honestly when a run
+// actually spawns claude. Cheap and windowless (reuses configureProc).
+func CheckClaudeVersion() {
+	cmd := exec.Command(claudeBin(), "--version")
+	cmd.Env = claudeEnv()
+	configureProc(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("candyland: could not probe %q --version (%v); a run will fail honestly if the CLI is missing or too old", claudeBin(), err)
+		return
+	}
+	m := claudeVersionRe.FindStringSubmatch(string(out))
+	if m == nil {
+		log.Printf("candyland: could not parse claude version from %q", string(out))
+		return
+	}
+	major, _ := strconv.Atoi(m[1])
+	if major < minClaudeMajor {
+		log.Printf("candyland: WARNING claude CLI %s.%s.%s is below %d.0.0 — the coordination bus needs `type:http` mcp-config support (claude 2.x); upgrade the CLI", m[1], m[2], m[3], minClaudeMajor)
+	}
+}
 
 // OrchestratorID is the single-writer identity for the task-graph ledger. The
 // conductor (pure Go, zero model tokens) is the orchestrator; the tech-lead and
@@ -41,23 +79,26 @@ func (c *Conductor) StartBus() {
 	c.mu.Unlock()
 }
 
-// mcpServerSpec is one entry in a Claude Code --mcp-config file.
+// mcpServerSpec is one entry in a Claude Code --mcp-config file. The comms
+// surface is now an HTTP MCP endpoint hosted on the app (type:http + url),
+// replacing the per-agent stdio process the old Command/Args spawned.
 type mcpServerSpec struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env,omitempty"`
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 
 type mcpConfigFile struct {
 	MCPServers map[string]mcpServerSpec `json:"mcpServers"`
 }
 
-// busMCPConfig writes a per-agent --mcp-config that launches `candyland
-// comms-mcp`, wiring the coder to the conductor's bus as agentID. Returns the
-// config path, or "" when no bus is wired (no flag is added then). The inbox
-// filters are already registered globally at StartBus, so there is no per-agent
-// registration here. The conductor stays pure Go — it only spawns the process
-// and maps its stdout.
+// busMCPConfig writes a per-agent --mcp-config that points the coder at the
+// app-hosted comms MCP endpoint over HTTP, identifying it by the agentID in the
+// URL path. Returns the config path, or "" when no bus is wired (no flag is added
+// then). When DETRITUS_MCP_URL is set (detritus exports it on the sidecar
+// process), a second `detritus` http entry is added so the agent has the
+// kb_*/code_*/skill_* tools the Composition Constraint requires. The inbox
+// filters are registered globally at StartBus, so there is no per-agent
+// registration here. The conductor stays pure Go — it only writes the config.
 func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	c.mu.Lock()
 	b := c.bus
@@ -69,21 +110,19 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	// once, globally, in StartBus (before the server serves). Registering them at
 	// spawn raced ooo's broadcast loop.
 
-	self, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	cfg := mcpConfigFile{MCPServers: map[string]mcpServerSpec{
+	servers := map[string]mcpServerSpec{
 		"candyland-comms": {
-			Command: self,
-			Args:    []string{"comms-mcp"},
-			Env: map[string]string{
-				"CANDYLAND_BUS_ADDR":     c.server.Address,
-				"CANDYLAND_AGENT_ID":     agentID,
-				"CANDYLAND_ORCHESTRATOR": OrchestratorID,
-			},
+			Type: "http",
+			URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
 		},
-	}}
+	}
+	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
+	// Constraint). detritus sets DETRITUS_MCP_URL on the sidecar process; pass it
+	// through as a second http entry when present.
+	if detritusURL := os.Getenv("DETRITUS_MCP_URL"); detritusURL != "" {
+		servers["detritus"] = mcpServerSpec{Type: "http", URL: detritusURL}
+	}
+	cfg := mcpConfigFile{MCPServers: servers}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return ""
