@@ -91,6 +91,13 @@ func maxAttempts() int              { return envInt("CANDYLAND_AGENT_ATTEMPTS", 
 // converge. Tunable via CANDYLAND_REPLAN_ATTEMPTS.
 func maxReplans() int { return envInt("CANDYLAND_REPLAN_ATTEMPTS", 3) }
 
+// maxReviewRounds bounds the review→fix→re-review loop run AFTER integration and
+// BEFORE any PR opens: the initial review plus every fix-then-re-review cycle. The
+// default 3 means one review and up to two fix passes before the run fails
+// honestly with the findings still open (no PR on un-reviewed work). Tunable via
+// CANDYLAND_REVIEW_ROUNDS.
+func maxReviewRounds() int { return envInt("CANDYLAND_REVIEW_ROUNDS", 3) }
+
 // startFailurePrefix marks the one run error that is ENVIRONMENTAL rather than a
 // fault of the tech lead's plan: the claude binary couldn't even start (missing or
 // unauthenticated). Re-partitioning can't fix that, so attemptDelivery treats a
@@ -103,12 +110,13 @@ const startFailurePrefix = "Claude Code failed to start: "
 // whether it actually complied with its instructions.
 type attemptOutcome struct {
 	partition []partitionTask
-	sawTool   bool   // the model used at least one tool (i.e. did real work)
-	lastText  string // most recent assistant/result text (for deferral/question detection)
-	stalled   bool   // killed for producing no output, or exceeding the wall clock
-	startErr  error  // process could not be started (binary missing / not authenticated)
-	runErr    error  // process exited non-zero on its own
-	stderr    string // the process's stderr (why it exited), surfaced on failure
+	review    *reviewVerdict // the reviewer's structured verdict (review phase only)
+	sawTool   bool           // the model used at least one tool (i.e. did real work)
+	lastText  string         // most recent assistant/result text (for deferral/question detection)
+	stalled   bool           // killed for producing no output, or exceeding the wall clock
+	startErr  error          // process could not be started (binary missing / not authenticated)
+	runErr    error          // process exited non-zero on its own
+	stderr    string         // the process's stderr (why it exited), surfaced on failure
 }
 
 // streamOnce runs a single claude process, streaming its stream-json into the
@@ -204,9 +212,12 @@ loop:
 			if json.Unmarshal(b, &line) != nil {
 				continue
 			}
-			p, sawTool, text := mapAgentLine(c, id, agentID, line)
+			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {
 				out.partition = p
+			}
+			if rv != nil {
+				out.review = rv
 			}
 			if sawTool {
 				out.sawTool = true

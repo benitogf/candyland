@@ -123,6 +123,7 @@ type Brief struct {
 	Repo     string   `json:"repo,omitempty"`     // the repo this task targets (multi-repo)
 	Feedback string   `json:"feedback,omitempty"` // prior-attempt failure to avoid (re-plan / retry)
 	Attempt  int      `json:"attempt,omitempty"`  // 1-based attempt number
+	Findings []string `json:"findings,omitempty"` // reviewer-cited blockers a fix pass must address (review phase)
 }
 
 // Bus carries the bus state: who the single-writer orchestrator is, the

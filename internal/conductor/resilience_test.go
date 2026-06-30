@@ -229,7 +229,11 @@ func TestBootstrapsCarryRoleContractNotContext(t *testing.T) {
 // Exercises the non-compliance → retry-with-firmer-prompt → success path.
 const flakyThenCompliant = `#!/usr/bin/env bash
 prompt="$2"
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"role\":\"Backend\",\"emoji\":\"X\",\"files\":[\"a.txt\"],\"test\":\"a_test\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"partition emitted","usage":{"output_tokens":10}}'
 elif [[ "$prompt" == *"AUTONOMY REQUIRED"* ]]; then
@@ -389,7 +393,11 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 // SECOND (marker present) — so a restart of the failed run recovers and delivers.
 const failFirstThenSucceed = `#!/usr/bin/env bash
 prompt="$2"
-if [[ "$prompt" == *"tech lead"* ]]; then
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
   if [[ -f "$CANDYLAND_TEST_MARKER" ]]; then
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"a_test\"}]"}]}}'
     echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'

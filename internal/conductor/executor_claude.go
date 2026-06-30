@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -216,6 +217,13 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return // defensive — a successful loop always delivers at least one repo
 	}
 
+	// ── Review: a SEPARATE reviewer agent hard-reviews each integrated diff before
+	//    any PR opens. Blockers drive a bounded fix→re-review loop; only a clean
+	//    review across every repo lets delivery proceed. ──
+	if !c.reviewUntilClean(ctx, id, delivered, r.Branch) {
+		return // findings unresolved (or stopped) — never open a PR on un-reviewed work
+	}
+
 	// ── Deliver: push + open one PR PER IMPACTED REPO, in folder order. These are
 	//    ENVIRONMENTAL (a missing 'origin' or an unauthenticated gh can't be fixed
 	//    by re-splitting). PARTIAL-FAILURE ISOLATION: one repo's push/PR failure is
@@ -344,7 +352,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 	//    branch. A coder/integration failure in ANY repo re-plans the whole split. ──
 	order, byRepo := groupTasksByRepo(tasks, folders)
 	c.Update(id, func(r *run.Run) {
-		r.Phase = run.PhaseReview // integration
+		r.Phase = run.PhaseIntegrate
 	})
 	integDirs := make(map[string]string, len(order))
 	for _, repo := range order {
@@ -710,6 +718,204 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 	return lastErr
 }
 
+// reviewFinding is one blocker a reviewer cites on a `REVIEW_FINDINGS <json>` line.
+type reviewFinding struct {
+	File  string `json:"file"`
+	Line  int    `json:"line,omitempty"`
+	Issue string `json:"issue"`
+}
+
+// reviewVerdict is the structured outcome a reviewer emits — either a single line
+// `REVIEW_CLEAN` (no blockers) or `REVIEW_FINDINGS {"blockers":[…]}`.
+type reviewVerdict struct {
+	Blockers []reviewFinding `json:"blockers"`
+}
+
+// parseReview extracts the reviewer's structured verdict from its output, mirroring
+// parsePartition/parseTest. A `REVIEW_CLEAN` line → (verdict, true) with no
+// blockers; a `REVIEW_FINDINGS <json>` line → the parsed blockers. ok is false when
+// neither line is present (the reviewer produced no verdict — treated as a failure
+// by the caller, never as a silent pass). The last verdict line wins.
+func parseReview(text string) (verdict reviewVerdict, ok bool) {
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		switch {
+		case ln == "REVIEW_CLEAN":
+			verdict, ok = reviewVerdict{}, true
+		case strings.HasPrefix(ln, "REVIEW_FINDINGS "):
+			var v reviewVerdict
+			if json.Unmarshal([]byte(strings.TrimPrefix(ln, "REVIEW_FINDINGS ")), &v) == nil {
+				verdict, ok = v, true
+			}
+		}
+	}
+	return verdict, ok
+}
+
+// reviewUntilClean runs a REAL review phase after integration and before any PR:
+// a SEPARATE reviewer agent hard-reviews each repo's integrated diff (loading the
+// detritus review doctrine via kb_get, not an inlined rubric), and any blockers
+// drive a bounded fix→re-review loop in that same integration worktree. It returns
+// true only when every repo reviews clean (so the executor opens a PR), false when
+// the round budget is exhausted with blockers still open (recording an honest run
+// error and opening no PR) or the run was stopped.
+func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered map[string]string, branch string) bool {
+	rounds := maxReviewRounds()
+	c.Update(id, func(r *run.Run) {
+		r.Phase = run.PhaseReview
+		r.StatusLine = "Reviewing the integrated changes before opening a pull request…"
+		r.Agents = append(r.Agents, run.Agent{ID: reviewerID, Role: "Reviewer", Emoji: "🔎",
+			Task: "review the integrated diff", State: "working", Activity: "loading review doctrine",
+			Budget: 400, Worktree: "wt/review", Model: "opus-4-8",
+			Events: []run.Event{{T: "system", Text: "reviewer · kb_get core/review-rigor + truthseeker"}}})
+	})
+	folders := orderedDelivered(delivered)
+	for _, repo := range folders {
+		integDir := delivered[repo]
+		base, _ := currentBranch(ctx, repo)
+		for round := 1; round <= rounds; round++ {
+			if ctx.Err() != nil {
+				return false // stopped mid-review
+			}
+			c.Update(id, func(r *run.Run) {
+				r.StatusLine = fmt.Sprintf("Reviewing %s (round %d/%d)…", repoBase(repo), round, rounds)
+				setAgentState(r, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
+			})
+			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch})
+			out := streamOnce(ctx, c, id, reviewerID, reviewBootstrap, integDir, extraDirsForDelivered(repo, folders))
+			if ctx.Err() != nil {
+				return false // stopped mid-review
+			}
+			if out.startErr != nil {
+				fail(ctx, c, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The reviewer couldn't start; no PR is opened on an un-reviewed change.")
+				return false
+			}
+			if out.review == nil {
+				fail(ctx, c, id, reviewerID, "The reviewer produced no verdict for "+repoBase(repo)+" — refusing to open a PR on an un-reviewed change.")
+				return false
+			}
+			verdict := *out.review
+			if len(verdict.Blockers) == 0 {
+				c.Update(id, func(r *run.Run) {
+					setAgentState(r, reviewerID, "green", "review clean: "+repoBase(repo))
+					appendToAgent(r, reviewerID, run.Event{T: "system", Text: "review clean: " + repoBase(repo)}, 0)
+				})
+				break // this repo is clean — review the next
+			}
+			if round == rounds {
+				fail(ctx, c, id, reviewerID, fmt.Sprintf("Review of %s still has %d unresolved %s after %d rounds: %s. No PR is opened until review is clean.",
+					repoBase(repo), len(verdict.Blockers), plural(len(verdict.Blockers), "blocker", "blockers"), rounds, firstFinding(verdict.Blockers)))
+				return false
+			}
+			// Blockers remain and rounds are left: re-engage a fix agent in this repo's
+			// integration worktree to address the cited findings, commit onto the run
+			// branch, then re-review.
+			if !c.fixReviewFindings(ctx, id, repo, integDir, branch, verdict.Blockers, extraDirsForDelivered(repo, folders), round) {
+				return false // fix pass failed/stopped — error already recorded (or stopped)
+			}
+		}
+	}
+	c.Update(id, func(r *run.Run) {
+		r.StatusLine = "Review clean — opening pull requests…"
+		setAgentState(r, reviewerID, "done", "review clean")
+	})
+	return true
+}
+
+// fixReviewFindings re-engages a fix agent in the integration worktree to address
+// the reviewer's cited blockers and commits the fixes onto the run branch. It
+// returns true when the fixes were made and committed, false when the agent failed
+// to act (error recorded) or the run was stopped.
+func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int) bool {
+	c.Update(id, func(r *run.Run) {
+		r.StatusLine = fmt.Sprintf("Addressing %d review %s in %s…", len(blockers), plural(len(blockers), "finding", "findings"), repoBase(repo))
+		setAgentState(r, reviewerID, "working", "fixing review findings in "+repoBase(repo))
+		appendToAgent(r, reviewerID, run.Event{T: "system", Text: fmt.Sprintf("round %d: %d blocker(s) — fixing: %s", round, len(blockers), firstFinding(blockers))}, 0)
+	})
+	c.putBrief(reviewerID, bus.Brief{Role: "fix", Title: "address review findings in " + repoBase(repo), Findings: findingLines(blockers)})
+	out := streamOnce(ctx, c, id, reviewerID, reviewFixBootstrap, integDir, extra)
+	if ctx.Err() != nil {
+		return false // stopped mid-fix
+	}
+	if out.startErr != nil {
+		fail(ctx, c, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
+		return false
+	}
+	if !out.sawTool {
+		fail(ctx, c, id, reviewerID, "The fix pass made no changes for the review findings in "+repoBase(repo)+" — refusing to open a PR with open blockers.")
+		return false
+	}
+	if _, err := commitAll(ctx, integDir, "candyland(review): address findings in "+repoBase(repo)); err != nil {
+		fail(ctx, c, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
+		return false
+	}
+	return true
+}
+
+// orderedDelivered returns the delivered repos in a stable order (map iteration is
+// random; the review loop and its UI must be deterministic).
+func orderedDelivered(delivered map[string]string) []string {
+	out := make([]string, 0, len(delivered))
+	for repo := range delivered {
+		out = append(out, repo)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// extraDirsForDelivered exposes the OTHER delivered repos to a reviewer/fix agent
+// as --add-dir context (so a cross-repo change reviews together), mirroring
+// extraDirsFor over the delivered set.
+func extraDirsForDelivered(repo string, repos []string) []string {
+	out := make([]string, 0, len(repos))
+	for _, f := range repos {
+		if f != repo {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// firstFinding renders the first blocker for a one-line run error/status.
+func firstFinding(blockers []reviewFinding) string {
+	if len(blockers) == 0 {
+		return ""
+	}
+	b := blockers[0]
+	if b.Line > 0 {
+		return fmt.Sprintf("%s:%d %s", b.File, b.Line, b.Issue)
+	}
+	if b.File != "" {
+		return b.File + " " + b.Issue
+	}
+	return b.Issue
+}
+
+// findingLines renders the blockers as lines for the fix agent's brief.
+func findingLines(blockers []reviewFinding) []string {
+	out := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		out = append(out, firstFinding([]reviewFinding{b}))
+	}
+	return out
+}
+
+// reviewerID is the single reviewer agent that runs the review phase (and any fix
+// passes) across every delivered repo, in sequence.
+const reviewerID = "review"
+
+const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
+	"Load the detritus review doctrine via the kb_get tool: kb_get name=\"core/review-rigor\" AND kb_get name=\"flows/principles/truthseeker\"; apply that rubric, do NOT improvise your own. " +
+	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
+	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
+	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
+	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
+
+const reviewFixBootstrap = "You are addressing review findings on an integrated branch before it opens as a pull request. " +
+	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
+	"Fix every cited blocker with your editing tools — make the changes, do not just describe them — and keep the existing tests green. " +
+	"Do not ask questions and do not defer; resolve all the findings in this run."
+
 const conflictBootstrap = "You are the tech lead resolving a git merge conflict while integrating parallel work into one branch. " +
 	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
 	"Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
@@ -720,7 +926,7 @@ const conflictBootstrap = "You are the tech lead resolving a git merge conflict 
 // returns the signals the resilience layer uses to judge compliance: any parsed
 // partition, whether a tool was used (real work), and the latest text (checked
 // for deferral / a question to the user).
-func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, sawTool bool, text string) {
+func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, review *reviewVerdict, sawTool bool, text string) {
 	switch line.Type {
 	case "assistant":
 		for _, blk := range line.Message.Content {
@@ -728,6 +934,10 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			if b.Type == "text" && b.Text != "" {
 				if p := parsePartition(b.Text); p != nil {
 					partition = p
+				}
+				if v, ok := parseReview(b.Text); ok {
+					vv := v
+					review = &vv
 				}
 				if pass, fail, ok := parseTest(b.Text); ok {
 					c.Update(id, func(r *run.Run) {
@@ -753,7 +963,7 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			appendToAgent(r, agentID, run.Event{T: "result", Text: truncate(l.Result, 300)}, l.Usage.OutputTokens/1000)
 		})
 	}
-	return partition, sawTool, text
+	return partition, review, sawTool, text
 }
 
 // parsePartition extracts the task array from a `PARTITION <json>` line.
