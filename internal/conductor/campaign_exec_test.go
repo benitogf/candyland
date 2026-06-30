@@ -1,7 +1,9 @@
 package conductor
 
 import (
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,6 +143,44 @@ func TestCampaignDeliversWithPartialAnnotation(t *testing.T) {
 	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
 		t.Fatalf("a no-missed campaign must open one PR, got %+v", cam.PRs)
 	}
+
+	// ACCUMULATION: the two children deliver to the SHARED campaign branch, each
+	// child basing its integration off the prior tip (executor_claude.go integrateRepo:
+	// resolve the existing branch tip to a SHA before addWorktree's branch -D), so
+	// sibling commits ACCUMULATE rather than the second clobbering the first. Assert
+	// the final campaign branch carries BOTH children's distinct PID-named files —
+	// the exact clobber the SHA-pinning guards against.
+	branch := CampaignBranch(cam, repo)
+	out := gitOut(t, repo, "ls-tree", "-r", "--name-only", branch)
+	var workFiles []string
+	for _, f := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(f, "work_") && strings.HasSuffix(f, ".txt") {
+			workFiles = append(workFiles, f)
+		}
+	}
+	if len(workFiles) != 2 {
+		t.Fatalf("campaign branch %s must accumulate BOTH children's files, got %v (full tree:\n%s)", branch, workFiles, out)
+	}
+	// And both children's commits are reachable from the tip (the second is a
+	// descendant that did not reset away the first).
+	logOut := gitOut(t, repo, "log", "--name-only", "--pretty=format:", branch)
+	for _, wf := range workFiles {
+		if !strings.Contains(logOut, wf) {
+			t.Errorf("commit adding %s is not in the campaign branch history:\n%s", wf, logOut)
+		}
+	}
+}
+
+// gitOut runs git in dir and returns trimmed stdout, failing the test on error.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+	return string(out)
 }
 
 // The `missed`-blocks-the-PR half of the oracle: a single `missed` commitment

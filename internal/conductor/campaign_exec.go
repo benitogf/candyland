@@ -421,6 +421,9 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 	primary := folders[0]
 	extra := extraDirsFor(primary, folders)
 	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		if cam.Status == "stopped" || cam.Status == "done" {
+			return // a concurrent Stop/completion is authoritative — don't resurrect
+		}
 		cam.Status = "running"
 		cam.PauseReason = ""
 	})
