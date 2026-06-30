@@ -121,7 +121,7 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 			c.Update(id, func(r *run.Run) {
 				r.Status = "done"
 				if r.Error == "" { // a clean finish reaches PR; an errored run stays where it stopped
-					r.Phase = len(run.Phases) - 1
+					r.Phase = run.PhasePR
 					r.Progress = 1
 				}
 			})
@@ -261,7 +261,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 			setAgentState(r, "tl", "blocked", "no PR opened")
 			return
 		}
-		r.Phase = len(run.Phases) - 1 // PR — reached only now that a PR is open
+		r.Phase = run.PhasePR // reached only now that a PR is open
 		r.StatusLine = prStatusLine(prs)
 		setAgentState(r, "tl", "done", prStatusLine(prs))
 	})
@@ -289,7 +289,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 	// ── Tech lead: partition the work (in its own worktree in the primary repo). ──
 	c.Update(id, func(r *run.Run) {
 		r.Status = "running"
-		r.Phase = 1
+		r.Phase = run.PhaseBuild
 		tl := run.Agent{ID: "tl", Role: "Tech lead", Emoji: "🧭", Task: "partition · integrate · deliver",
 			State: "working", Activity: "planning the partition", Budget: 800, Worktree: "wt/tl", Model: "opus-4-8",
 			Events: []run.Event{{T: "system", Text: "tech-lead · claude -p --output-format stream-json"}}}
@@ -344,7 +344,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 	//    branch. A coder/integration failure in ANY repo re-plans the whole split. ──
 	order, byRepo := groupTasksByRepo(tasks, folders)
 	c.Update(id, func(r *run.Run) {
-		r.Phase = len(run.Phases) - 2 // Review (integration)
+		r.Phase = run.PhaseReview // integration
 	})
 	integDirs := make(map[string]string, len(order))
 	for _, repo := range order {

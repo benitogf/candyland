@@ -36,7 +36,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}
 
-	// Create a run (mode/folders/prompt/title) — from the web UI or the trigger MCP.
+	// Create a run (folders/prompt/title) — from the web UI or the trigger MCP.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs",
 		Methods: post,

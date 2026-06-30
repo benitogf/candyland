@@ -54,11 +54,10 @@ type Run struct {
 	Title        string   `json:"title"`  // optional; UI derives a label when empty
 	Prompt       string   `json:"prompt"` // the instruction actually sent to the agents
 	Branch       string   `json:"branch"`
-	Mode         string   `json:"mode"`               // developer|non-developer
 	Folders      []string `json:"folders"`            // the run's working folders, passed at launch (folders[0] = the git repo it branches/PRs in); the rest are --add-dir context
 	Status       string   `json:"status"`             // planning|running|paused|done|cancelled
 	Archived     bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Tasks history
-	Phase        int      `json:"phase"`              // index into Plan..PR
+	Phase        int      `json:"phase"`              // index into Phases (Build..PR)
 	Progress     float64  `json:"progress"`           // 0..1
 	StatusLine   string   `json:"statusLine,omitempty"`
 	Error        string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
@@ -103,14 +102,22 @@ type TaskAudit struct {
 // There is no workspace abstraction: candyland tracks runs and their tasks, not
 // a persisted set of folders.
 type Spec struct {
-	Mode    string   `json:"mode"`
 	Folders []string `json:"folders"`
 	Prompt  string   `json:"prompt"`
 	Title   string   `json:"title"`
 }
 
 // Phases are the lifecycle stages shown in the stepper.
-var Phases = []string{"Plan", "Build", "Integrate", "Review", "PR"}
+var Phases = []string{"Build", "Integrate", "Review", "PR"}
+
+// Phase indices into Phases — named so phase-index sites read clearly instead of
+// using magic literals or len(Phases)-N arithmetic.
+const (
+	PhaseBuild     = 0
+	PhaseIntegrate = 1
+	PhaseReview    = 2
+	PhasePR        = 3
+)
 
 // Question is one planning question. They are generated from the run's prompt by
 // Claude (see conductor.GenerateQuestions) — never a hardcoded set.

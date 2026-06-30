@@ -15,7 +15,6 @@ import DashboardIcon from '@mui/icons-material/Dashboard'
 import { PHASES } from '../meta/run'
 import { useRuns } from '../data/ooo'
 import { runLabel } from '../util'
-import { ModeBadge } from '../components/StatusBits'
 
 // Quick task switcher — jump between active runs without going back to the
 // dashboard (VSCode-style). Opens on click or ⌘/Ctrl+K; lists running tasks plus
@@ -54,12 +53,10 @@ const RunSwitcher = ({ current }) => {
                 <Typography variant="overline" color="text.secondary" sx={{ px: 2, py: 0.5, display: 'block' }}>active tasks</Typography>
                 <MenuItem selected disabled sx={{ opacity: 1 }}>
                     <ListItemText primary={current.label} primaryTypographyProps={{ noWrap: true, fontWeight: 700 }} secondary="this task" />
-                    <ModeBadge mode={current.mode} />
                 </MenuItem>
                 {others.map((r) => (
                     <MenuItem key={r.id} onClick={() => go(`/run/${r.id}`)}>
                         <ListItemText primary={runLabel(r)} primaryTypographyProps={{ noWrap: true }} secondary={PHASES[r.phase]} />
-                        <ModeBadge mode={r.mode} />
                     </MenuItem>
                 ))}
                 {others.length === 0 && (

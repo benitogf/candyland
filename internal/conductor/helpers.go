@@ -47,9 +47,9 @@ func recompute(r *run.Run) {
 	// value is 0, so without this the bar sits at 0 from start to finish — the
 	// "stale, no feedback" a long run shows. A failed run keeps the phase it stalled
 	// at, so its bar honestly stops partway rather than implying completion.
-	span := len(run.Phases) - 1 // 4 transitions across 5 phases
+	span := len(run.Phases) - 1 // 3 transitions across 4 phases
 	prog := float64(r.Phase) / float64(span)
-	if r.Phase == 1 && r.TasksTotal > 0 { // Build: fill toward Integrate as coders finish
+	if r.Phase == run.PhaseBuild && r.TasksTotal > 0 { // Build: fill toward Integrate as coders finish
 		prog += (float64(green) / float64(r.TasksTotal)) / float64(span)
 	}
 	if prog > 1 {

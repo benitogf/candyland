@@ -17,8 +17,6 @@ import Typography from '@mui/material/Typography'
 
 import MermaidDiagram from '../components/MermaidDiagram'
 import Section, { DiagramCard, SpecNote } from '../components/Section'
-import ModeToggle from '../components/ModeToggle'
-import { useMode } from '../mode'
 
 // ── Diagram definitions ──────────────────────────────────────────────────────
 
@@ -75,12 +73,8 @@ flowchart LR
 
 const FLOWS = `
 flowchart LR
-  G["🎯 a goal"] --> M{"developer or<br/>non-developer?"}
-  M -->|developer| P["📝 open Q&A intake<br/>(/plan-style)"]
-  M -->|non-developer| V["🗳️ executive intake<br/>multiple-choice (dream)"]
-  P --> GATE{"your explicit<br/>go?"}
-  GATE -->|yes| PLAN["📄 settled plan<br/>.plan contract"]:::hl
-  V -->|"no gate — autonomous"| PLAN
+  G["🎯 a goal"] --> P["📝 open Q&A intake<br/>(/plan-style)"]
+  P --> PLAN["📄 settled plan<br/>.plan contract"]:::hl
   PLAN --> B["🧭 parallel build<br/>tech lead + coders"]
   B --> INT["🔗 integrate<br/>+ self-review"]
   INT --> PR["🌳 one PR<br/>you review"]
@@ -94,17 +88,17 @@ sequenceDiagram
   participant O as Conductor
   participant TL as 🧭 Tech lead
   participant C as Coders (parallel)
-  Note over O: developer → open Q&A · non-developer → multiple-choice (dream)
+  Note over O: open Q&A intake settles scope into a .plan contract
   You->>D: create a session, state a goal
   D->>O: start session
   loop plan until scope is settled
-    O-->>D: a question (open Q&A or multiple-choice)
+    O-->>D: a question (open Q&A)
     D-->>You: shown live in the session
     You-->>D: your answer
     D->>O: relay
   end
   O-->>D: settled plan + acceptance criteria (.plan contract)
-  Note over You,O: developer flow waits for your explicit go — non-developer proceeds automatically
+  Note over You,O: once scope is settled, the build runs to one PR
   O->>TL: hand off the settled plan
   TL-->>O: fork-safe partition + a failing test per task (emit, don't spawn)
   O->>C: spawn each coder as its own process (its task + context slice)
@@ -204,7 +198,7 @@ const pillars = [
 const concepts = [
     {
         title: 'Conductor',
-        body: 'Routes a goal into the right intake (open Q&A or multiple-choice), runs the interactive planning loop, then spawns the tech lead and each coder as processes and owns realtime state. The dashboard talks to it.',
+        body: 'Routes a goal into the open Q&A intake, runs the interactive planning loop, then spawns the tech lead and each coder as processes and owns realtime state. The dashboard talks to it.',
     },
     {
         title: 'Plan contract — the seam',
@@ -240,18 +234,9 @@ const concepts = [
     },
 ]
 
-const flowCompare = [
-    ['Planning intake', '/plan — open Q&A', 'executive intake — multiple-choice (dream)'],
-    ['You decide', 'the technical approach', 'intent only — the architect decides the rest'],
-    ['Go-gate', 'explicit "go" before the build', 'none — autonomous once scope is clear'],
-    ['Plan output', 'a settled .plan contract', 'a settled .plan contract + "Decisions made on your behalf"'],
-    ['Build, in candyland', 'parallel tech-lead + coders loop', 'the same parallel loop — only the intake differs'],
-    ['Terminal-only analog', '/plan, then /forge (parallel) or /smith (single-threaded)', '/vibe — dream + /smith, autonomous all the way to a PR (single-threaded)'],
-]
-
 const mapping = [
-    ['/plan · dream', 'The two planning intakes — open Q&A (developer) vs multiple-choice (non-developer, the executive "dream" intake). Each stops at a settled .plan contract.'],
-    ['/vibe', 'The terminal-only autonomous pipeline: dream + /smith, driven all the way to an open PR with no go-gate (single-threaded). The no-dashboard equivalent of candyland\'s non-developer flow — candyland does not call it.'],
+    ['/plan', 'The planning intake — an open Q&A conversation that settles scope into a .plan contract.'],
+    ['/vibe', 'The terminal-only autonomous pipeline: dream + /smith, driven all the way to an open PR (single-threaded), with no dashboard. Candyland does not call it.'],
     ['/forge · /smith', '/forge drives the parallel tech-lead + coders loop in-process; /smith is the fused single-threaded /plan + build + audit. Candyland is the out-of-process driver over the same loop and calls neither.'],
     ['roles/tech-lead', 'Partition by fork-safe gates, drive test-first coders, integrate sequentially, deliver one PR. Emits the partition; the driver spawns the coders.'],
     ['roles/coder-*', 'Test-engineer / backend / frontend behaviors (each composes core/coder)'],
@@ -351,7 +336,7 @@ const DeveloperGuide = () => (
                 <MermaidDiagram chart={PLAIN} />
             </DiagramCard>
             <SpecNote>
-                Under the hood (for developers): you converse with the dashboard, which mirrors the orchestrator's
+                Under the hood: you converse with the dashboard, which mirrors the orchestrator's
                 state over a WebSocket. The conductor routes each goal into a planning flow; once a plan is
                 settled, a per-feature tech lead spawns parallel coders in isolated git worktrees, integrates
                 their work, and ships one PR. Every agent is a process Candyland launches and watches — the
@@ -362,46 +347,24 @@ const DeveloperGuide = () => (
             </DiagramCard>
         </Section>
 
-        {/* 2. Two flows */}
+        {/* 2. Plan, then build */}
         <Section
             kicker="planning, then building"
-            title="Two ways to plan, one way to build"
-            intro="Planning is separated from building. A developer plans with open Q&A (/plan); a non-developer plans with a multiple-choice executive intake (dream — the architect decides the tech). Either way the output is the same thing — a settled plan — which the parallel implementation loop (a tech lead + coders) then builds into one PR. The plan is the seam: the two intakes differ only in how they get there; the build is identical."
+            title="Plan, then build"
+            intro="Planning is separated from building. You plan through an open Q&A conversation that settles scope into a .plan contract; the parallel implementation loop (a tech lead + coders) then builds that contract into one PR. The plan is the seam: it is the only thing that crosses from planning into the build."
         >
-            <DiagramCard caption="Two intakes converge on one settled plan; the implementation loop builds it to a single PR.">
+            <DiagramCard caption="A single intake settles one plan; the implementation loop builds it to a single PR.">
                 <MermaidDiagram chart={FLOWS} />
             </DiagramCard>
-            <Card sx={{ mt: 2 }}>
-                <Table size="small">
-                    <TableHead>
-                        <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }} />
-                            <TableCell sx={{ fontWeight: 700 }}>Developer mode</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Non-developer mode</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {flowCompare.map(([k, a, b]) => (
-                            <TableRow key={k}>
-                                <TableCell sx={{ color: 'secondary.main', whiteSpace: 'nowrap' }}>{k}</TableCell>
-                                <TableCell sx={{ color: 'text.secondary' }}>{a}</TableCell>
-                                <TableCell sx={{ color: 'text.secondary' }}>{b}</TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
-            </Card>
             <SpecNote>
                 Where the build runs is a driver choice over the <em>same</em> detritus roles. Candyland is the
-                out-of-process driver: whichever intake you used, it spawns the tech lead and each coder as their
-                own process it watches — the parallel loop — with a single <strong>Stop run</strong> control that
-                halts the whole flow. (Lean by design: no per-agent stop and no resume — you observe everything and
-                halt the run if you need to.) A developer at a terminal can run
-                the identical loop in-process with <strong>/forge</strong> (coders as sub-agents, no dashboard).
-                The terminal-only autonomous path is <strong>/vibe</strong>: it bundles the executive intake
-                (dream) with <strong>/smith</strong> and drives all the way to an open PR by itself — but
-                single-threaded and with no dashboard. Candyland's non-developer flow shares /vibe's no-gate
-                stance while running the parallel, visualized loop instead. <strong>/smith</strong> is the fused
+                out-of-process driver: it spawns the tech lead and each coder as their own process it watches —
+                the parallel loop — with a single <strong>Stop run</strong> control that halts the whole flow.
+                (Lean by design: no per-agent stop and no resume — you observe everything and halt the run if you
+                need to.) At a terminal you can run the identical loop in-process with <strong>/forge</strong>
+                (coders as sub-agents, no dashboard). The terminal-only autonomous path is <strong>/vibe</strong>:
+                it bundles the dream intake with <strong>/smith</strong> and drives all the way to an open PR by
+                itself — but single-threaded and with no dashboard. <strong>/smith</strong> is the fused
                 single-threaded /plan + build + audit. Candyland calls none of /vibe, /forge, or /smith — it
                 drives the shared roles directly so it keeps the per-agent control only the out-of-process driver
                 gives.
@@ -414,15 +377,14 @@ const DeveloperGuide = () => (
             title="The whole loop, start to finish — inside the dashboard"
             intro="It doesn't stop at a plan. You settle scope in your editor (or answer the dashboard wizard's questions); then candyland shows the tech lead partition the work, the coders build it in parallel, the tech lead integrate and self-review, and one PR open for you to review — all live."
         >
-            <DiagramCard caption="One session, end to end: plan interactively, watch the parallel build, review one PR. Developer mode waits for your go before building; non-developer mode runs autonomously.">
+            <DiagramCard caption="One session, end to end: plan interactively, watch the parallel build, review one PR. Planning settles scope; then the build runs to one PR.">
                 <MermaidDiagram chart={JOURNEY} />
             </DiagramCard>
             <SpecNote>
                 The dashboard mediates the planning loop both ways: it relays the conductor's questions to you and
-                your answers back. The developer flow ends on your explicit "go"; the non-developer flow has no
-                go-gate and proceeds the moment scope is clear — the same autonomous stance /vibe takes at the
-                terminal. After the plan, the conductor hands off to the tech lead and the build runs to a single
-                PR without further prompts; reviewing and merging stay your call.
+                your answers back. Once you have answered the questions and scope is settled, the conductor hands
+                off to the tech lead and the build runs to a single PR without further prompts; reviewing and
+                merging stay your call.
             </SpecNote>
         </Section>
 
@@ -635,71 +597,10 @@ const DeveloperGuide = () => (
     </Box>
 )
 
-// The non-developer guide: the same product, explained without the machinery.
-const SIMPLE_STEPS = [
-    { label: 'Tell us what you want', body: 'Describe the change in plain language — no technical detail needed.' },
-    { label: 'Answer a few quick questions', body: 'We ask simple multiple-choice questions so we build exactly what you meant.' },
-    { label: 'Watch it get built', body: 'A plain progress view shows each step finishing. Nothing to manage.' },
-    { label: 'Review one pull request', body: 'You get a single finished change to review and merge — and you can stop the run at any time.' },
-]
-
-const NonDeveloperGuide = () => (
+const HowItWorks = () => (
     <Box>
-        <Box sx={{ mb: 5 }}>
-            <Chip label="how it works" color="primary" variant="outlined" sx={{ mb: 2 }} />
-            <Typography variant="h3" gutterBottom>Describe it. We build it. 🍬</Typography>
-            <Typography variant="h6" color="text.secondary" sx={{ fontWeight: 400, maxWidth: 760 }}>
-                You say what you want in plain words. We ask a few simple questions, build it, and hand you one finished
-                change to review. No setup, no jargon, nothing to manage.
-            </Typography>
-        </Box>
-
-        <Section
-            kicker="the idea"
-            title="From a sentence to a finished change"
-            intro="You don't drive the work — you describe the outcome. Behind the scenes a small team of assistants plans it, builds each piece, checks that it works, and fits it together. You just follow the progress and review the result."
-        >
-            <DiagramCard caption="You describe it; a lead and a small team build it; you review one finished change.">
-                <MermaidDiagram chart={PLAIN} />
-            </DiagramCard>
-        </Section>
-
-        <Section kicker="what you'll do" title="Three simple steps (plus a review)">
-            <Stepper orientation="vertical" sx={{ '& .MuiStepLabel-label': { fontWeight: 700 } }}>
-                {SIMPLE_STEPS.map((s) => (
-                    <Step key={s.label} active expanded completed={false}>
-                        <StepLabel>{s.label}</StepLabel>
-                        <StepContent>
-                            <Typography variant="body2" color="text.secondary" sx={{ pb: 1 }}>{s.body}</Typography>
-                        </StepContent>
-                    </Step>
-                ))}
-            </Stepper>
-        </Section>
-
-        <Section kicker="what you get" title="One change, your call to ship">
-            <Card>
-                <CardContent>
-                    <Typography variant="body1" color="text.secondary">
-                        When it's done you get a single pull request — one tidy change. Reviewing and merging stay your
-                        decision; nothing goes live on its own. Want more detail while it runs? Switch to <strong>Developer</strong>
-                        {' '}mode above to see every agent, task, and log.
-                    </Typography>
-                </CardContent>
-            </Card>
-        </Section>
+        <DeveloperGuide />
     </Box>
 )
-
-const HowItWorks = () => {
-    const { mode } = useMode()
-    return (
-        <Box>
-            <Typography variant="overline" color="primary" sx={{ display: 'block', mb: 1 }}>this page adapts to your mode</Typography>
-            <ModeToggle sx={{ mb: 4 }} />
-            {mode === 'developer' ? <DeveloperGuide /> : <NonDeveloperGuide />}
-        </Box>
-    )
-}
 
 export default HowItWorks

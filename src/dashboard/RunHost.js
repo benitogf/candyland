@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React from 'react'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import Dialog from '@mui/material/Dialog'
@@ -6,7 +6,6 @@ import IconButton from '@mui/material/IconButton'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 
-import { useMode } from '../mode'
 import { useRun } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { beginRun, commandRun, cancelRun } from '../data/api'
@@ -17,13 +16,9 @@ import RunWorkspace from './RunWorkspace'
 // Live run workspace: state comes from ooo (useRun), controls hit the backend.
 // While the run is in planning, the Q&A is shown; finishing it begins the build.
 export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
-    const { setMode } = useMode()
     const { reachable } = useSystemStatus()
     const toast = useToast()
     const run = useRun(id)
-
-    // Recolor the app to the run's mode once it's known.
-    useEffect(() => { if (run?.mode) setMode(run.mode) }, [run?.mode, setMode])
 
     if (!run) {
         return (
@@ -45,7 +40,6 @@ export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
     const planning = run.status === 'planning'
         ? <PlanningFlow
             runId={id}
-            mode={run.mode}
             reachable={reachable}
             onComplete={(answers) => beginRun(id, answers).catch(() => toast("Couldn't begin the build — is the server reachable?"))}
             onError={() => toast("Couldn't load the planning questions — is the server reachable?")}

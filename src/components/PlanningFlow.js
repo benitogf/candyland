@@ -18,8 +18,9 @@ import { fetchQuestions } from '../data/api'
 
 // The planning Q&A. Questions are fetched from the backend (a real request, with
 // a loading state while they arrive), then each question shows a brief "thinking"
-// state. Non-developer = multiple-choice; developer = open-ended with slash
-// autocomplete and an explicit "build it" go-gate. Ends with onComplete(answers).
+// state. Open-ended answers with slash autocomplete and an explicit "build it"
+// go-gate; multiple-choice when a question carries options. Ends with
+// onComplete(answers).
 const THINK_MS = 900
 
 const OptionCard = ({ label, selected, multi, onClick, disabled }) => (
@@ -48,8 +49,7 @@ const Loader = ({ text }) => (
     </Box>
 )
 
-const PlanningFlow = ({ runId, mode, onComplete, onError, reachable = true }) => {
-    const dev = mode === 'developer'
+const PlanningFlow = ({ runId, onComplete, onError, reachable = true }) => {
     const [questions, setQuestions] = useState(null)
     const [error, setError] = useState(false)
     const [reload, setReload] = useState(0)
@@ -131,15 +131,15 @@ const PlanningFlow = ({ runId, mode, onComplete, onError, reachable = true }) =>
         else setStep(step + 1)
     }
     const toggle = (label) => setPicks((p) => (p.includes(label) ? p.filter((x) => x !== label) : [...p, label]))
-    // The answer UI is driven by whether the (generated) question offers options,
-    // not by the mode — so a question is always answerable however Claude shaped it.
+    // The answer UI is driven by whether the (generated) question offers options
+    // — so a question is always answerable however Claude shaped it.
     const hasOptions = (q.options?.length ?? 0) > 0
     const canContinue = hasOptions ? (q.multi ? picks.length > 0 : true) : draft.trim().length > 0
 
     return (
         <Box sx={{ maxWidth: 640, mx: 'auto' }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                {dev ? 'Settle the plan — answer as much as you like; you approve before the build.' : 'A few quick questions so we build the right thing.'}
+                Settle the plan — answer as much as you like; you approve before the build.
             </Typography>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                 <Typography variant="overline" color="primary" sx={{ whiteSpace: 'nowrap' }}>Question {step + 1} of {questions.length}</Typography>
@@ -185,7 +185,7 @@ const PlanningFlow = ({ runId, mode, onComplete, onError, reachable = true }) =>
                         <Box sx={{ flexGrow: 1 }} />
                         {(!hasOptions || q.multi) && (
                             isLast
-                                ? <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!canContinue || !reachable} onClick={() => commit(hasOptions ? picks : draft.trim())}>{dev ? 'Looks good — build it' : 'Start building'}</Button>
+                                ? <Button variant="contained" startIcon={<RocketLaunchIcon />} disabled={!canContinue || !reachable} onClick={() => commit(hasOptions ? picks : draft.trim())}>Looks good — build it</Button>
                                 : <Button variant="contained" endIcon={<ArrowForwardIcon />} disabled={!canContinue} onClick={() => commit(hasOptions ? picks : draft.trim())}>Continue</Button>
                         )}
                     </Box>

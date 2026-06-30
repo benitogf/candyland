@@ -20,7 +20,7 @@ import (
 func questionTimeout() time.Duration { return envDur("CANDYLAND_QUESTION_MS", 60*1000) }
 
 // GenerateQuestions asks Claude for a few clarifying questions tailored to the
-// run's prompt and mode, and caches them on the run — so a refresh or retry
+// run's prompt, and caches them on the run — so a refresh or retry
 // reuses the same questions (one Claude call per run) instead of regenerating a
 // different set each time. Returns nil on any failure — the planning step then
 // proceeds directly to the build.
@@ -38,7 +38,6 @@ func (c *Conductor) GenerateQuestions(id string) []run.Question {
 		return qs
 	}
 	prompt := strings.TrimSpace(rt.r.Prompt)
-	mode := rt.r.Mode
 	rt.mu.Unlock()
 	if prompt == "" {
 		return c.cacheQuestions(rt, nil)
@@ -53,8 +52,8 @@ func (c *Conductor) GenerateQuestions(id string) []run.Question {
 	// is no brief; the planner then has only the bootstrap and returns no usable
 	// questions, which the caller already treats as "proceed to build".
 	const plannerID = "planner"
-	c.putBrief(plannerID, bus.Brief{Role: mode, Prompt: prompt})
-	args := []string{"-p", plannerBootstrap(mode), "--output-format", "json", "--model", "claude-opus-4-8"}
+	c.putBrief(plannerID, bus.Brief{Role: "planner", Prompt: prompt})
+	args := []string{"-p", plannerBootstrap(), "--output-format", "json", "--model", "claude-opus-4-8"}
 	busCfg := c.busMCPConfig(id, plannerID)
 	if busCfg != "" {
 		args = append(args, "--mcp-config", busCfg)
@@ -90,13 +89,9 @@ func (c *Conductor) cacheQuestions(rt *runtime, qs []run.Question) []run.Questio
 // request rides in the planner's brief (fetched via brief_get), not here — so a
 // large settled plan never reaches argv. Keeps the "clarifying questions"
 // discriminator the stub tests key on.
-func plannerBootstrap(mode string) string {
-	audience := "a non-technical person"
-	style := "Prefer multiple-choice questions — give 2-4 concrete `options` for each, and set `multi:true` only when several answers can apply together."
-	if mode == "developer" {
-		audience = "a developer"
-		style = "Open-ended questions are fine — omit `options` and give a short `placeholder` example answer instead."
-	}
+func plannerBootstrap() string {
+	const audience = "a developer"
+	const style = "Open-ended questions are fine — omit `options` and give a short `placeholder` example answer instead."
 	return "You are planning a software task before any code is written. Call the brief_get tool FIRST to read the request (" + audience + " asked for it) — it is no longer on your command line. " +
 		"Produce 2 to 4 brief clarifying questions that would most help decide what to build. " + style + " " +
 		"Return ONLY a JSON array, no prose, no code fence: " +

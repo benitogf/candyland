@@ -1,8 +1,6 @@
 import React, { useRef, useState } from 'react'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
-import Card from '@mui/material/Card'
-import CardContent from '@mui/material/CardContent'
 import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
 import Step from '@mui/material/Step'
@@ -16,39 +14,19 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
-import CheckCircleIcon from '@mui/icons-material/CheckCircle'
-import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 
-import { useMode } from '../mode'
-import { MODES } from '../meta/run'
 import { useSystemStatus } from '../data/system'
 import { suggestTitle } from '../util'
 import CommandInput from '../components/CommandInput'
 
-const STEPS = ['Mode', 'Folder', 'Prompt']
+const STEPS = ['Folder', 'Prompt']
 
-// One focused decision per screen — a guided walk, not a control panel. Sets the
-// app mode (recolors), takes the repository folder, then the prompt (multiline /
-// .md upload) with an optional, auto-suggested title. Back/edit at every step.
-// This is the SECONDARY entry: most runs launch from the editor via the
-// candyland MCP (which uses the editor's cwd); here you name the repo by path.
-const SelectCard = ({ selected, onClick, accent, children }) => (
-    <Card
-        onClick={onClick}
-        sx={{
-            p: 2, cursor: 'pointer', display: 'flex', alignItems: 'flex-start', gap: 1.5,
-            boxShadow: selected ? `0 0 0 1px ${accent}` : 'none',
-            backgroundColor: selected ? `${accent}14` : undefined,
-            '&:hover': { backgroundColor: 'rgba(255,255,255,0.04)' },
-        }}
-    >
-        {selected ? <CheckCircleIcon sx={{ color: accent }} /> : <RadioButtonUncheckedIcon sx={{ color: 'text.disabled' }} />}
-        <Box sx={{ minWidth: 0 }}>{children}</Box>
-    </Card>
-)
-
+// One focused decision per screen — a guided walk, not a control panel. Takes the
+// repository folder, then the prompt (multiline / .md upload) with an optional,
+// auto-suggested title. Back/edit at every step. This is the SECONDARY entry:
+// most runs launch from the editor via the candyland MCP (which uses the
+// editor's cwd); here you name the repo by path.
 const NewRunWizard = ({ onClose, onStart }) => {
-    const { mode, setMode } = useMode()
     const { reachable } = useSystemStatus()
     const [step, setStep] = useState(0)
     const [folder, setFolder] = useState('')
@@ -56,7 +34,7 @@ const NewRunWizard = ({ onClose, onStart }) => {
     const [title, setTitle] = useState('')
     const fileRef = useRef(null)
 
-    const canNext = step === 0 ? !!mode : step === 1 ? folder.trim().length > 0 : prompt.trim().length > 0
+    const canNext = step === 0 ? folder.trim().length > 0 : prompt.trim().length > 0
     const next = () => (step < STEPS.length - 1 ? setStep(step + 1) : onStart({ folders: [folder.trim()], prompt: prompt.trim(), title: title.trim() }))
     const back = () => (step === 0 ? onClose() : setStep(step - 1))
 
@@ -91,21 +69,6 @@ const NewRunWizard = ({ onClose, onStart }) => {
                 <Box sx={{ maxWidth: 620, mx: 'auto', px: { xs: 2, sm: 4 }, py: 4 }}>
                     {step === 0 && (
                         <>
-                            <Typography variant="h4" sx={{ mb: 0.5 }}>How do you want to work?</Typography>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>This sets how much detail you'll see — you can't get it wrong.</Typography>
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                                {Object.entries(MODES).map(([key, m]) => (
-                                    <SelectCard key={key} selected={mode === key} accent={m.accent} onClick={() => setMode(key)}>
-                                        <Typography variant="subtitle1" sx={{ fontWeight: 800, color: mode === key ? m.accent : 'text.primary' }}>{m.label}</Typography>
-                                        <Typography variant="body2" color="text.secondary">{m.tagline}</Typography>
-                                    </SelectCard>
-                                ))}
-                            </Box>
-                        </>
-                    )}
-
-                    {step === 1 && (
-                        <>
                             <Typography variant="h4" sx={{ mb: 0.5 }}>Which repository?</Typography>
                             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
                                 The absolute path to the git repo this run works in — it branches and opens its PR there.
@@ -123,7 +86,7 @@ const NewRunWizard = ({ onClose, onStart }) => {
                         </>
                     )}
 
-                    {step === 2 && (
+                    {step === 1 && (
                         <>
                             <Typography variant="h4" sx={{ mb: 0.5 }}>What do you want done?</Typography>
                             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

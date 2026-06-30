@@ -11,14 +11,12 @@ import AddIcon from '@mui/icons-material/Add'
 import ClearIcon from '@mui/icons-material/Clear'
 
 import { candy } from '../config'
-import { useMode } from '../mode'
 import { PHASES, STATE_META } from '../meta/run'
 import { runLabel } from '../util'
 import { useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { createRun, archiveRun } from '../data/api'
 import { useToast } from '../feedback'
-import { ModeBadge } from '../components/StatusBits'
 import NewRunWizard from '../wizard/NewRunWizard'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
@@ -43,7 +41,6 @@ const RunCard = ({ run, onOpen, onClear }) => {
             <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
                 <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
                     <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
-                    <ModeBadge mode={run.mode} />
                     {terminal && (
                         <Tooltip title="Clear from dashboard (kept in Tasks)">
                             <IconButton size="small" onClick={(e) => { e.stopPropagation(); onClear(run.id) }} aria-label="clear run" sx={{ ml: -0.5, mt: -0.5 }}>
@@ -110,7 +107,6 @@ const Dashboard = () => {
     const navigate = useNavigate()
     const location = useLocation()
     const { runId, tab } = useParams()
-    const { mode } = useMode()
     const liveRuns = useRuns()
     const { reachable } = useSystemStatus()
     const toast = useToast()
@@ -125,7 +121,7 @@ const Dashboard = () => {
             return
         }
         try {
-            const { id } = await createRun({ mode, folders, prompt, title })
+            const { id } = await createRun({ folders, prompt, title })
             navigate(`/run/${id}`)
         } catch {
             toast("Couldn't start the run — is the candyland server reachable? Check the status chip.")

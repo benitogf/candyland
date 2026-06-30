@@ -33,7 +33,7 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 
 	// Persist a finished+failed run directly, as a prior process would have, with
 	// NO entry in the in-memory map.
-	r := run.Run{ID: "r9", Status: "done", Error: "boom", Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	r := run.Run{ID: "r9", Status: "done", Error: "boom", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
 	b, _ := json.Marshal(r)
 	if _, err := st.Set("runs/r9", b); err != nil {
 		t.Fatalf("persist run: %v", err)
@@ -76,7 +76,7 @@ func TestReconcileOrphansClosesPhantomsKeepsTerminal(t *testing.T) {
 	c := New(srv)
 
 	seed := func(id, status, errStr string) {
-		r := run.Run{ID: id, Status: status, Error: errStr, Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+		r := run.Run{ID: id, Status: status, Error: errStr, Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
 		b, _ := json.Marshal(r)
 		if _, err := st.Set("runs/"+id, b); err != nil {
 			t.Fatalf("persist run %s: %v", id, err)
@@ -132,7 +132,7 @@ func TestCancelledRunNotResurrectedAfterRestart(t *testing.T) {
 	c := New(srv)
 
 	// A cancelled run as a prior process left it: persisted, not in the live map.
-	r := run.Run{ID: "c1", Status: "cancelled", Mode: "developer", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	r := run.Run{ID: "c1", Status: "cancelled", Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
 	b, _ := json.Marshal(r)
 	if _, err := st.Set("runs/c1", b); err != nil {
 		t.Fatalf("persist cancelled run: %v", err)
@@ -141,7 +141,7 @@ func TestCancelledRunNotResurrectedAfterRestart(t *testing.T) {
 		t.Fatal("precondition: c1 must not be tracked in memory yet")
 	}
 
-	if c.Edit("c1", run.Spec{Mode: "developer", Prompt: "sneak it back", Folders: []string{"/tmp"}}) {
+	if c.Edit("c1", run.Spec{Prompt: "sneak it back", Folders: []string{"/tmp"}}) {
 		t.Error("Edit must refuse a cancelled run rehydrated after restart")
 	}
 	if c.Restart("c1") {
@@ -172,8 +172,8 @@ func TestReconcileSeedsSeqPastPersistedRuns(t *testing.T) {
 	// Two runs a prior process left behind (one terminal, one a higher-numbered
 	// cancelled run — both must be counted even though the status checks skip them).
 	for _, seed := range []run.Run{
-		{ID: "r1", Status: "done", Mode: "developer", Prompt: "first", Agents: []run.Agent{}, Tasks: []run.Task{}},
-		{ID: "r5", Status: "cancelled", Mode: "developer", Prompt: "fifth", Agents: []run.Agent{}, Tasks: []run.Task{}},
+		{ID: "r1", Status: "done", Prompt: "first", Agents: []run.Agent{}, Tasks: []run.Task{}},
+		{ID: "r5", Status: "cancelled", Prompt: "fifth", Agents: []run.Agent{}, Tasks: []run.Task{}},
 	} {
 		b, _ := json.Marshal(seed)
 		if _, err := st.Set("runs/"+seed.ID, b); err != nil {
@@ -185,7 +185,7 @@ func TestReconcileSeedsSeqPastPersistedRuns(t *testing.T) {
 	c.ReconcileOrphans()
 
 	// The next Create must skip past r5, not reuse r1.
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "new", Folders: []string{"/tmp"}})
+	id := c.Create(run.Spec{Prompt: "new", Folders: []string{"/tmp"}})
 	if id != "r6" {
 		t.Errorf("post-restart Create reused/collided an id: got %q, want r6", id)
 	}

@@ -93,7 +93,7 @@ func TestSpawnArgvCarriesNoPlanBody(t *testing.T) {
 	c, _ := deliveryConductor(t, argvCaptureClaude)
 
 	plan := strings.Repeat("PLANBODY ", 6000) // ~54k — well over the 32k argv ceiling
-	id := c.Create(run.Spec{Mode: "developer", Prompt: plan})
+	id := c.Create(run.Spec{Prompt: plan})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -156,7 +156,7 @@ func writeGh(t *testing.T, script string) {
 func TestMultiRepoOnePRPerImpactedRepo(t *testing.T) {
 	c, repos := multiRepoConductor(t, multiRepoClaude, "alpha", "beta")
 	writeGh(t, perRepoGh)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "ship across two repos"})
+	id := c.Create(run.Spec{Prompt: "ship across two repos"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -194,7 +194,7 @@ func TestMultiRepoPartialFailureIsolation(t *testing.T) {
 	c, _ := multiRepoConductor(t, multiRepoClaude, "alpha", "beta")
 	// gh fails only for beta (its integration worktree path contains /beta/).
 	writeGh(t, "#!/usr/bin/env bash\nif [[ \"$PWD\" == *\"/beta/\"* ]]; then echo 'gh: beta not authenticated' >&2; exit 1; fi\necho 'https://github.com/example/alpha/pull/7'\n")
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "ship across two repos"})
+	id := c.Create(run.Spec{Prompt: "ship across two repos"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -224,7 +224,7 @@ func TestMultiRepoPartialFailureIsolation(t *testing.T) {
 
 func TestClaudeFanOut(t *testing.T) {
 	c, repo := deliveryConductor(t, fanOutClaude)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "add a CSV export"})
+	id := c.Create(run.Spec{Prompt: "add a CSV export"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -316,7 +316,7 @@ fi
 
 func TestIntegrationConflictResolved(t *testing.T) {
 	c, repo := deliveryConductor(t, conflictResolvedClaude)
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
@@ -368,7 +368,7 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 	c, _ := deliveryConductor(t, conflictUnresolvableClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")  // one resolution attempt per integrate
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "2") // reassess once, then give an honest failure
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -468,7 +468,7 @@ func TestCoderFailureTriggersReplan(t *testing.T) {
 	c, repo := deliveryConductor(t, coderFailReplanClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // the impossible coder fails in one attempt
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
@@ -491,7 +491,7 @@ func TestReplanRecoversFromBadSplit(t *testing.T) {
 	c, repo := deliveryConductor(t, replanRecoverClaude)
 	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1")
 	t.Setenv("CANDYLAND_REPLAN_ATTEMPTS", "3")
-	id := c.Create(run.Spec{Mode: "developer", Prompt: "do the thing"})
+	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id, nil)
 
 	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)

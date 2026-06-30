@@ -18,7 +18,6 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
 import { useRuns } from '../data/ooo'
-import { ModeBadge } from '../components/StatusBits'
 
 // The full history of every run, in any state — including ones cleared from the
 // dashboard. Searchable; a row opens the run. The dashboard stays focused on
@@ -57,7 +56,6 @@ const Tasks = () => {
                         <TableRow>
                             <TableCell sx={{ fontWeight: 700 }}>Task</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Mode</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>Folder</TableCell>
                             <TableCell sx={{ fontWeight: 700 }}>PR</TableCell>
                         </TableRow>
@@ -65,7 +63,7 @@ const Tasks = () => {
                     <TableBody>
                         {filtered.length === 0 && (
                             <TableRow>
-                                <TableCell colSpan={5} sx={{ color: 'text.secondary' }}>
+                                <TableCell colSpan={4} sx={{ color: 'text.secondary' }}>
                                     {runs.length === 0 ? 'No runs yet — start one from the dashboard.' : 'No runs match your search.'}
                                 </TableCell>
                             </TableRow>
@@ -82,7 +80,6 @@ const Tasks = () => {
                                     </Box>
                                 </TableCell>
                                 <TableCell><Chip size="small" variant="outlined" color={STATUS_COLOR[r.status] || 'default'} label={statusText(r)} sx={{ height: 22 }} /></TableCell>
-                                <TableCell><ModeBadge mode={r.mode} /></TableCell>
                                 <TableCell>
                                     <Typography
                                         variant="body2" component="span"

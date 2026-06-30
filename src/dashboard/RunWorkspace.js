@@ -21,9 +21,9 @@ import ReplayIcon from '@mui/icons-material/Replay'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import EditIcon from '@mui/icons-material/Edit'
 
-import { PHASES, isDone } from '../meta/run'
+import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
-import { StateChip, StateIcon, StateLegend, ModeBadge } from '../components/StatusBits'
+import { StateChip, StateLegend } from '../components/StatusBits'
 import EditRunDialog from '../components/EditRunDialog'
 import RunSwitcher from './RunSwitcher'
 import AgentsPanel from '../panels/AgentsPanel'
@@ -56,8 +56,6 @@ const Meter = ({ label, right, value, color }) => (
 // assumptions), replaces the earlier per-agent chart.
 const OverviewPanel = ({ run }) => (
     <Box>
-        <Box sx={{ mb: 2 }}><ModeBadge mode={run.mode} withTagline /></Box>
-
         {run.prompt && (
             <Card sx={{ mb: 3 }}>
                 <CardContent>
@@ -114,66 +112,6 @@ const panelFor = (key, run) => {
     if (key === 'audit') return <Scrollable><AuditPanel run={run} /></Scrollable>
     return <Scrollable><OverviewPanel run={run} /></Scrollable>
 }
-
-// ── Non-developer: a simplified progress view ────────────────────────────────
-const friendlyState = (state) => {
-    if (isDone(state)) return 'Done'
-    if (state === 'working' || state === 'integrating') return 'In progress'
-    if (state === 'blocked') return 'Waiting'
-    return 'Up next'
-}
-
-const SimplePanel = ({ run, done }) => (
-    <Box sx={{ maxWidth: 680, mx: 'auto' }}>
-        {run.prompt && (
-            <Card sx={{ mb: 3 }}>
-                <CardContent>
-                    <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 0.5 }}>what you asked for</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.prompt}</Typography>
-                </CardContent>
-            </Card>
-        )}
-        {!done && run.statusLine && (
-            <Card sx={{ mb: 3 }}>
-                <CardContent>
-                    <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 0.5 }}>what's happening</Typography>
-                    <Typography variant="body1">{run.statusLine}</Typography>
-                </CardContent>
-            </Card>
-        )}
-
-        <Typography variant="overline" color="secondary" sx={{ display: 'block', mb: 1 }}>steps</Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mb: 3 }}>
-            {run.tasks.map((t) => (
-                <Card key={t.id} sx={{ px: 2, py: 1.25, display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                    <StateIcon state={t.state} size={20} />
-                    <Typography variant="body2" sx={{ flexGrow: 1, minWidth: 0, color: isDone(t.state) ? 'text.secondary' : 'text.primary' }}>{t.title}</Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>{friendlyState(t.state)}</Typography>
-                </Card>
-            ))}
-        </Box>
-
-        {done && run.prUrl ? (
-            <Card sx={{ borderLeft: '3px solid', borderColor: 'success.main', backgroundColor: 'rgba(155,226,58,0.06)' }}>
-                <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Your change is ready to review ✅</Typography>
-                        <Typography variant="body2" color="text.secondary">We opened one pull request. Reviewing and merging are your call.</Typography>
-                    </Box>
-                    <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" variant="outlined" color="secondary" endIcon={<OpenInNewIcon />}>Review the PR</Button>
-                </CardContent>
-            </Card>
-        ) : run.status === 'cancelled' ? (
-            <Typography variant="body2" color="text.secondary">
-                This run was cancelled. It's kept in Tasks for reference; start a new run to try again.
-            </Typography>
-        ) : (
-            <Typography variant="body2" color="text.secondary">
-                You'll get one pull request to review when this is done. You can stop the run at any time.
-            </Typography>
-        )}
-    </Box>
-)
 
 // ── Header controls — Stop / Restart, gated by status. Candyland keeps a lean,
 //    flow-level control surface (no per-agent control, no resume). ────────────
@@ -245,11 +183,10 @@ const CancelControl = ({ onCancel }) => (
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
     const [editing, setEditing] = useState(false)
     const isPlanning = !!planning
-    const isDev = run.mode === 'developer'
     const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
-    const showTabs = isDev && !isPlanning
+    const showTabs = !isPlanning
     // Real, functional completion — moves over the live run (elapsed-driven), or
     // reflects the phase for a static snapshot.
     const progressPct = Math.round(100 * (run.progress ?? (run.phase / (PHASES.length - 1))))
@@ -263,16 +200,13 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                             <Typography variant="h5" sx={{ fontWeight: 800 }} noWrap>{runLabel(run)}</Typography>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
-                                {isDev
-                                    ? <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{repo} · {run.branch}</Typography>
-                                    : <Typography variant="body2" color="text.secondary" noWrap>in {repo}</Typography>}
-                                <ModeBadge mode={run.mode} />
+                                <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{repo} · {run.branch}</Typography>
                             </Box>
                         </Box>
                         {isPlanning
                             ? <CancelControl onCancel={controls.cancel} />
                             : <RunControls run={run} controls={controls} done={done} onEdit={() => setEditing(true)} />}
-                        <RunSwitcher current={{ id: run.id, label: runLabel(run), mode: run.mode }} />
+                        <RunSwitcher current={{ id: run.id, label: runLabel(run) }} />
                         <IconButton onClick={onClose} aria-label="close" sx={{ flexShrink: 0 }}><CloseIcon /></IconButton>
                     </Box>
 
@@ -327,7 +261,7 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                 <Box sx={{ width: '100%', maxWidth: 1180, mx: 'auto', px: { xs: 2, sm: 4 }, py: 3, minWidth: 0, display: { xs: 'block', md: 'flex' }, flexDirection: 'column', minHeight: 0 }}>
                     {isPlanning
                         ? <Scrollable>{planning}</Scrollable>
-                        : isDev ? panelFor(active, run) : <Scrollable><SimplePanel run={run} done={done} /></Scrollable>}
+                        : panelFor(active, run)}
                 </Box>
             </Box>
             <EditRunDialog run={run} open={editing} onClose={() => setEditing(false)} />

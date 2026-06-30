@@ -266,7 +266,6 @@ func (c *Conductor) Create(spec run.Spec) string {
 		ID:      id,
 		Title:   spec.Title,
 		Prompt:  spec.Prompt,
-		Mode:    spec.Mode,
 		Folders: spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
@@ -283,16 +282,8 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.runs[id] = rt
 	c.mu.Unlock()
 	c.publish(r)
-	log.Printf("candyland: run %s created (%s, folders %v)", id, orEmpty(r.Mode, "?"), r.Folders)
+	log.Printf("candyland: run %s created (folders %v)", id, r.Folders)
 	return id
-}
-
-// orEmpty returns def when s is empty (small logging helper).
-func orEmpty(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 // Begin starts the build executor for a run once planning is done. The planning
@@ -456,7 +447,7 @@ func (c *Conductor) Restart(id string) bool {
 	return true
 }
 
-// Edit changes a run's task (mode/folders/prompt/title) in place and resets it
+// Edit changes a run's task (folders/prompt/title) in place and resets it
 // to planning — clearing the previous result and INVALIDATING the cached planning
 // questions so they regenerate from the new prompt. The run keeps its id (and its
 // row in the Tasks history); the UI's planning flow then re-asks the (new)
@@ -483,7 +474,6 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 		default:
 		}
 	}
-	rt.r.Mode = spec.Mode
 	rt.r.Folders = spec.Folders
 	rt.r.Prompt = spec.Prompt
 	rt.r.Title = spec.Title
