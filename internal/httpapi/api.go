@@ -71,6 +71,37 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
+	// Export a run's full normalized trace: the stored Run plus its Audit (when
+	// present) and the schema version, in a stable JSONL-friendly shape. Local
+	// export only — a redaction seam lives on run.RunTrace for any future sync.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/runs/{id}/trace",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			id := mux.Vars(r)["id"]
+			obj, err := server.Storage.Get("runs/" + id)
+			if err != nil {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			var rr run.Run
+			if err := json.Unmarshal(obj.Data, &rr); err != nil {
+				http.Error(w, "run unreadable", http.StatusInternalServerError)
+				return
+			}
+			trace := run.RunTrace{TraceVersion: run.TraceVersion, Run: &rr}
+			// Audit is optional: a paused/stopped run is never audited, and a finished
+			// run's audit may not be written yet. Attach it only when present.
+			if a, err := server.Storage.Get("audits/" + id); err == nil {
+				var au run.Audit
+				if json.Unmarshal(a.Data, &au) == nil {
+					trace.Audit = &au
+				}
+			}
+			writeJSON(w, trace)
+		},
+	})
+
 	// Begin the build. This is the detritus trigger (POST after POST /api/runs):
 	// it just starts the run. The body is ignored; an empty body is fine.
 	server.Endpoint(ooo.EndpointConfig{

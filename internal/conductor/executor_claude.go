@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
@@ -1047,6 +1048,12 @@ func setTaskState(r *run.Run, taskID, state string) {
 }
 
 func appendToAgent(r *run.Run, agentID string, e run.Event, addTokens int) {
+	// Stamp the append time centrally so every event carries an ordering aid
+	// without threading a timestamp through each call site. TaskID is left
+	// best-effort (empty) here; the per-agent slice order already gives sequence.
+	if e.Ts == "" {
+		e.Ts = time.Now().UTC().Format(time.RFC3339)
+	}
 	for i := range r.Agents {
 		if r.Agents[i].ID == agentID {
 			r.Agents[i].Events = append(r.Agents[i].Events, e)

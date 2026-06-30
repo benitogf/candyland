@@ -259,10 +259,13 @@ func (c *Conductor) Create(spec run.Spec) string {
 	c.mu.Unlock()
 
 	r := run.Run{
-		ID:      id,
-		Title:   spec.Title,
-		Prompt:  spec.Prompt,
-		Folders: spec.Folders,
+		ID:    id,
+		Title: spec.Title,
+		// OriginalIntent captures the launch prompt once; a later Edit changes
+		// Prompt but never this, so review can compare output against intent.
+		OriginalIntent: spec.Prompt,
+		Prompt:         spec.Prompt,
+		Folders:        spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
 		Branch:       runBranch(spec, id),

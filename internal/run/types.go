@@ -3,14 +3,23 @@
 // consume, so the UI reads live ooo state with no client-side mock.
 package run
 
-// Event is one parsed stream-json line from an agent process.
+// TraceVersion is the schema version of the exported RunTrace. Bump it whenever
+// the normalized trace shape changes so a future central store can detect and
+// migrate older records. The version travels with every exported trace.
+const TraceVersion = 1
+
+// Event is one parsed stream-json line from an agent process. Event is nested
+// under Agent, so the agent id is implicit and slice order already gives the
+// per-agent sequence; TaskID and Ts are additive ordering/linking aids.
 type Event struct {
-	T     string `json:"t"` // system|text|tool|test|result
-	Text  string `json:"text,omitempty"`
-	Name  string `json:"name,omitempty"`  // tool name
-	Input string `json:"input,omitempty"` // tool input summary
-	Pass  int    `json:"pass,omitempty"`
-	Fail  int    `json:"fail,omitempty"`
+	T      string `json:"t"` // system|text|tool|test|result
+	Text   string `json:"text,omitempty"`
+	Name   string `json:"name,omitempty"`  // tool name
+	Input  string `json:"input,omitempty"` // tool input summary
+	Pass   int    `json:"pass,omitempty"`
+	Fail   int    `json:"fail,omitempty"`
+	TaskID string `json:"taskId,omitempty"` // task this event belongs to, when known (best-effort)
+	Ts     string `json:"ts,omitempty"`     // RFC3339 timestamp set when the event is appended
 }
 
 // Agent is one spawned worker (a headless claude process).
@@ -50,28 +59,38 @@ type PR struct {
 
 // Run is the full state of a run — the object stored at ooo key runs/<id>.
 type Run struct {
-	ID           string   `json:"id"`
-	Title        string   `json:"title"`  // optional; UI derives a label when empty
-	Prompt       string   `json:"prompt"` // the instruction actually sent to the agents
-	Branch       string   `json:"branch"`
-	Folders      []string `json:"folders"`            // the run's working folders, passed at launch (folders[0] = the git repo it branches/PRs in); the rest are --add-dir context
-	Status       string   `json:"status"`             // planning|running|paused|done|cancelled
-	Archived     bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Tasks history
-	Phase        int      `json:"phase"`              // index into Phases (Build..PR)
-	Progress     float64  `json:"progress"`           // 0..1
-	StatusLine   string   `json:"statusLine,omitempty"`
-	Error        string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
-	PrURL        string   `json:"prUrl,omitempty"` // the primary PR (folders[0]); first opened — kept for back-compat
-	PRs          []PR     `json:"prs,omitempty"`   // one per impacted repo (multi-repo runs); PrURL mirrors the first
-	TokensUsed   int      `json:"tokensUsed"`
-	TokensBudget int      `json:"tokensBudget"`
-	CostUsd      float64  `json:"costUsd"`
-	TasksGreen   int      `json:"tasksGreen"`
-	TasksTotal   int      `json:"tasksTotal"`
-	HasDag       bool     `json:"hasDag"`
-	Agents       []Agent  `json:"agents"`
-	Tasks        []Task   `json:"tasks"`
-	Executor     string   `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
+	ID    string `json:"id"`
+	Title string `json:"title"` // optional; UI derives a label when empty
+	// QuestID/CampaignID are parent links for later quest/campaign grouping. They
+	// stay empty for standalone runs today; the fields exist now so a later phase
+	// can populate them without a schema migration.
+	QuestID    string `json:"questId,omitempty"`
+	CampaignID string `json:"campaignId,omitempty"`
+	Prompt     string `json:"prompt"` // the instruction actually sent to the agents
+	// OriginalIntent is the launch prompt, set ONCE at run creation and never
+	// rewritten (an Edit changes Prompt, not this). Final review compares output
+	// against the original intent, not just task completion. For a standalone run
+	// OriginalIntent == the first Prompt.
+	OriginalIntent string   `json:"originalIntent,omitempty"`
+	Branch         string   `json:"branch"`
+	Folders        []string `json:"folders"`            // the run's working folders, passed at launch (folders[0] = the git repo it branches/PRs in); the rest are --add-dir context
+	Status         string   `json:"status"`             // planning|running|paused|done|cancelled
+	Archived       bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Tasks history
+	Phase          int      `json:"phase"`              // index into Phases (Build..PR)
+	Progress       float64  `json:"progress"`           // 0..1
+	StatusLine     string   `json:"statusLine,omitempty"`
+	Error          string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
+	PrURL          string   `json:"prUrl,omitempty"` // the primary PR (folders[0]); first opened — kept for back-compat
+	PRs            []PR     `json:"prs,omitempty"`   // one per impacted repo (multi-repo runs); PrURL mirrors the first
+	TokensUsed     int      `json:"tokensUsed"`
+	TokensBudget   int      `json:"tokensBudget"`
+	CostUsd        float64  `json:"costUsd"`
+	TasksGreen     int      `json:"tasksGreen"`
+	TasksTotal     int      `json:"tasksTotal"`
+	HasDag         bool     `json:"hasDag"`
+	Agents         []Agent  `json:"agents"`
+	Tasks          []Task   `json:"tasks"`
+	Executor       string   `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
 }
 
 // Audit is the queryable record of a completed run, derived from its final
@@ -118,3 +137,19 @@ const (
 	PhaseReview    = 2
 	PhasePR        = 3
 )
+
+// RunTrace is the normalized, exportable trace of a single run: the stored Run
+// plus its Audit (when present) and the schema version, in a stable JSONL-friendly
+// shape. It is shape-readiness for a later central store — it embeds the existing
+// Run (stable IDs, parent links, agents, task graph, events, PRs, token/cost) and
+// the Audit verbatim, adding nothing the UI doesn't already see except TraceVersion.
+//
+// REDACTION SEAM: before any future sync to a central store, sensitive payloads
+// (e.g. Event.Text/Input, Run.Prompt/OriginalIntent) must be redacted here. This
+// is local export only today — no redaction is applied. Do NOT add a central
+// store/sync from this struct; that is a separate, later phase.
+type RunTrace struct {
+	TraceVersion int    `json:"traceVersion"`
+	Run          *Run   `json:"run"`
+	Audit        *Audit `json:"audit,omitempty"`
+}
