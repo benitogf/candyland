@@ -76,13 +76,50 @@ func currentBranch(ctx context.Context, dir string) (string, error) {
 // id reused after a restart) can leave the prior generation's worktree registered,
 // which would make a plain `worktree add` fail with "already used by worktree".
 // -B (create OR reset) then makes the branch a clean slate.
+//
+// A branch can be checked out in only ONE worktree, so `worktree add -B` also
+// fails with "already used by worktree" when `branch` is held at a DIFFERENT
+// path — e.g. a sibling child run's leftover integration worktree (campaign/quest
+// children share one branch, campaign/<id>), or a stale/foreign checkout of that
+// branch. Clearing only wtDir misses those, so addWorktree detaches every OTHER
+// worktree on this branch first, making the add idempotent w.r.t. the branch. A
+// holder with uncommitted changes is left untouched (the add then fails honestly
+// rather than nuking unsaved work); the branch ref and its commits always survive
+// — only the worktree registration is removed.
 func addWorktree(ctx context.Context, repo, wtDir, branch, base string) error {
 	_, _ = git(ctx, repo, "worktree", "remove", "--force", wtDir)
+	for _, other := range worktreesForBranch(ctx, repo, branch) {
+		if other != wtDir && !hasChanges(ctx, other) {
+			_, _ = git(ctx, repo, "worktree", "remove", "--force", other)
+		}
+	}
 	_, _ = git(ctx, repo, "worktree", "prune")
 	_, _ = git(ctx, repo, "branch", "-D", branch)
 	_ = os.RemoveAll(wtDir) // drop any orphan directory left by a crashed prior run
 	_, err := git(ctx, repo, "worktree", "add", "-B", branch, wtDir, base)
 	return err
+}
+
+// worktreesForBranch returns the worktree directories currently checked out on
+// branch (normally zero or one). It parses `git worktree list --porcelain`, whose
+// records are blank-line separated with a "worktree <path>" line and, for a
+// non-detached checkout, a "branch refs/heads/<name>" line.
+func worktreesForBranch(ctx context.Context, repo, branch string) []string {
+	out, err := git(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil
+	}
+	want := "branch refs/heads/" + branch
+	var dirs []string
+	var cur string
+	for _, line := range strings.Split(out, "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			cur = path
+		} else if line == want && cur != "" {
+			dirs = append(dirs, cur)
+		}
+	}
+	return dirs
 }
 
 // removeWorktree tears a worktree down (best-effort; --force handles dirty trees).
