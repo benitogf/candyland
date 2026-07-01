@@ -1258,8 +1258,10 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			}
 			if b.Type == "tool_use" {
 				sawTool = true
+				in := string(b.Input)
+				summary := truncate(in, 200)
 				c.updateAgentHost(id, func(agents *[]run.Agent) {
-					appendToAgentIn(agents, agentID, run.Event{T: "tool", Name: b.Name, Input: truncate(string(b.Input), 200)}, 0)
+					appendToAgentIn(agents, agentID, run.Event{T: "tool", Name: b.Name, Input: summary, InputFull: fullWhenTruncated(summary, in)}, 0)
 				})
 			}
 		}
@@ -1268,8 +1270,9 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 		if l.Result != "" {
 			text = l.Result
 		}
+		summary := truncate(l.Result, 300)
 		c.updateAgentHost(id, func(agents *[]run.Agent) {
-			appendToAgentIn(agents, agentID, run.Event{T: "result", Text: truncate(l.Result, 300)}, l.Usage.OutputTokens/1000)
+			appendToAgentIn(agents, agentID, run.Event{T: "result", Text: summary, TextFull: fullWhenTruncated(summary, l.Result)}, l.Usage.OutputTokens/1000)
 		})
 	}
 	return partition, review, sawTool, text
@@ -1397,6 +1400,17 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// fullWhenTruncated returns the complete payload when the compact summary dropped
+// content, and "" when the summary already holds it in full. Storing it only in the
+// truncated case keeps the common (short) event from carrying a redundant copy — the
+// full fields are omitempty, so a short payload lives solely in Input/Text.
+func fullWhenTruncated(summary, full string) string {
+	if summary == full {
+		return ""
+	}
+	return full
 }
 
 func truncate(s string, n int) string {

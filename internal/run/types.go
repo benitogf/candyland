@@ -12,14 +12,22 @@ const TraceVersion = 1
 // under Agent, so the agent id is implicit and slice order already gives the
 // per-agent sequence; TaskID and Ts are additive ordering/linking aids.
 type Event struct {
-	T      string `json:"t"` // system|text|tool|test|result
-	Text   string `json:"text,omitempty"`
-	Name   string `json:"name,omitempty"`  // tool name
-	Input  string `json:"input,omitempty"` // tool input summary
-	Pass   int    `json:"pass,omitempty"`
-	Fail   int    `json:"fail,omitempty"`
-	TaskID string `json:"taskId,omitempty"` // task this event belongs to, when known (best-effort)
-	Ts     string `json:"ts,omitempty"`     // RFC3339 timestamp set when the event is appended
+	T     string `json:"t"` // system|text|tool|test|result
+	Text  string `json:"text,omitempty"`
+	Name  string `json:"name,omitempty"`  // tool name
+	Input string `json:"input,omitempty"` // tool input summary (compact, for the live dashboard)
+	// InputFull/TextFull carry the COMPLETE untruncated payload for a tool event's
+	// input and a result event's text. Input/Text stay truncated so the realtime
+	// dashboard renders a compact summary; the full fields are persisted alongside
+	// them and served verbatim by the run snapshot/trace API so the whole output is
+	// retrievable with no truncation. Populated only when the payload was truncated
+	// (otherwise Input/Text already hold it in full) — hence omitempty.
+	InputFull string `json:"inputFull,omitempty"` // complete tool input when Input was truncated
+	TextFull  string `json:"textFull,omitempty"`  // complete result text when Text was truncated
+	Pass      int    `json:"pass,omitempty"`
+	Fail      int    `json:"fail,omitempty"`
+	TaskID    string `json:"taskId,omitempty"` // task this event belongs to, when known (best-effort)
+	Ts        string `json:"ts,omitempty"`     // RFC3339 timestamp set when the event is appended
 }
 
 // Agent is one spawned worker (a headless claude process).
