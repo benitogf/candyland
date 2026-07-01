@@ -22,7 +22,7 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
 import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
-import { useQuest, useRuns, isBranchDelivered } from '../data/ooo'
+import { useQuest, useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { pauseQuest, resumeQuest, stopQuest } from '../data/api'
 import { useToast } from '../feedback'
@@ -161,6 +161,10 @@ const QuestWorkspace = ({ id, onClose }) => {
                             : (quest.workItems || []).map((it) => <Finding key={it.id} item={it} onRun={openRun} />)}
                     </Block>
 
+                    {/* Child runs are listed as drill-downs only — a link plus status.
+                        Per-run delivery detail (PR links, branch-committed state) is
+                        run-level and lives in the run workspace; the quest's own
+                        deliverables are aggregated in the PRs block below. */}
                     <Block title={`child runs · ${childRuns.length}`}>
                         {childRuns.length === 0
                             ? <Empty>No child runs launched yet.</Empty>
@@ -168,9 +172,6 @@ const QuestWorkspace = ({ id, onClose }) => {
                                 <Box key={r.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
                                     <Link component="button" type="button" onClick={() => openRun(r.id)} sx={{ fontWeight: 600 }}>{runLabel(r)}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[r.status] || 'default'} label={r.status} sx={{ height: 20 }} />
-                                    {isBranchDelivered(r)
-                                        ? <Chip size="small" variant="outlined" color="secondary" label="committed" title="Committed to the campaign branch — the parent opens the PR" sx={{ height: 20, ml: 'auto' }} />
-                                        : r.prUrl && <Link href={r.prUrl} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, ml: 'auto' }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>}
                                 </Box>
                             ))}
                     </Block>
