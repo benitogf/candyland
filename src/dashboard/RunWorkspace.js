@@ -25,7 +25,7 @@ import CallMergeIcon from '@mui/icons-material/CallMerge'
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
 import { deliverOf } from '../data/ooo'
-import { StateChip, StateLegend } from '../components/StatusBits'
+import { StateChip, LegendButton } from '../components/StatusBits'
 import EditRunDialog from '../components/EditRunDialog'
 import RunSwitcher from './RunSwitcher'
 import AgentsPanel from '../panels/AgentsPanel'
@@ -308,21 +308,15 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                     </Box>
 
                     {showTabs && (
-                        <Tabs value={active} onChange={(_, v) => onTab(v)} sx={{ mt: 1.5 }} variant="scrollable" scrollButtons="auto">
-                            {TABS.map((t) => <Tab key={t.key} value={t.key} label={t.label} />)}
-                        </Tabs>
+                        <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Tabs value={active} onChange={(_, v) => onTab(v)} sx={{ flexGrow: 1, minWidth: 0 }} variant="scrollable" scrollButtons="auto">
+                                {TABS.map((t) => <Tab key={t.key} value={t.key} label={t.label} />)}
+                            </Tabs>
+                            <LegendButton />
+                        </Box>
                     )}
                 </Box>
             </Box>
-
-            {showTabs && (
-                <Box sx={{ px: { xs: 2, sm: 4 }, py: 1, borderBottom: '1px solid', borderColor: 'divider', backgroundColor: 'background.paper' }}>
-                    <Box sx={{ maxWidth: 1180, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                        <Typography variant="overline" color="text.disabled" sx={{ flexShrink: 0 }}>legend</Typography>
-                        <StateLegend />
-                    </Box>
-                </Box>
-            )}
 
             {/* Run-level error advisory — visible across tabs */}
             {run.error && (
