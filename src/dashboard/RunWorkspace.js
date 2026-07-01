@@ -274,11 +274,11 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
             {/* Header — aligned to the body column */}
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2 }}>
                 <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                             <Typography variant="h5" sx={{ fontWeight: 800 }} noWrap>{runLabel(run)}</Typography>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
-                                <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{repo} · {run.branch}</Typography>
+                                <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{repo} · {run.branch}</Typography>
                             </Box>
                         </Box>
                         {isPlanning

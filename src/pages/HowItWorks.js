@@ -519,8 +519,8 @@ const DeveloperGuide = () => (
             title="How it maps to your stack"
             intro="Candyland is the sidecar — detritus launches a run over REST, and it spawns each agent as a process it watches, then visualizes state for you to monitor, audit, and stop. It contains no agent logic of its own: every behavior below is a detritus skill it invokes via kb_get."
         >
-            <Card>
-                <Table size="small">
+            <Card sx={{ overflowX: 'auto' }}>
+                <Table size="small" sx={{ minWidth: 560 }}>
                     <TableHead>
                         <TableRow>
                             <TableCell sx={{ fontWeight: 700 }}>detritus provides</TableCell>
@@ -553,8 +553,8 @@ const DeveloperGuide = () => (
             title="Prior art — what we borrow, what we avoid"
             intro="Comparable tools exist; the point of Candyland is the lightweight, solo-first subset. (This table is being refined by a background research pass.)"
         >
-            <Card>
-                <Table size="small">
+            <Card sx={{ overflowX: 'auto' }}>
+                <Table size="small" sx={{ minWidth: 560 }}>
                     <TableHead>
                         <TableRow>
                             <TableCell sx={{ fontWeight: 700 }}>Tool</TableCell>
