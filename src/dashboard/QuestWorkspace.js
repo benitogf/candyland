@@ -24,6 +24,7 @@ import { useQuest, useRuns, isBranchDelivered } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { pauseQuest, resumeQuest, stopQuest } from '../data/api'
 import { useToast } from '../feedback'
+import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 // Section header used across the detail views.
 const Block = ({ title, children }) => (
@@ -92,7 +93,11 @@ const QuestWorkspace = ({ id, onClose }) => {
     const childRuns = allRuns.filter((r) => r.questId === quest.id)
     const ticks = quest.ticks || []
     const currentTick = ticks[ticks.length - 1] || null
-    const prs = quest.prs || []
+    // PRs the quest reported: its own list plus any opened during ticks — the
+    // per-repo delivery rollup merges them.
+    const tickPrs = ticks.flatMap((t) => t.prs || [])
+    const prs = [...(quest.prs || []), ...tickPrs]
+    const runsDone = childRuns.filter((r) => isFinished(r.status)).length
     const openRun = (runId) => navigate(`/run/${runId}`)
 
     return (
@@ -123,6 +128,27 @@ const QuestWorkspace = ({ id, onClose }) => {
                     {quest.pauseReason && (quest.status === 'paused' || quest.status === 'blocked') && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {quest.pauseReason}</Alert>
                     )}
+
+                    <Block title="rollup">
+                        <StatGrid done={runsDone} total={childRuns.length}>
+                            <Stat label="items done" value={quest.itemsCompleted || 0} sub={`${quest.itemsSkipped || 0} skipped · ${quest.itemsBlocked || 0} blocked`} color="success.main" />
+                            <Stat label="child runs" value={`${runsDone}/${childRuns.length}`} />
+                            <Stat label="PRs opened" value={quest.prsOpened || 0} />
+                            <Stat label="ticks" value={ticks.length} />
+                            <Stat label="tokens" value={(quest.tokensUsed || 0).toLocaleString()} sub={quest.tokenBudget ? `of ${quest.tokenBudget.toLocaleString()}` : undefined} />
+                        </StatGrid>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>per-repo delivery</Typography>
+                            <RepoDelivery prs={prs} />
+                        </Box>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>agent activity</Typography>
+                            <AgentActivity entities={[...childRuns, quest]} />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
+                            created {shortTime(quest.createdAt)} · updated {shortTime(quest.updatedAt)}{quest.lastProgress ? ` · last progress ${shortTime(quest.lastProgress)}` : ''}
+                        </Typography>
+                    </Block>
 
                     <Block title="objective">
                         <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{quest.originalObjective || quest.objective}</Typography>

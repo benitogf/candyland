@@ -17,6 +17,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
 import { useCampaign, useQuests, useRuns } from '../data/ooo'
+import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 const Block = ({ title, children }) => (
     <Card sx={{ mb: 2.5 }}>
@@ -78,6 +79,15 @@ const CampaignWorkspace = ({ id, onClose }) => {
     const prs = campaign.prs || []
     const routing = campaign.reviewRouting?.length ? campaign.reviewRouting : brief.reviewRouting || []
 
+    // Rollup aggregates across the campaign's children and its own review.
+    const questsDone = childQuests.filter((q) => isFinished(q.status)).length
+    const runsDone = childRuns.filter((r) => isFinished(r.status)).length
+    const childrenDone = questsDone + runsDone
+    const childrenTotal = childQuests.length + childRuns.length
+    const verdictCounts = verdicts.reduce((acc, v) => { acc[v.verdict] = (acc[v.verdict] || 0) + 1; return acc }, {})
+    const gateState = (g) => (!g?.decidedAt ? 'pending' : g.passed ? 'passed' : 'failed')
+    const gateColor = (g) => (!g?.decidedAt ? 'default' : g.passed ? 'success' : 'error')
+
     return (
         <Dialog fullScreen open onClose={onClose} aria-label="Campaign workspace" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2, pb: 2 }}>
@@ -101,6 +111,38 @@ const CampaignWorkspace = ({ id, onClose }) => {
                     {campaign.pauseReason && (campaign.status === 'paused' || campaign.status === 'blocked') && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {campaign.pauseReason}</Alert>
                     )}
+
+                    <Block title="rollup">
+                        <StatGrid done={childrenDone} total={childrenTotal}>
+                            <Stat label="quests" value={`${questsDone}/${childQuests.length}`} />
+                            <Stat label="runs" value={`${runsDone}/${childRuns.length}`} />
+                            <Stat label="PRs" value={prs.filter((p) => p.url).length} sub={`of ${prs.length} repo${prs.length === 1 ? '' : 's'}`} />
+                            <Stat label="commitments" value={commitments.length} sub={verdicts.length ? `${verdictCounts.satisfied || 0} satisfied` : 'unreviewed'} color="success.main" />
+                            <Stat label="tokens" value={(campaign.tokensUsed || 0).toLocaleString()} sub={campaign.tokenBudget ? `of ${campaign.tokenBudget.toLocaleString()}` : undefined} />
+                        </StatGrid>
+                        <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                            <Chip size="small" variant="outlined" color={gateColor(campaign.briefGate)} label={`brief gate: ${gateState(campaign.briefGate)}`} sx={{ height: 22 }} />
+                            <Chip size="small" variant="outlined" color={gateColor(campaign.planGate)} label={`plan gate: ${gateState(campaign.planGate)}`} sx={{ height: 22 }} />
+                            {verdicts.length > 0 && (
+                                <>
+                                    {verdictCounts.satisfied > 0 && <Chip size="small" variant="outlined" color="success" label={`${verdictCounts.satisfied} satisfied`} sx={{ height: 22 }} />}
+                                    {verdictCounts.partial > 0 && <Chip size="small" variant="outlined" color="warning" label={`${verdictCounts.partial} partial`} sx={{ height: 22 }} />}
+                                    {verdictCounts.missed > 0 && <Chip size="small" variant="outlined" color="error" label={`${verdictCounts.missed} missed`} sx={{ height: 22 }} />}
+                                </>
+                            )}
+                        </Box>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>per-repo delivery</Typography>
+                            <RepoDelivery prs={prs} />
+                        </Box>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>agent activity</Typography>
+                            <AgentActivity entities={[...childRuns, ...childQuests, campaign]} />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
+                            created {shortTime(campaign.createdAt)} · updated {shortTime(campaign.updatedAt)}{campaign.intentReview?.reviewedAt ? ` · reviewed ${shortTime(campaign.intentReview.reviewedAt)}` : ''}
+                        </Typography>
+                    </Block>
 
                     <Block title="original intent">
                         <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{campaign.originalInput}</Typography>
