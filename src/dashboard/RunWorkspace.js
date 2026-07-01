@@ -265,7 +265,7 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
         : run.campaignId
             ? { kind: 'campaign', id: run.campaignId, path: `/campaign/${run.campaignId}` }
             : null
-    const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
+    const active = TABS.some((t) => t.key === tab) ? tab : TABS[0].key
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = !isPlanning
