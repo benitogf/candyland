@@ -110,14 +110,14 @@ const CampaignWorkspace = ({ id, onClose }) => {
     return (
         <Dialog fullScreen open onClose={onClose} aria-label="Campaign workspace" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2, pb: 2 }}>
-                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                     <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                            <Chip size="small" color="secondary" variant="outlined" label={`campaign · ${campaign.id}`} />
+                            <Chip size="small" color="secondary" variant="outlined" label={`campaign · ${campaign.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[campaign.status] || 'default'} variant="outlined" label={campaign.status} />
                             {campaign.autonomyLevel && <Chip size="small" variant="outlined" label={AUTONOMY_LABEL[campaign.autonomyLevel] || campaign.autonomyLevel} />}
                         </Box>
-                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>{brief.restatedGoal || campaign.originalInput || campaign.id}</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{brief.restatedGoal || campaign.originalInput || campaign.id}</Typography>
                     </Box>
                     {/* Campaign control endpoints don't exist yet — state is read-only. */}
                     <Chip label="read-only" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
@@ -168,7 +168,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                             ? <Empty>No child quests launched yet.</Empty>
                             : childQuests.map((q) => (
                                 <Box key={q.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => navigate(`/quest/${q.id}`)} sx={{ fontWeight: 600 }}>{q.objective || q.id}</Link>
+                                    <Link component="button" type="button" onClick={() => navigate(`/quest/${q.id}`)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{q.objective || q.id}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[q.status] || 'default'} label={q.status} sx={{ height: 20 }} />
                                 </Box>
                             ))}
@@ -179,7 +179,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                             ? <Empty>No child runs launched yet.</Empty>
                             : childRuns.map((r) => (
                                 <Box key={r.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => navigate(`/run/${r.id}`)} sx={{ fontWeight: 600 }}>{runLabel(r)}</Link>
+                                    <Link component="button" type="button" onClick={() => navigate(`/run/${r.id}`)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{runLabel(r)}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[r.status] || 'default'} label={r.status} sx={{ height: 20 }} />
                                 </Box>
                             ))}

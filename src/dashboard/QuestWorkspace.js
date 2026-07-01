@@ -106,15 +106,15 @@ const QuestWorkspace = ({ id, onClose }) => {
     return (
         <Dialog fullScreen open onClose={onClose} aria-label="Quest workspace" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2, pb: 2 }}>
-                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                     <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                            <Chip size="small" color="secondary" variant="outlined" label={`quest · ${quest.id}`} />
+                            <Chip size="small" color="secondary" variant="outlined" label={`quest · ${quest.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[quest.status] || 'default'} variant="outlined" label={quest.status} />
                             {quest.autonomyLevel && <Chip size="small" variant="outlined" label={AUTONOMY_LABEL[quest.autonomyLevel] || quest.autonomyLevel} />}
                             {quest.campaignId && <Link component="button" type="button" onClick={() => navigate(`/campaign/${quest.campaignId}`)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>↑ {quest.campaignId}</Link>}
                         </Box>
-                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>{quest.objective || quest.originalObjective || quest.id}</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{quest.objective || quest.originalObjective || quest.id}</Typography>
                     </Box>
                     <QuestControls
                         quest={quest} reachable={reachable}
@@ -196,7 +196,7 @@ const QuestWorkspace = ({ id, onClose }) => {
                             ? <Empty>No child runs launched yet.</Empty>
                             : childRuns.map((r) => (
                                 <Box key={r.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => openRun(r.id)} sx={{ fontWeight: 600 }}>{runLabel(r)}</Link>
+                                    <Link component="button" type="button" onClick={() => openRun(r.id)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{runLabel(r)}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[r.status] || 'default'} label={r.status} sx={{ height: 20 }} />
                                 </Box>
                             ))}
