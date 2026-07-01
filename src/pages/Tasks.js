@@ -19,6 +19,7 @@ import { runLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, deliverOf } from '../data/ooo'
 import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
+import CopyReference from '../components/CopyReference'
 
 // ── The one work/history section ─────────────────────────────────────────────
 // A single section that PIVOTS by level — Runs/Tasks · Quests · Campaigns —
@@ -120,6 +121,7 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Typography variant="body2" sx={{ fontWeight: 600 }}>{runLabel(r)}</Typography>
                             {r.archived && <Chip size="small" variant="outlined" label="cleared" sx={{ height: 18, fontSize: 10 }} />}
+                            <CopyReference kind="run" id={r.id} />
                         </Box>
                     </TableCell>
                     <TableCell><StatusChip status={r.status} text={statusText(r)} /></TableCell>
@@ -155,7 +157,10 @@ const QuestsTable = ({ rows, onDrill, onPivot }) => (
             {rows.map((q) => (
                 <TableRow key={q.id} hover onClick={() => onDrill('runs', q.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{q.objective || q.originalObjective || q.id}</Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{q.objective || q.originalObjective || q.id}</Typography>
+                            <CopyReference kind="quest" id={q.id} />
+                        </Box>
                         <FolderText folder={folderOf(q)} />
                     </TableCell>
                     <TableCell><StatusChip status={q.status} text={statusText(q)} /></TableCell>
@@ -190,7 +195,10 @@ const CampaignsTable = ({ rows, onDrill }) => (
             {rows.map((c) => (
                 <TableRow key={c.id} hover onClick={() => onDrill('quests', c.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{c.intentBrief?.restatedGoal || c.originalInput || c.id}</Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{c.intentBrief?.restatedGoal || c.originalInput || c.id}</Typography>
+                            <CopyReference kind="campaign" id={c.id} />
+                        </Box>
                     </TableCell>
                     <TableCell><StatusChip status={c.status} text={statusText(c)} /></TableCell>
                     <TableCell>
