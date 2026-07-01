@@ -27,7 +27,7 @@ const STATUS_OPTIONS = {
 const Select = ({ label, value, onChange, width = 150, children }) => (
     <TextField
         select size="small" label={label} value={value} onChange={(e) => onChange(e.target.value)}
-        sx={{ minWidth: width }} SelectProps={{ displayEmpty: true }}
+        sx={{ minWidth: width }} SelectProps={{ displayEmpty: true }} InputLabelProps={{ shrink: true }}
     >
         {children}
     </TextField>
