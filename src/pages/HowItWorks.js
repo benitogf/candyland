@@ -26,7 +26,7 @@ flowchart TB
 
   subgraph DASH["🍬 Candyland dashboard"]
     direction LR
-    SES["Sessions<br/>interactive chat"] --- BD["Board"] --- AG["Agents"]
+    BD["Board"] --- AG["Agents"]
   end
 
   subgraph CORE["Orchestrator · Go — wraps detritus skills"]
@@ -267,7 +267,7 @@ const priorArt = [
 
 const roadmap = [
     ['Phase 0 — now', 'This PR: the spec. Dashboard shell + this "How it works" page.'],
-    ['Phase 1', 'Go conductor + ooo event stream. Create a session and run the interactive planning loop from the dashboard. Sessions & Agents views go live.'],
+    ['Phase 1', 'Go conductor + ooo event stream. Run the interactive planning loop from the dashboard. The Agents view goes live.'],
     ['Phase 2', 'Drive the implementation loop: the conductor spawns the tech lead and coders (detritus roles, already written) as processes against a settled plan. The Board renders the live task DAG.'],
     ['Phase 3', 'Full parallel build visualized as a live hierarchy — fork-safe partition, role coders in worktrees, test-first, sequential integration with loop-back on dirty merges.'],
     ['Phase 4 — maybe', 'pivot-based multi-machine sync, if a single host stops being enough.'],
