@@ -29,18 +29,14 @@ import { StateChip, StateLegend } from '../components/StatusBits'
 import EditRunDialog from '../components/EditRunDialog'
 import RunSwitcher from './RunSwitcher'
 import AgentsPanel from '../panels/AgentsPanel'
-import BoardPanel from '../panels/BoardPanel'
 import TasksPanel from '../panels/TasksPanel'
 import SessionsPanel from '../panels/SessionsPanel'
-import AuditPanel from '../panels/AuditPanel'
 
 const TABS = [
     { key: 'overview', label: 'Overview' },
     { key: 'agents', label: 'Agents' },
-    { key: 'board', label: 'Board' },
     { key: 'tasks', label: 'Tasks' },
     { key: 'sessions', label: 'Sessions' },
-    { key: 'audit', label: 'Audit' },
 ]
 
 // ── Developer: the full, detailed view ──────────────────────────────────────
@@ -98,7 +94,7 @@ const OverviewPanel = ({ run }) => (
     </Box>
 )
 
-// Scroll wrapper for document-flow panels (Overview / Board / Tasks / Simple) so
+// Scroll wrapper for document-flow panels (Overview / Tasks / Simple) so
 // their overflow scrolls inside the body region, never the dialog itself.
 const Scrollable = ({ children }) => (
     <Box sx={{ height: { md: '100%' }, overflowY: { md: 'auto' }, overflowX: 'hidden' }}>{children}</Box>
@@ -109,9 +105,7 @@ const Scrollable = ({ children }) => (
 const panelFor = (key, run) => {
     if (key === 'agents') return <AgentsPanel run={run} />
     if (key === 'sessions') return <SessionsPanel run={run} />
-    if (key === 'board') return <Scrollable><BoardPanel run={run} /></Scrollable>
     if (key === 'tasks') return <Scrollable><TasksPanel run={run} /></Scrollable>
-    if (key === 'audit') return <Scrollable><AuditPanel run={run} /></Scrollable>
     return <Scrollable><OverviewPanel run={run} /></Scrollable>
 }
 
