@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -7,6 +8,7 @@ import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
 import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
+import Link from '@mui/material/Link'
 import Step from '@mui/material/Step'
 import StepLabel from '@mui/material/StepLabel'
 import LinearProgress from '@mui/material/LinearProgress'
@@ -52,7 +54,12 @@ const Meter = ({ label, right, value, color }) => (
 
 // General run summary — budget + completion. Applies to any run (no per-task
 // assumptions), replaces the earlier per-agent chart.
-const OverviewPanel = ({ run }) => (
+const OverviewPanel = ({ run }) => {
+    // A task-run is a child launched by a quest/campaign — the parent owns the
+    // program-level delivery narrative, so we drop the "one PR" system framing
+    // here and keep the view to this run's own info only.
+    const isTaskRun = !!(run.questId || run.campaignId)
+    return (
     <Box>
         {run.prompt && (
             <Card sx={{ mb: 3 }}>
@@ -82,17 +89,20 @@ const OverviewPanel = ({ run }) => (
                 ))}
         </Box>
 
-        <Card sx={{ borderLeft: '3px solid', borderColor: 'warning.main', backgroundColor: 'rgba(255, 217, 61, 0.06)' }}>
-            <CardContent>
-                <Chip label="how this works" size="small" color="warning" variant="outlined" sx={{ mb: 1.5, fontWeight: 700 }} />
-                <Typography variant="body2" color="text.secondary">
-                    Every tab is one lens on the <em>same</em> run, derived from each agent's <code>stream-json</code> stream plus the test runs the
-                    conductor owns — state is never self-reported (<b>green</b> = the defining test passing). The deliverable is one PR; merging stays your call.
-                </Typography>
-            </CardContent>
-        </Card>
+        {!isTaskRun && (
+            <Card sx={{ borderLeft: '3px solid', borderColor: 'warning.main', backgroundColor: 'rgba(255, 217, 61, 0.06)' }}>
+                <CardContent>
+                    <Chip label="how this works" size="small" color="warning" variant="outlined" sx={{ mb: 1.5, fontWeight: 700 }} />
+                    <Typography variant="body2" color="text.secondary">
+                        Every tab is one lens on the <em>same</em> run, derived from each agent's <code>stream-json</code> stream plus the test runs the
+                        conductor owns — state is never self-reported (<b>green</b> = the defining test passing). The deliverable is one PR; merging stays your call.
+                    </Typography>
+                </CardContent>
+            </Card>
+        )}
     </Box>
-)
+    )
+}
 
 // Scroll wrapper for document-flow panels (Overview / Tasks / Simple) so
 // their overflow scrolls inside the body region, never the dialog itself.
@@ -244,9 +254,18 @@ const CancelControl = ({ onCancel }) => (
 )
 
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
+    const navigate = useNavigate()
     const [editing, setEditing] = useState(false)
     const isPlanning = !!planning
-    const active = TABS.some((t) => t.key === tab) ? tab : 'agents'
+    // The task-run's place in the IA: a child launched by a quest or campaign.
+    // Its parent context is a link UP (never embedded), so this view stays scoped
+    // to run-level info only — matching how the quest view links up to a campaign.
+    const parent = run.questId
+        ? { kind: 'quest', id: run.questId, path: `/quest/${run.questId}` }
+        : run.campaignId
+            ? { kind: 'campaign', id: run.campaignId, path: `/campaign/${run.campaignId}` }
+            : null
+    const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = !isPlanning
@@ -269,6 +288,12 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                 <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
+                                <Chip size="small" color="secondary" variant="outlined" label={`run · ${run.id}`} />
+                                {parent && (
+                                    <Link component="button" type="button" onClick={() => navigate(parent.path)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>↑ {parent.id}</Link>
+                                )}
+                            </Box>
                             <Typography variant="h5" sx={{ fontWeight: 800 }} noWrap>{runLabel(run)}</Typography>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
                                 <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{repo} · {run.branch}</Typography>
