@@ -132,17 +132,6 @@ const Landing = ({ runs, campaigns, quests, onClear, onOpen, onOpenParent }) => 
 
     return (
         <Box>
-            {/* candyland is observe-only: detritus launches runs (over REST); this
-                dashboard monitors / audits / stops the runs it observes. */}
-            <Card sx={{ mb: 5, borderColor: 'primary.main' }}>
-                <CardContent sx={{ py: 3 }}>
-                    <Typography variant="h5" sx={{ fontWeight: 800 }}>Launched from detritus</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                        Runs are started by detritus over REST. Monitor, audit, and stop them here.
-                    </Typography>
-                </CardContent>
-            </Card>
-
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
                 <Typography variant="overline" color="secondary">what's going on</Typography>
                 <Typography variant="caption" color="text.secondary">
