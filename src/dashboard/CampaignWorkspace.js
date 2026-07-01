@@ -89,7 +89,11 @@ const CampaignWorkspace = ({ id, onClose }) => {
     const verdicts = campaign.intentReview?.verdicts || []
     const verdictFor = (cid) => verdicts.find((v) => v.commitmentId === cid)
     const childQuests = allQuests.filter((q) => q.campaignId === campaign.id || (campaign.questIds || []).includes(q.id))
-    const childRuns = allRuns.filter((r) => r.campaignId === campaign.id || (campaign.runIds || []).includes(r.id))
+    // Only the campaign's DIRECT child runs belong at this level. A quest's child
+    // runs inherit CampaignID (quest_exec.go), so filtering on campaignId alone
+    // would pull those grandchild runs up here — they belong under their quest.
+    // Runs launched by the campaign itself carry no questId (linkCampaignChild).
+    const childRuns = allRuns.filter((r) => !r.questId && (r.campaignId === campaign.id || (campaign.runIds || []).includes(r.id)))
     const prs = campaign.prs || []
     const routing = campaign.reviewRouting?.length ? campaign.reviewRouting : brief.reviewRouting || []
 
