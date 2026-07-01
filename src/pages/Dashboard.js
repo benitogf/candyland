@@ -4,24 +4,18 @@ import Box from '@mui/material/Box'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
-import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
-import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
-import ClearIcon from '@mui/icons-material/Clear'
 
 import { candy } from '../config'
 import { PHASES, STATE_META, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, isBranchDelivered } from '../data/ooo'
-import { archiveRun } from '../data/api'
-import { useToast } from '../feedback'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
 const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled'
 const isParentRunning = (p) => p.status === 'running' || p.status === 'planning' || p.status === 'paused' || p.status === 'blocked'
 const statusLabel = (r) => (r.status === 'done' ? 'Done' : r.status === 'cancelled' ? 'Cancelled' : (PHASES[r.phase] || r.status))
-const RECENT_TERMINAL = 4
 
 const FleetDots = ({ agents = [] }) => (
     <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
@@ -33,32 +27,24 @@ const FleetDots = ({ agents = [] }) => (
     </Box>
 )
 
-const RunCard = ({ run, onOpen, onClear }) => {
-    const terminal = isTerminal(run)
-    return (
-        <Card onClick={() => onOpen(run.id)} sx={{ cursor: 'pointer', transition: 'background-color 120ms', '&:hover': { backgroundColor: candy.bgPaperHi } }}>
-            <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
-                    {terminal && (
-                        <Tooltip title="Clear from dashboard (kept in Tasks)">
-                            <IconButton size="small" onClick={(e) => { e.stopPropagation(); onClear(run.id) }} aria-label="clear run" sx={{ ml: -0.5, mt: -0.5 }}>
-                                <ClearIcon fontSize="small" />
-                            </IconButton>
-                        </Tooltip>
-                    )}
+// A standalone active run. The landing only ever shows active work, so there is
+// no terminal / clear affordance here — finished runs live in the Work history.
+const RunCard = ({ run, onOpen }) => (
+    <Card onClick={() => onOpen(run.id)} sx={{ cursor: 'pointer', transition: 'background-color 120ms', '&:hover': { backgroundColor: candy.bgPaperHi } }}>
+        <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="caption" color="secondary" sx={{ fontWeight: 700 }}>{statusLabel(run)}</Typography>
+                    <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.tokensUsed}k tok</Typography>
                 </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
-                    <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="caption" color={terminal ? 'text.secondary' : 'secondary'} sx={{ fontWeight: 700 }}>{statusLabel(run)}</Typography>
-                        <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.tokensUsed}k tok</Typography>
-                    </Box>
-                    <FleetDots agents={run.agents} />
-                </Box>
-            </CardContent>
-        </Card>
-    )
-}
+                <FleetDots agents={run.agents} />
+            </Box>
+        </CardContent>
+    </Card>
+)
 
 // One child run under a parent — a compact, clickable row that drills into the
 // EXISTING run UI (/run/:id via onOpen). Branch-delivered children read as
@@ -111,7 +97,7 @@ const ParentCard = ({ parent, kind, title, children, onOpen, onOpenParent }) => 
     )
 }
 
-const Landing = ({ runs, campaigns, quests, onClear, onOpen, onOpenParent }) => {
+const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
     // Parents: running campaigns, then running quests NOT owned by a shown campaign
     // (a campaign-owned quest's runs already aggregate under the campaign).
     const runningCampaigns = campaigns.filter(isParentRunning)
@@ -121,14 +107,12 @@ const Landing = ({ runs, campaigns, quests, onClear, onOpen, onOpenParent }) => 
     const childrenOfCampaign = (c) => runs.filter((r) => r.campaignId === c.id)
     const childrenOfQuest = (q) => runs.filter((r) => r.questId === q.id)
 
-    // Standalone runs: not owned by any parent. Running ones surface as cards; a
-    // few recent terminal ones too — exactly the prior behaviour for these.
-    const standalone = runs.filter((r) => !r.campaignId && !r.questId)
-    const running = standalone.filter((r) => !isTerminal(r))
-    const recentTerminal = standalone.filter(isTerminal).slice(0, RECENT_TERMINAL)
-    const visibleRuns = [...running, ...recentTerminal] // useRuns is already newest-first
+    // The landing is a calm overview of ACTIVE work only. Standalone runs that are
+    // still going surface as cards; finished (done/cancelled) runs are not a dump
+    // here — they live in the Work history. useRuns is already newest-first.
+    const running = runs.filter((r) => !r.campaignId && !r.questId && !isTerminal(r))
 
-    const nothing = runningCampaigns.length === 0 && runningQuests.length === 0 && visibleRuns.length === 0
+    const nothing = runningCampaigns.length === 0 && runningQuests.length === 0 && running.length === 0
 
     return (
         <Box>
@@ -146,7 +130,7 @@ const Landing = ({ runs, campaigns, quests, onClear, onOpen, onOpenParent }) => 
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
                 <Typography variant="overline" color="secondary">what's going on</Typography>
                 <Typography variant="caption" color="text.secondary">
-                    {runningCampaigns.length + runningQuests.length} active program{runningCampaigns.length + runningQuests.length === 1 ? '' : 's'} · {running.length} standalone running · {recentTerminal.length} recent
+                    {runningCampaigns.length + runningQuests.length} active program{runningCampaigns.length + runningQuests.length === 1 ? '' : 's'} · {running.length} standalone running
                 </Typography>
             </Box>
 
@@ -168,7 +152,7 @@ const Landing = ({ runs, campaigns, quests, onClear, onOpen, onOpenParent }) => 
                             children={childrenOfQuest(q)} onOpen={onOpen} onOpenParent={onOpenParent}
                         />
                     ))}
-                    {visibleRuns.map((run) => <RunCard key={run.id} run={run} onOpen={onOpen} onClear={onClear} />)}
+                    {running.map((run) => <RunCard key={run.id} run={run} onOpen={onOpen} />)}
                 </Box>
             )}
         </Box>
@@ -181,7 +165,6 @@ const Dashboard = () => {
     const liveRuns = useRuns()
     const campaigns = useCampaigns()
     const quests = useQuests()
-    const toast = useToast()
 
     // Archived runs are cleared from the dashboard but kept in the Tasks history.
     const runs = liveRuns.filter((r) => !r.archived)
@@ -194,7 +177,6 @@ const Dashboard = () => {
                 quests={quests}
                 onOpen={(id) => navigate(`/run/${id}`)}
                 onOpenParent={(kind, id) => navigate(`/${kind}/${id}`)}
-                onClear={(id) => archiveRun(id).catch(() => toast("Couldn't clear the run."))}
             />
 
             {runId && <LiveRunWorkspace id={runId} tab={tab} onClose={() => navigate('/')} onTab={(t) => navigate(`/run/${runId}/${t}`)} />}
