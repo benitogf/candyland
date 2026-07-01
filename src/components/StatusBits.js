@@ -1,8 +1,15 @@
-import React from 'react'
+import React, { useState } from 'react'
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
+import Dialog from '@mui/material/Dialog'
+import DialogContent from '@mui/material/DialogContent'
+import DialogTitle from '@mui/material/DialogTitle'
+import IconButton from '@mui/material/IconButton'
 import LinearProgress from '@mui/material/LinearProgress'
 import Typography from '@mui/material/Typography'
+import CloseIcon from '@mui/icons-material/Close'
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked'
 import AutorenewIcon from '@mui/icons-material/Autorenew'
 import BlockIcon from '@mui/icons-material/Block'
@@ -80,6 +87,34 @@ export const StateLegend = () => (
         <LegendGroup title="Done" keys={DONE} />
     </Box>
 )
+
+// An on-demand legend: a small trigger that opens the state legend in a modal,
+// keeping it out of the way until the reader asks for it.
+export const LegendButton = () => {
+    const [open, setOpen] = useState(false)
+    return (
+        <>
+            <Button
+                size="small"
+                variant="text"
+                startIcon={<HelpOutlineIcon />}
+                onClick={() => setOpen(true)}
+                sx={{ flexShrink: 0, color: 'text.secondary', textTransform: 'none' }}
+            >
+                legend
+            </Button>
+            <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth>
+                <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    State legend
+                    <IconButton onClick={() => setOpen(false)} aria-label="close" size="small"><CloseIcon /></IconButton>
+                </DialogTitle>
+                <DialogContent>
+                    <StateLegend />
+                </DialogContent>
+            </Dialog>
+        </>
+    )
+}
 
 // A context/token usage bar against the agent's budget.
 export const TokenMeter = ({ used, budget }) => {
