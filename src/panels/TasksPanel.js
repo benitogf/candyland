@@ -52,13 +52,15 @@ const buildDag = (run) => {
     return [...lines, ...CLASS_DEFS.map((c) => '  ' + c)].join('\n')
 }
 
-const TasksPanel = ({ run }) => (
+const TasksPanel = ({ run }) => {
+    const tasks = run.tasks || []
+    return (
     <Box>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
             the structural lens — how the feature was partitioned into fork-safe tasks, and how they depend on each other
         </Typography>
 
-        {run.hasDag && run.tasks.length > 0 && (
+        {run.hasDag && tasks.length > 0 && (
             <DiagramCard caption="Edges are task dependencies. Tasks with no shared edge own disjoint files and run in parallel; integration and the PR wait for the slices they depend on.">
                 <MermaidDiagram chart={buildDag(run)} />
             </DiagramCard>
@@ -76,22 +78,24 @@ const TasksPanel = ({ run }) => (
                     </TableRow>
                 </TableHead>
                 <TableBody>
-                    {run.tasks.length === 0 && (
+                    {tasks.length === 0 && (
                         <TableRow>
                             <TableCell colSpan={5} sx={{ color: 'text.secondary' }}>No tasks partitioned yet — still planning.</TableCell>
                         </TableRow>
                     )}
-                    {run.tasks.map((t) => {
+                    {tasks.map((t) => {
                         const owner = agentInRun(run, t.owner)
                         const complete = isDone(t.state)
+                        const deps = t.deps || []
+                        const files = t.files || []
                         return (
                             <TableRow key={t.id} sx={{ backgroundColor: complete ? 'rgba(123,220,106,0.05)' : 'transparent' }}>
                                 <TableCell>
                                     <Typography variant="body2" sx={{ fontWeight: 600, color: complete ? 'text.secondary' : 'text.primary' }}>{t.title}</Typography>
-                                    {t.deps.length > 0 && <Typography variant="caption" color="text.secondary">after: {t.deps.join(', ')}</Typography>}
+                                    {deps.length > 0 && <Typography variant="caption" color="text.secondary">after: {deps.join(', ')}</Typography>}
                                 </TableCell>
                                 <TableCell sx={{ whiteSpace: 'nowrap', color: 'text.secondary' }}>{owner ? `${owner.emoji} ${owner.role}` : '— (queued)'}</TableCell>
-                                <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>{t.files.join(', ')}</TableCell>
+                                <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>{files.join(', ')}</TableCell>
                                 <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>{t.test}</TableCell>
                                 <TableCell><StateChip state={t.state} /></TableCell>
                             </TableRow>
@@ -101,6 +105,7 @@ const TasksPanel = ({ run }) => (
             </Table>
         </Card>
     </Box>
-)
+    )
+}
 
 export default TasksPanel
