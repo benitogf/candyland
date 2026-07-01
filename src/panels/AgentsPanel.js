@@ -13,16 +13,22 @@ import { StateChip, TokenMeter } from '../components/StatusBits'
 // `events` is exactly a parsed stream-json stdout — no extra source needed.
 
 // One parsed stream-json event. Text gets a comfortable reading width and
-// line-height so a long burst from an agent stays easy to scan.
+// line-height so a long burst from an agent stays easy to scan. Tool inputs and
+// result/text payloads render the COMPLETE untruncated value: the backend
+// persists the full payload in inputFull/textFull whenever the compact summary
+// dropped characters, so this live output view is never truncated — it falls
+// back to the summary field only when the payload already fit in full.
 const EventLine = ({ ev }) => {
-    const mono = { fontFamily: 'monospace', fontSize: 12.5, lineHeight: 1.7, wordBreak: 'break-word' }
-    if (ev.t === 'system') return <Box sx={{ ...mono, color: candy.grape, mb: 1 }}>● {ev.text}</Box>
-    if (ev.t === 'text') return <Box sx={{ fontSize: 14, lineHeight: 1.75, color: '#e6ddff', my: 1.25, maxWidth: '74ch' }}>{ev.text}</Box>
+    const mono = { fontFamily: 'monospace', fontSize: 12.5, lineHeight: 1.7, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }
+    const text = ev.textFull || ev.text
+    const input = ev.inputFull || ev.input
+    if (ev.t === 'system') return <Box sx={{ ...mono, color: candy.grape, mb: 1 }}>● {text}</Box>
+    if (ev.t === 'text') return <Box sx={{ fontSize: 14, lineHeight: 1.75, color: '#e6ddff', my: 1.25, maxWidth: '74ch', whiteSpace: 'pre-wrap' }}>{text}</Box>
     if (ev.t === 'tool') {
         return (
             <Box sx={{ ...mono, my: 0.5 }}>
                 <Box component="span" sx={{ color: candy.mint, fontWeight: 700 }}>⚒ {ev.name}</Box>
-                {'  '}<Box component="span" sx={{ color: candy.sky }}>{ev.input}</Box>
+                {'  '}<Box component="span" sx={{ color: candy.sky }}>{input}</Box>
             </Box>
         )
     }
@@ -34,7 +40,7 @@ const EventLine = ({ ev }) => {
             </Box>
         )
     }
-    if (ev.t === 'result') return <Box sx={{ ...mono, color: candy.pink, mt: 1 }}>■ {ev.text}</Box>
+    if (ev.t === 'result') return <Box sx={{ ...mono, color: candy.pink, mt: 1 }}>■ {text}</Box>
     return null
 }
 

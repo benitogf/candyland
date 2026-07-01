@@ -46,12 +46,23 @@ if [[ "$prompt" == *"clarifying questions"* ]]; then
   echo '{"type":"result","result":"[]"}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\\"id\\":\\"a\\",\\"title\\":\\"task a\\",\\"files\\":[\\"a.txt\\"],\\"test\\":\\"a_test\\"}]"}]}}'
-  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+  # A long (>300 char) result so the backend truncates the compact summary and
+  # persists the complete payload in textFull. The END marker sits past the cut,
+  # so the agents view (which defaults to the first/tech-lead agent) can only show
+  # it by rendering the full untruncated payload — the runtime proof of c7.
+  long=$(printf 'FULLOUT_BEGIN %0.sX' $(seq 1 400)); long="$long FULLOUT_END_MARKER"
+  echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"result\\":\\"$long\\",\\"usage\\":{\\"output_tokens\\":1}}"
 else
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
   echo "work $$" > "candyland_$$.txt"
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"TEST {\\"pass\\":1,\\"fail\\":0}"}]}}'
-  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+  # A deliberately long (>300 char) result so the backend truncates the compact
+  # summary and persists the complete payload in textFull. The END marker sits
+  # past the truncation cut, so the UI can only show it by rendering the full
+  # (untruncated) payload — this is the runtime proof of the untruncated-output
+  # commitment.
+  long=$(printf 'FULLOUT_BEGIN %0.sX' $(seq 1 400)); long="$long FULLOUT_END_MARKER"
+  echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"result\\":\\"$long\\",\\"usage\\":{\\"output_tokens\\":2}}"
 fi
 `)
 chmodSync(stubClaude, 0o755)
@@ -108,6 +119,31 @@ try {
         const bodyLen = (await p.locator('body').innerText().catch(() => '')).trim().length
         check(`route renders: ${name}`, pageErrors.length === before && bodyLen > 0, `${path} · body ${bodyLen} chars`)
     }
+
+    // ── Behavior assertions (not just "renders"): each commitment proven live. ──
+
+    // c7 — untruncated output: the agents view must show the FULL result payload,
+    // including the END marker that sits past the compact-summary truncation cut.
+    await p.goto(UI + `/run/${runId}/agents`, { waitUntil: 'networkidle' })
+    await sleep(400)
+    const agentsText = (await p.locator('body').innerText().catch(() => '')).trim()
+    const fullShown = agentsText.includes('FULLOUT_END_MARKER')
+    check('untruncated agent output rendered in full', fullShown,
+        fullShown ? 'END marker past the truncation cut is rendered'
+            : agentsText.includes('FULLOUT_BEGIN') ? 'begin shown but END marker truncated' : 'no full-output payload found')
+
+    // c6 + c9 — Work list filter labels render, and the parent filter DEFAULTS to
+    // "No parent" (top-level work leads; children are reached by drilling in).
+    await p.goto(UI + '/tasks', { waitUntil: 'networkidle' })
+    await sleep(400)
+    const tasksText = (await p.locator('body').innerText().catch(() => '')).trim()
+    check('Work filter labels render', tasksText.includes('Parent') && tasksText.includes('Status'), `body ${tasksText.length} chars`)
+    const parentValue = await p.locator('div[role="combobox"]', { hasText: 'No parent' }).count().catch(() => 0)
+    check('Work list defaults to no-parent', parentValue > 0, parentValue ? 'No parent selected by default' : 'default not "No parent"')
+
+    // c8/c27 — copy-reference action present on the Work list (per-row handle copy).
+    const copyRefs = await p.locator('[aria-label*="opy reference" i], [title*="opy reference" i]').count().catch(() => 0)
+    check('copy-reference action present', copyRefs > 0, `${copyRefs} copy-reference control(s)`)
 
     // Unknown routes redirect home rather than 404-blanking (Router '*' → '/').
     await p.goto(UI + '/does-not-exist', { waitUntil: 'networkidle' })
