@@ -211,3 +211,65 @@ func toLowerASCII(s string) string {
 	}
 	return string(b)
 }
+
+// A targeted review/feedback quest must actually review its PR before it can
+// terminate: when discovery surfaces nothing and no prior tick reviewed the PR,
+// seedReviewItem yields the review itself as a work item (so a child run runs
+// against the PR). Once a tick has launched a run, the review already ran and a
+// later empty discovery is a legitimate stop, not a re-seed.
+func TestSeedReviewItem(t *testing.T) {
+	review := run.Quest{Deliver: run.DeliverReview, TargetPR: 712}
+	it, ok := seedReviewItem(review)
+	if !ok {
+		t.Fatal("a review quest with a target PR and no prior review must seed the PR review")
+	}
+	if it.Classification != reviewClassification || it.Decision != "do" {
+		t.Errorf("seeded item must be a do-decision pr-review, got %+v", it)
+	}
+	if !containsFold(it.Title, "712") {
+		t.Errorf("seeded review title must name the target PR, got %q", it.Title)
+	}
+	if !isSeededReview(it) {
+		t.Error("the seeded item must be recognized as the seeded review (launches even at L1)")
+	}
+	// An agent-authored item that merely reuses the classification string must NOT be
+	// treated as the seeded review — only the conductor's `seeded` flag counts.
+	if isSeededReview(questWorkItem{Classification: reviewClassification}) {
+		t.Error("an agent item with the pr-review classification must not impersonate the seeded review")
+	}
+
+	// Feedback delivery seeds too, with feedback wording.
+	fb, ok := seedReviewItem(run.Quest{Deliver: run.DeliverFeedback, TargetPR: 5})
+	if !ok || !containsFold(fb.Title, "feedback") {
+		t.Errorf("a feedback quest must seed a feedback review, got ok=%v item=%+v", ok, fb)
+	}
+
+	// Once a tick launched a run, the PR was reviewed — no re-seed.
+	reviewed := run.Quest{Deliver: run.DeliverReview, TargetPR: 712, Ticks: []run.Tick{{LaunchedRunIDs: []string{"r9"}}}}
+	if _, ok := seedReviewItem(reviewed); ok {
+		t.Error("a quest that already launched a review run must not re-seed")
+	}
+
+	// A non-targeted quest (no PR, or a build quest) never seeds a PR review.
+	if _, ok := seedReviewItem(run.Quest{Deliver: run.DeliverReview}); ok {
+		t.Error("a review quest with no target PR must not seed")
+	}
+	if _, ok := seedReviewItem(run.Quest{Deliver: run.DeliverPR, TargetPR: 712}); ok {
+		t.Error("a normal (non review/feedback) quest must not seed a PR review")
+	}
+}
+
+// A review quest's terminal summary must name the PR it reviewed and never claim a
+// clean "no actionable findings" in a way that hides whether a review ran: after a
+// review item completes it reports the PR + completed count; only a genuinely
+// reviewed-with-nothing quest reports "no actionable findings" (and still names the PR).
+func TestReviewQuestTerminalSummaryNamesPR(t *testing.T) {
+	ran := &run.Quest{Deliver: run.DeliverReview, TargetPR: 712, ItemsCompleted: 1}
+	if s := questTerminalSummary(ran); !containsFold(s, "712") || !containsFold(s, "review") {
+		t.Errorf("a completed review must name the PR, got %q", s)
+	}
+	none := &run.Quest{Deliver: run.DeliverReview, TargetPR: 712}
+	if s := questTerminalSummary(none); !containsFold(s, "712") {
+		t.Errorf("even a no-finding review must name the PR, got %q", s)
+	}
+}

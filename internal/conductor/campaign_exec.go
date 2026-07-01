@@ -56,6 +56,15 @@ const (
 // Tunable via CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS.
 func maxBriefAttempts() int { return envInt("CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS", 2) }
 
+// maxRemediationRounds bounds how many times the DELIVERY GATE spawns remediation
+// child runs to close commitments the intent review judged unmet before it blocks.
+// A campaign never parks in "blocked" on the FIRST review while it still has the
+// authority to finish the work: an unmet commitment routes back into a fresh child
+// run targeting exactly that commitment, then re-reviews — bounded here so a
+// genuinely un-closeable gap eventually blocks (a real hard blocker) instead of
+// looping forever. Tunable via CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS.
+func maxRemediationRounds() int { return envInt("CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS", 2) }
+
 // campaignTokenCap is the global token cap across the whole campaign. A campaign's
 // own TokenBudget (from the spec) takes precedence when set; otherwise this env cap
 // applies. 0 (neither set) means no cap. When exceeded the supervisor degrades to
@@ -255,16 +264,59 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		return
 	}
 
-	// ── Stage 6: FINAL INTENT REVIEW — per-commitment verdicts with cited evidence. ──
-	review, ok := c.intentReview(ctx, id, cam, brief, folders)
-	if ctx.Err() != nil {
-		return
-	}
-	if !ok {
-		return // the reviewer produced no verdict (blocked) — recorded
+	// ── Stage 6+7: REVIEW → REMEDIATE unmet commitments → DELIVER. ──
+	// A campaign never parks in "blocked" on the first failing review while it still
+	// has the authority to finish the work. Each round reviews, and if the review
+	// finds `missed` commitments it spawns remediation child runs targeting exactly
+	// those (plus any `partial`) and re-reviews — bounded by maxRemediationRounds so a
+	// genuinely un-closeable gap eventually blocks (a real hard blocker) rather than
+	// parking undone on the first look. Only when no `missed` remain does it deliver
+	// (a lingering `partial` annotates the PR, as before — it does not block).
+	rounds := maxRemediationRounds()
+	var review run.IntentReview
+	for round := 0; ; round++ {
+		var ok bool
+		review, ok = c.intentReview(ctx, id, cam, brief, folders)
+		if ctx.Err() != nil {
+			return
+		}
+		if !ok {
+			return // the reviewer produced no verdict (blocked) — recorded
+		}
+
+		missed := missedCommitments(brief, review)
+		if len(missed) == 0 {
+			break // no blocking gap — deliver (partials annotate the PR)
+		}
+		if round >= rounds {
+			c.blockCampaign(id, fmt.Sprintf("intent review still finds %d commitment(s) missed after %d remediation round(s) — %s. The campaign branch persists; resume to retry.", len(missed), rounds, strings.Join(missed, "; ")))
+			return
+		}
+
+		remediation := remediationPrompts(cam, brief, review)
+		if len(remediation) == 0 {
+			// Defensive: missed with no addressable commitment text — block rather
+			// than loop with nothing to spawn.
+			c.blockCampaign(id, fmt.Sprintf("intent review found %d missed commitment(s) with no remediable task text — %s. The campaign branch persists; resume to retry.", len(missed), strings.Join(missed, "; ")))
+			return
+		}
+		c.appendCampaignNote(id, fmt.Sprintf("remediation round %d/%d: spawning %d child task(s) to close %d missed commitment(s)", round+1, rounds, len(remediation), len(missed)))
+		if !c.executeChildren(ctx, id, cam, folders, remediation) {
+			// executeChildren blocked with a generic "no child delivered work" reason
+			// (or ctx was cancelled). When it's the former, replace it with the
+			// actionable missed-commitment context so the operator sees WHICH
+			// commitments are stuck, not just that nothing landed.
+			if ctx.Err() == nil {
+				c.blockCampaign(id, fmt.Sprintf("remediation for %d missed commitment(s) delivered no work — %s. The campaign branch persists; resume to retry.", len(missed), strings.Join(missed, "; ")))
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		cam, _ = c.GetCampaign(id) // refresh so the next review sees remediation state
 	}
 
-	// ── Stage 7: DELIVERY GATE — `missed` blocks the repo PR; `partial` annotates. ──
 	c.deliverCampaign(ctx, id, folders, brief, review)
 }
 
@@ -640,6 +692,57 @@ func partialAnnotations(brief run.IntentBrief, review run.IntentReview) []string
 		}
 	}
 	return out
+}
+
+// remediationPrompts builds one targeted child run per commitment the intent
+// review judged `missed` or `partial` — the work the campaign must still finish
+// before it can deliver. Each prompt names the specific commitment and quotes the
+// reviewer's evidence for what is missing, so the child's tech-lead/coders close
+// that exact gap on the campaign branch (Deliver=branch, set at launch) rather
+// than re-running the whole decomposition. Missed commitments come first (they
+// block); partials follow (deliver-blocking only if they regress to missed).
+func remediationPrompts(cam run.Campaign, brief run.IntentBrief, review run.IntentReview) []childPrompt {
+	byID := commitmentByID(brief)
+	var missed, partial []childPrompt
+	for _, v := range review.Verdicts {
+		verdict := strings.ToLower(strings.TrimSpace(v.Verdict))
+		if verdict != "missed" && verdict != "partial" {
+			continue
+		}
+		stmt := strings.TrimSpace(orDefault(byID[v.CommitmentID], v.CommitmentID))
+		if stmt == "" {
+			continue
+		}
+		cp := childPrompt{
+			title:  truncate("remediate: "+stmt, 72),
+			prompt: remediationChildPrompt(cam, brief, stmt, verdict, v.Evidence),
+		}
+		if verdict == "missed" {
+			missed = append(missed, cp)
+		} else {
+			partial = append(partial, cp)
+		}
+	}
+	return append(missed, partial...)
+}
+
+// remediationChildPrompt frames a single unmet commitment as a child run: it states
+// the commitment, the reviewer's verdict + cited evidence for what is still missing,
+// and the campaign scope, so the child delivers exactly that gap on the campaign
+// branch. It reuses the campaign framing so the child inherits the same bounds.
+func remediationChildPrompt(cam run.Campaign, brief run.IntentBrief, stmt, verdict string, evidence []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "REMEDIATE an unmet campaign commitment. The final intent review judged this commitment %q — deliver the missing work so it becomes fully satisfied.\n\n", verdict)
+	fmt.Fprintf(&b, "COMMITMENT: %s\n", stmt)
+	if ev := strings.TrimSpace(strings.Join(evidence, "; ")); ev != "" {
+		fmt.Fprintf(&b, "WHAT IS STILL MISSING (reviewer evidence): %s\n", ev)
+	}
+	fmt.Fprintf(&b, "\nThis is remediation work for the campaign goal: %s\n", brief.RestatedGoal)
+	if len(brief.ScopeByDomain) > 0 {
+		fmt.Fprintf(&b, "Stay in scope: %s\n", strings.Join(brief.ScopeByDomain, "; "))
+	}
+	fmt.Fprintf(&b, "Deliver only the work needed to satisfy this commitment; commit it onto the campaign branch. Do not re-do already-satisfied commitments.\n")
+	return b.String()
 }
 
 func commitmentByID(brief run.IntentBrief) map[string]string {

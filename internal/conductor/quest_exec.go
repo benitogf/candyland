@@ -235,13 +235,21 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		return false
 	}
 
-	// No safe work surfaced this tick → stop the loop (done — nothing left to do).
+	// No safe work surfaced this tick. Normally that means the loop is done. But a
+	// targeted review/feedback quest must actually review its PR before it can
+	// terminate as "reviewed": if nothing surfaced and the PR was never reviewed,
+	// seed the review itself as the work item so a child run runs against the PR.
 	accepted := acceptedItems(items)
 	if len(items) == 0 || len(accepted) == 0 {
-		rec.NextAction = "no safe work remaining — stopping"
-		c.recordTick(id, rec, tokens, nil)
-		c.finishQuest(id)
-		return false
+		if seed, ok := seedReviewItem(q); ok {
+			accepted = []questWorkItem{seed}
+			rec.DiscoverySummary = fmt.Sprintf("discovery surfaced nothing — seeding a review of target PR #%d (it was not yet reviewed)", q.TargetPR)
+		} else {
+			rec.NextAction = "no safe work remaining — stopping"
+			c.recordTick(id, rec, tokens, nil)
+			c.finishQuest(id)
+			return false
+		}
 	}
 
 	// ── Launch: report-only (L1) records the items but launches nothing; L2/L3
@@ -257,9 +265,12 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 			Classification: it.Classification,
 			Decision:       orDefault(it.Decision, "do"),
 		}
-		if q.AutonomyLevel == run.AutonomyReportOnly {
+		if q.AutonomyLevel == run.AutonomyReportOnly && !isSeededReview(it) {
 			// L1: surface only — no child-run edits/PRs. Skipped disposition (reported,
-			// not acted on), which is the report-only contract.
+			// not acted on), which is the report-only contract. The one carve-out is the
+			// seeded PR review of a targeted review/feedback quest: reviewing the PR IS
+			// the quest's whole job (not discretionary execution work), so it launches
+			// even at L1 — otherwise the quest would report "reviewed" without reviewing.
 			rec.TriageDecisions = append(rec.TriageDecisions, it.Title+": report-only (L1) — surfaced, not launched")
 			w.Disposition = "skipped"
 			ledger = append(ledger, w)
@@ -293,9 +304,12 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		}
 		ledger = append(ledger, w)
 	}
-	if q.AutonomyLevel == run.AutonomyReportOnly {
+	switch {
+	case len(rec.LaunchedRunIDs) > 0 && q.AutonomyLevel == run.AutonomyReportOnly:
+		rec.NextAction = "report-only — reviewed the target PR, stopping"
+	case q.AutonomyLevel == run.AutonomyReportOnly:
 		rec.NextAction = "report-only — surfaced findings, launched nothing"
-	} else {
+	default:
 		rec.NextAction = "launched child runs — continue next tick"
 	}
 
@@ -530,9 +544,9 @@ func questTerminalStatus(q *run.Quest) string {
 func questTerminalSummary(q *run.Quest) string {
 	if q.Deliver == run.DeliverReview {
 		if q.ItemsCompleted > 0 {
-			return fmt.Sprintf("reviewed (findings applied to PR #%d)", q.TargetPR)
+			return fmt.Sprintf("reviewed PR #%d (%d review item(s) completed)", q.TargetPR, q.ItemsCompleted)
 		}
-		return "reviewed (no actionable findings)"
+		return fmt.Sprintf("reviewed PR #%d — no actionable findings", q.TargetPR)
 	}
 	if !questIsNoOp(q) {
 		return ""
@@ -609,6 +623,11 @@ type questWorkItem struct {
 	Evidence       string `json:"evidence"`
 	Classification string `json:"classification"`
 	Decision       string `json:"decision"` // do | skip | block
+	// seeded marks the internally-generated PR-review item (seedReviewItem). It is
+	// unexported and json:"-", so a quest-lead agent's parsed output can never set
+	// it — only the conductor can, which is what lets the L1 launch carve-out apply
+	// strictly to the one seeded review and never to an agent-authored item.
+	seeded bool `json:"-"`
 }
 
 // parseWorkItems extracts the quest lead's verdict from its output. A WORKITEMS_NONE
@@ -646,6 +665,60 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 	return out
 }
 
+// reviewClassification is the classification tag on the seeded PR-review work item
+// (surfaced in the tick ledger/UI). The signal that lets it launch even under L1 is
+// the unexported questWorkItem.seeded flag, NOT this string — so an agent-authored
+// item can never impersonate the seeded review by reusing this classification.
+const reviewClassification = "pr-review"
+
+// isTargetedReviewQuest reports whether a quest's whole job is to examine one
+// EXISTING PR (review or feedback delivery against a concrete target PR).
+func isTargetedReviewQuest(q run.Quest) bool {
+	return q.TargetPR > 0 && (q.Deliver == run.DeliverReview || q.Deliver == run.DeliverFeedback)
+}
+
+// questReviewRan reports whether a prior tick already launched a child run (i.e.
+// the target PR was actually reviewed once), so a later empty discovery is a
+// legitimate "no more findings" rather than a no-op that skipped the review.
+func questReviewRan(q run.Quest) bool {
+	for _, t := range q.Ticks {
+		if len(t.LaunchedRunIDs) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// seedReviewItem returns the PR review itself as the work item when a targeted
+// review/feedback quest surfaced nothing but has not yet actually reviewed its PR.
+// Without it, such a quest terminates as "reviewed (no actionable findings)"
+// without ever fetching the PR — the review that never ran. The child run this
+// seeds carries the target PR + the review/feedback delivery machinery and the
+// gh/diff tooling, so it performs the real review.
+func seedReviewItem(q run.Quest) (questWorkItem, bool) {
+	if !isTargetedReviewQuest(q) || questReviewRan(q) {
+		return questWorkItem{}, false
+	}
+	verb := "Review"
+	if q.Deliver == run.DeliverFeedback {
+		verb = "Review and address feedback on"
+	}
+	return questWorkItem{
+		Title:          fmt.Sprintf("%s PR #%d and address any findings", verb, q.TargetPR),
+		Evidence:       "a review/feedback quest must actually read its target PR before it can report on it",
+		Classification: reviewClassification,
+		Decision:       "do",
+		seeded:         true,
+	}, true
+}
+
+// isSeededReview reports whether an item is the conductor-seeded PR review — the one
+// item that must launch even under L1. It keys on the unexported `seeded` flag (not
+// the agent-authored classification), so a quest-lead item can never impersonate it.
+func isSeededReview(it questWorkItem) bool {
+	return it.seeded
+}
+
 // --- prompts (composition, not inlined rubrics) ---
 
 // questLeadBootstrap is the CONSTANT discovery/triage prompt. Like the tech-lead /
@@ -658,7 +731,8 @@ const questLeadBootstrap = "You are the quest lead driving one tick of an iterat
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"core/loop\" (loop fundamentals: cadence, skip-streak, durability), " +
 	"kb_get name=\"core/todo-audit\" (how to discover, prioritize, and fork-gate work items), and kb_get name=\"core/completion\" (the three dispositions and the definition of done). " +
 	"Do NOT improvise your own rubric — use the doctrine you loaded. " +
-	"Discover the next safe, in-scope work item(s): explore the folder, find concrete work that fits the objective and respects the scope and safety boundary, and TRIAGE each (is it safe? in scope? a single self-contained change?). " +
+	"Discover the next safe, in-scope work item(s): if the brief names a TARGET PR, that PR IS the subject — you MUST actually fetch and read it (its diff and review comments, e.g. `gh pr diff <n>` / `gh pr view <n>`) and base every finding on what you read; otherwise explore the folder for concrete work. Then TRIAGE each (is it safe? in scope? a single self-contained change?). " +
+	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `WORKITEMS_NONE` (no safe in-scope work remains this tick) " +
 	"OR `WORKITEMS ` followed by a JSON array " + `[{"title":"…","evidence":"why it's needed","classification":"category","decision":"do|skip|block"}]` +
 	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. Do not ask questions and do not defer."
@@ -680,6 +754,16 @@ func questBriefPrompt(q run.Quest, tickID string) string {
 	}
 	if q.Stop != "" {
 		fmt.Fprintf(&b, "STOP CRITERIA: %s\n", q.Stop)
+	}
+	// A review/feedback quest targets an EXISTING PR — name it and make reading it a
+	// precondition of any verdict, so the lead can't report "no findings" on a PR it
+	// never opened.
+	if q.TargetPR > 0 && (q.Deliver == run.DeliverReview || q.Deliver == run.DeliverFeedback) {
+		mode := "REVIEW"
+		if q.Deliver == run.DeliverFeedback {
+			mode = "FEEDBACK"
+		}
+		fmt.Fprintf(&b, "TARGET PR: #%d — this is %s work on that EXISTING PR. Fetch and read the PR (its diff and review comments) BEFORE surfacing anything; every finding must come from what you read. Do NOT emit WORKITEMS_NONE without having read PR #%d.\n", q.TargetPR, mode, q.TargetPR)
 	}
 	fmt.Fprintf(&b, "TICK: %s\n", tickID)
 	return b.String()

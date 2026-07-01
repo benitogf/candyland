@@ -282,3 +282,76 @@ INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
 		t.Error("text with no INTENT_REVIEW line must report ok=false")
 	}
 }
+
+// campaignRemediationClaude drives the remediation loop: the intent reviewer judges
+// c2 `missed` on the FIRST review, then `satisfied` on the re-review after
+// remediation (flipped via CANDYLAND_REVIEW_FIXTURE). It proves a campaign does NOT
+// park in "blocked" on the first miss — it spawns a remediation child targeting the
+// missed commitment, re-reviews, and delivers.
+var campaignRemediationClaude = stubClaude(
+	role("intent lead", `if [[ -f "$CANDYLAND_BRIEF_FIXTURE" ]]; then
+  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"add csv export to the reports page\",\"scopeByDomain\":[\"backend\"],\"draftTasks\":[\"implement csv export endpoint\"],\"commitments\":[{\"id\":\"c1\",\"statement\":\"export endpoint exists\"},{\"id\":\"c2\",\"statement\":\"export includes totals\"}]}`)+`  `+emitResult("brief", 2)+`else
+  touch "$CANDYLAND_BRIEF_FIXTURE"
+  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"totally unrelated nonsense\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+`  `+emitResult("brief", 1)+`fi
+`),
+	role("intent reviewer", `if [[ -f "$CANDYLAND_REVIEW_FIXTURE" ]]; then verdict=satisfied; else verdict=missed; touch "$CANDYLAND_REVIEW_FIXTURE"; fi
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$verdict\\\",\\\"evidence\\\":[\\\"totals column\\\"]}]}\"}]}}"
+`+emitResult("reviewed", 1)),
+	roleCleanReviewer,
+	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
+	coder(writeWorktreeFile("work_$$.txt"), emitTest(1, 0)),
+)
+
+// A missed commitment must NOT immediately park the campaign in "blocked": the
+// delivery gate spawns a remediation child for the missed commitment, re-reviews,
+// and — once the re-review clears — delivers the PR. This is the "campaigns cannot
+// block without finishing the work" contract.
+func TestCampaignRemediatesMissedThenDelivers(t *testing.T) {
+	c, repo := deliveryConductor(t, campaignRemediationClaude)
+	t.Setenv("CANDYLAND_BRIEF_FIXTURE", filepath.Join(t.TempDir(), "brief-first"))
+	t.Setenv("CANDYLAND_REVIEW_FIXTURE", filepath.Join(t.TempDir(), "review-first"))
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:         "add CSV export to the reports page",
+		Folders:       []string{repo},
+		AutonomyLevel: run.AutonomyUnattended,
+	})
+	c.BeginCampaign(id)
+
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 120*time.Second)
+
+	if cam.Status != "done" {
+		t.Fatalf("campaign must remediate the missed commitment and deliver, got status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	// An initial child (one draft task) PLUS a remediation child for the missed c2.
+	if len(cam.RunIDs) < 2 {
+		t.Fatalf("expected an initial child + a remediation child, got runIDs=%v", cam.RunIDs)
+	}
+	// The final (post-remediation) review shows c2 satisfied.
+	c2 := ""
+	for _, v := range cam.IntentReview.Verdicts {
+		if v.CommitmentID == "c2" {
+			c2 = v.Verdict
+		}
+	}
+	if c2 != "satisfied" {
+		t.Errorf("final review must show c2 satisfied after remediation, got %q", c2)
+	}
+	// A durable remediation note records the loop-back (not a silent re-run).
+	note := false
+	for _, n := range cam.Notes {
+		if strings.Contains(n, "remediation round") {
+			note = true
+		}
+	}
+	if !note {
+		t.Errorf("a remediation round note must be recorded, got notes=%v", cam.Notes)
+	}
+	// Delivery happened: the PR opened.
+	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
+		t.Errorf("a remediated campaign must open its PR, got %+v", cam.PRs)
+	}
+}
