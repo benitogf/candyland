@@ -31,7 +31,6 @@ import RunSwitcher from './RunSwitcher'
 import AgentsPanel from '../panels/AgentsPanel'
 import BoardPanel from '../panels/BoardPanel'
 import TasksPanel from '../panels/TasksPanel'
-import SessionsPanel from '../panels/SessionsPanel'
 import AuditPanel from '../panels/AuditPanel'
 
 const TABS = [
@@ -39,7 +38,6 @@ const TABS = [
     { key: 'agents', label: 'Agents' },
     { key: 'board', label: 'Board' },
     { key: 'tasks', label: 'Tasks' },
-    { key: 'sessions', label: 'Sessions' },
     { key: 'audit', label: 'Audit' },
 ]
 
@@ -104,11 +102,10 @@ const Scrollable = ({ children }) => (
     <Box sx={{ height: { md: '100%' }, overflowY: { md: 'auto' }, overflowX: 'hidden' }}>{children}</Box>
 )
 
-// Agents/Sessions fill the height and own their internal scroll; the rest scroll
+// Agents fill the height and own their internal scroll; the rest scroll
 // inside a wrapper. Either way, overflow stays inside the body — not the layout.
 const panelFor = (key, run) => {
     if (key === 'agents') return <AgentsPanel run={run} />
-    if (key === 'sessions') return <SessionsPanel run={run} />
     if (key === 'board') return <Scrollable><BoardPanel run={run} /></Scrollable>
     if (key === 'tasks') return <Scrollable><TasksPanel run={run} /></Scrollable>
     if (key === 'audit') return <Scrollable><AuditPanel run={run} /></Scrollable>
