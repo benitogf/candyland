@@ -10,6 +10,8 @@ import CircularProgress from '@mui/material/CircularProgress'
 import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
+import Tab from '@mui/material/Tab'
+import Tabs from '@mui/material/Tabs'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
@@ -88,6 +90,7 @@ const QuestWorkspace = ({ id, onClose }) => {
         )
     }
 
+    const [tab, setTab] = React.useState('activity')
     const fail = (e) => toast(e?.message || 'Command failed — is the candyland server reachable?')
     const childRuns = allRuns.filter((r) => r.questId === quest.id)
     const ticks = quest.ticks || []
@@ -118,17 +121,30 @@ const QuestWorkspace = ({ id, onClose }) => {
                 </Box>
             </Box>
 
+            <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 } }}>
+                <Box sx={{ maxWidth: 1100, mx: 'auto' }}>
+                    <Tabs value={tab} onChange={(_, v) => setTab(v)} aria-label="Quest detail sections">
+                        <Tab value="activity" label="Activity" />
+                        <Tab value="objective" label="Objective & intent" />
+                    </Tabs>
+                </Box>
+            </Box>
+
             <Box sx={{ flexGrow: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                 <Box sx={{ maxWidth: 1100, mx: 'auto', px: { xs: 2, sm: 4 }, py: 3 }}>
                     {quest.pauseReason && (quest.status === 'paused' || quest.status === 'blocked') && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {quest.pauseReason}</Alert>
                     )}
 
-                    <Block title="objective">
-                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{quest.originalObjective || quest.objective}</Typography>
-                        {quest.scope && <Typography variant="body2" sx={{ mt: 1 }}><b>Scope:</b> {quest.scope}</Typography>}
-                    </Block>
+                    {tab === 'objective' && (
+                        <Block title="objective">
+                            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{quest.originalObjective || quest.objective}</Typography>
+                            {quest.scope && <Typography variant="body2" sx={{ mt: 1 }}><b>Scope:</b> {quest.scope}</Typography>}
+                        </Block>
+                    )}
 
+                    {tab === 'activity' && (
+                    <>
                     <Block title="current tick">
                         {currentTick ? (
                             <>
@@ -171,6 +187,8 @@ const QuestWorkspace = ({ id, onClose }) => {
                                 </Box>
                             ))}
                     </Block>
+                    </>
+                    )}
                 </Box>
             </Box>
         </Dialog>
