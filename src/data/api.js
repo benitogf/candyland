@@ -2,8 +2,8 @@ import { domain, ssl } from '../config'
 
 // REST calls to the conductor. Candyland is observe-only: runs are CREATED and
 // STARTED by detritus over REST (POST /api/runs → /api/runs/{id}/begin). The UI
-// only observes and controls EXISTING runs (stop / restart / cancel / archive /
-// edit) — it never creates or plans a run.
+// only observes and controls EXISTING runs (stop / restart / cancel / edit) —
+// it never creates or plans a run.
 const base = `${ssl ? 'https' : 'http'}://${domain}/api`
 
 const post = async (path, body) => {
@@ -28,9 +28,6 @@ export const commandRun = (id, command) => post(`/runs/${id}/command`, { command
 // Cancel: abandon a run (works while still in the planning Q&A, where stop has no
 // executor to reach). The run is kept as "cancelled" in the Tasks history.
 export const cancelRun = (id) => post(`/runs/${id}/cancel`)
-
-// Archive: clear a run from the dashboard, keeping it in the Tasks history.
-export const archiveRun = (id) => post(`/runs/${id}/archive`)
 
 // Edit: change a finished run's task in place and reset it to planning, then it
 // re-runs. Distinct from restart (re-run as-is).
