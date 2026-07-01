@@ -34,9 +34,11 @@ import TasksPanel from '../panels/TasksPanel'
 import SessionsPanel from '../panels/SessionsPanel'
 import AuditPanel from '../panels/AuditPanel'
 
+// Agents (live states + full output) is the default lens for a task run — the
+// thing you want on landing. Overview/intent is a secondary tab.
 const TABS = [
-    { key: 'overview', label: 'Overview' },
     { key: 'agents', label: 'Agents' },
+    { key: 'overview', label: 'Overview' },
     { key: 'board', label: 'Board' },
     { key: 'tasks', label: 'Tasks' },
     { key: 'sessions', label: 'Sessions' },
@@ -253,7 +255,7 @@ const CancelControl = ({ onCancel }) => (
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
     const [editing, setEditing] = useState(false)
     const isPlanning = !!planning
-    const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
+    const active = TABS.some((t) => t.key === tab) ? tab : 'agents'
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = !isPlanning
