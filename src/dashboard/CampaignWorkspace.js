@@ -10,6 +10,10 @@ import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
 import Typography from '@mui/material/Typography'
+import Accordion from '@mui/material/Accordion'
+import AccordionSummary from '@mui/material/AccordionSummary'
+import AccordionDetails from '@mui/material/AccordionDetails'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import CloseIcon from '@mui/icons-material/Close'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
@@ -25,6 +29,17 @@ const Block = ({ title, children }) => (
             {children}
         </CardContent>
     </Card>
+)
+
+// Secondary, collapsed-by-default section — used to tuck the campaign intent
+// below the live child/agent activity that now leads the workspace.
+const CollapsedBlock = ({ title, children }) => (
+    <Accordion disableGutters sx={{ mb: 2.5, backgroundImage: 'none' }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="overline" color="secondary">{title}</Typography>
+        </AccordionSummary>
+        <AccordionDetails>{children}</AccordionDetails>
+    </Accordion>
 )
 
 const Empty = ({ children }) => <Typography variant="body2" color="text.secondary">{children}</Typography>
@@ -102,36 +117,6 @@ const CampaignWorkspace = ({ id, onClose }) => {
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {campaign.pauseReason}</Alert>
                     )}
 
-                    <Block title="original intent">
-                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{campaign.originalInput}</Typography>
-                    </Block>
-
-                    <Block title="intent brief">
-                        {brief.restatedGoal
-                            ? (
-                                <>
-                                    <Typography variant="body2"><b>Restated goal:</b> {brief.restatedGoal}</Typography>
-                                    {brief.roughSizing && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Sizing: {brief.roughSizing}</Typography>}
-                                    {brief.scopeByDomain?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">scope by domain</Typography><Bullets items={brief.scopeByDomain} /></Box>}
-                                    {commitments.length > 0 && (
-                                        <Box sx={{ mt: 1.5 }}>
-                                            <Typography variant="caption" color="text.secondary">commitments</Typography>
-                                            {commitments.map((c) => (
-                                                <Typography key={c.id} component="div" variant="body2" color="text.secondary" sx={{ pl: 1 }}>• {c.statement}</Typography>
-                                            ))}
-                                        </Box>
-                                    )}
-                                    {brief.openQuestions?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">open questions</Typography><Bullets items={brief.openQuestions} /></Box>}
-                                </>
-                            )
-                            : <Empty>Brief not yet produced.</Empty>}
-                    </Block>
-
-                    <Block title="gates">
-                        <Gate label="brief gate" gate={campaign.briefGate} />
-                        <Gate label="plan gate" gate={campaign.planGate} />
-                    </Block>
-
                     <Block title={`child quests · ${childQuests.length}`}>
                         {childQuests.length === 0
                             ? <Empty>No child quests launched yet.</Empty>
@@ -187,6 +172,36 @@ const CampaignWorkspace = ({ id, onClose }) => {
                                 )
                             })}
                     </Block>
+
+                    <CollapsedBlock title="gates">
+                        <Gate label="brief gate" gate={campaign.briefGate} />
+                        <Gate label="plan gate" gate={campaign.planGate} />
+                    </CollapsedBlock>
+
+                    <CollapsedBlock title="original intent">
+                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{campaign.originalInput}</Typography>
+                    </CollapsedBlock>
+
+                    <CollapsedBlock title="intent brief">
+                        {brief.restatedGoal
+                            ? (
+                                <>
+                                    <Typography variant="body2"><b>Restated goal:</b> {brief.restatedGoal}</Typography>
+                                    {brief.roughSizing && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Sizing: {brief.roughSizing}</Typography>}
+                                    {brief.scopeByDomain?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">scope by domain</Typography><Bullets items={brief.scopeByDomain} /></Box>}
+                                    {commitments.length > 0 && (
+                                        <Box sx={{ mt: 1.5 }}>
+                                            <Typography variant="caption" color="text.secondary">commitments</Typography>
+                                            {commitments.map((c) => (
+                                                <Typography key={c.id} component="div" variant="body2" color="text.secondary" sx={{ pl: 1 }}>• {c.statement}</Typography>
+                                            ))}
+                                        </Box>
+                                    )}
+                                    {brief.openQuestions?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">open questions</Typography><Bullets items={brief.openQuestions} /></Box>}
+                                </>
+                            )
+                            : <Empty>Brief not yet produced.</Empty>}
+                    </CollapsedBlock>
                 </Box>
             </Box>
         </Dialog>
