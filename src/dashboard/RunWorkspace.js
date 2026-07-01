@@ -36,7 +36,6 @@ import TasksPanel from '../panels/TasksPanel'
 const TABS = [
     { key: 'agents', label: 'Agents' },
     { key: 'overview', label: 'Overview' },
-    { key: 'board', label: 'Board' },
     { key: 'tasks', label: 'Tasks' },
 ]
 
