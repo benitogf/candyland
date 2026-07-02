@@ -89,6 +89,56 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	}
 }
 
+// The origin session's MCP servers (exported as CANDYLAND_INHERITED_MCP) are
+// merged into every agent's --mcp-config, so a spawned coder inherits the same
+// tool surface the human had. candyland's own entries win on any name conflict.
+func TestBusMCPConfigInheritsOriginServers(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	// Inherit an inline JSON document with a foreign server plus a candyland-comms
+	// entry that MUST be overridden by candyland's own app-hosted endpoint.
+	t.Setenv("CANDYLAND_INHERITED_MCP", `{"mcpServers":{"playwright":{"command":"npx","args":["playwright-mcp"]},"candyland-comms":{"type":"http","url":"http://stale/mcp"}}}`)
+
+	cfg := readConfig(t, c.busMCPConfig("run1", "coder-1"))
+	pw, ok := cfg.MCPServers["playwright"]
+	if !ok || pw.Command != "npx" || len(pw.Args) != 1 || pw.Args[0] != "playwright-mcp" {
+		t.Errorf("inherited playwright server missing/wrong: %+v", cfg.MCPServers["playwright"])
+	}
+	comm := cfg.MCPServers["candyland-comms"]
+	if comm.Type != "http" || !strings.HasSuffix(comm.URL, "/mcp/comms/coder-1") {
+		t.Errorf("candyland-comms must override the inherited stale entry, got %+v", comm)
+	}
+
+	// A file path is also accepted.
+	f, err := os.CreateTemp(t.TempDir(), "mcp-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"mcpServers":{"fromfile":{"command":"foo"}}}`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	t.Setenv("CANDYLAND_INHERITED_MCP", f.Name())
+	cfg = readConfig(t, c.busMCPConfig("run1", "coder-2"))
+	if ff, ok := cfg.MCPServers["fromfile"]; !ok || ff.Command != "foo" {
+		t.Errorf("expected server inherited from file path, got %+v", cfg.MCPServers)
+	}
+
+	// Malformed input degrades to just candyland's own entries — never an error.
+	t.Setenv("CANDYLAND_INHERITED_MCP", "not json and not a path")
+	cfg = readConfig(t, c.busMCPConfig("run1", "coder-3"))
+	if _, ok := cfg.MCPServers["candyland-comms"]; !ok {
+		t.Errorf("malformed inherited config must still yield candyland-comms: %+v", cfg.MCPServers)
+	}
+}
+
 func readConfig(t *testing.T, path string) mcpConfigFile {
 	t.Helper()
 	if path == "" {
