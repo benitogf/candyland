@@ -17,7 +17,6 @@ import AccordionSummary from '@mui/material/AccordionSummary'
 import AccordionDetails from '@mui/material/AccordionDetails'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import CloseIcon from '@mui/icons-material/Close'
-import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 
@@ -28,6 +27,7 @@ import { useSystemStatus } from '../data/system'
 import { stopCampaign } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
+import { CopyPrLink } from '../components/CopyPr'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 const Block = ({ title, children }) => (
@@ -230,7 +230,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                                 <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
                                     <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>{p.repo}</Typography>
                                     {p.url
-                                        ? <Link href={p.url} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                                        ? <CopyPrLink url={p.url} />
                                         : <Typography variant="caption" color="error">{p.err || 'failed'}</Typography>}
                                 </Box>
                             ))}

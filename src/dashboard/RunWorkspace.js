@@ -19,7 +19,6 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
-import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import CallMergeIcon from '@mui/icons-material/CallMerge'
 
 import { PHASES } from '../meta/run'
@@ -27,6 +26,7 @@ import { runLabel } from '../util'
 import { deliverOf } from '../data/ooo'
 import { StateChip, LegendButton } from '../components/StatusBits'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
+import { CopyPrButton } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import TasksPanel from '../panels/TasksPanel'
 
@@ -137,16 +137,8 @@ const BranchDelivered = ({ run }) => (
 const FeedbackDelivered = ({ run }) => {
     const num = run.prUrl ? run.prUrl.split('/').pop() : null
     return run.prUrl
-        ? (
-            <Tooltip title="Addressed review feedback and updated the existing PR in place">
-                <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>
-                    Updated PR #{num}
-                </Button>
-            </Tooltip>
-        )
-        : (
-            <Chip label="feedback applied" size="small" color="success" variant="outlined" sx={{ flexShrink: 0 }} />
-        )
+        ? <CopyPrButton url={run.prUrl} label={`Updated PR #${num}`} />
+        : <Chip label="feedback applied" size="small" color="success" variant="outlined" sx={{ flexShrink: 0 }} />
 }
 
 // Review delivery: the run reviewed a PR. Either findings were applied to that
@@ -155,13 +147,7 @@ const FeedbackDelivered = ({ run }) => {
 const ReviewDelivered = ({ run }) => {
     const num = run.prUrl ? run.prUrl.split('/').pop() : null
     return run.prUrl
-        ? (
-            <Tooltip title="Reviewed — findings applied to the PR">
-                <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>
-                    Reviewed · PR #{num}
-                </Button>
-            </Tooltip>
-        )
+        ? <CopyPrButton url={run.prUrl} label={`Reviewed · PR #${num}`} />
         : (
             <Tooltip title="Reviewed — no actionable findings; nothing to apply">
                 <Chip label="reviewed · no findings" size="small" color="success" variant="outlined" sx={{ flexShrink: 0, maxWidth: 280 }} />
@@ -192,7 +178,7 @@ const RunControls = ({ run, controls, done }) => {
     if (!controls.controllable) {
         if (done && hasOutcome) return outcome
         return done && run.prUrl
-            ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />} sx={{ flexShrink: 0 }}>PR #{run.prUrl.split('/').pop()}</Button>
+            ? <CopyPrButton url={run.prUrl} label={`PR #${run.prUrl.split('/').pop()}`} />
             : <Chip label="snapshot" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
     }
     if (controls.status === 'cancelled') {
@@ -206,7 +192,7 @@ const RunControls = ({ run, controls, done }) => {
                     : hasOutcome
                         ? outcome
                         : run.prUrl
-                            ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
+                            ? <CopyPrButton url={run.prUrl} label={`PR #${run.prUrl.split('/').pop()}`} />
                             : <Chip label="completed" size="small" color="success" variant="outlined" />}
             </Box>
         )

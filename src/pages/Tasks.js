@@ -12,7 +12,6 @@ import TableRow from '@mui/material/TableRow'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
-import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
 import { PHASES, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
@@ -20,6 +19,7 @@ import { useRuns, useQuests, useCampaigns, deliverOf } from '../data/ooo'
 import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
 import CopyReference from '../components/CopyReference'
+import { CopyPrLink } from '../components/CopyPr'
 
 // ── The one work/history section ─────────────────────────────────────────────
 // A single section that PIVOTS by level — Runs/Tasks · Quests · Campaigns —
@@ -63,14 +63,14 @@ const PrCell = ({ url, count, shape }) => {
                 ? <DeliveryChip label="committed" title="Committed to the campaign branch — the parent opens the PR" />
                 : shape === 'feedback'
                     ? (url
-                        ? <Link href={url} target="_blank" rel="noreferrer" title="Updated the existing PR in place" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>updated PR #{num} <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                        ? <CopyPrLink url={url} label={`updated PR #${num}`} />
                         : <DeliveryChip label="feedback applied" title="Addressed review feedback in place" />)
                     : shape === 'review'
                         ? (url
-                            ? <Link href={url} target="_blank" rel="noreferrer" title="Reviewed — findings applied to the PR" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>reviewed #{num} <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                            ? <CopyPrLink url={url} label={`reviewed #${num}`} />
                             : <DeliveryChip label="no findings" title="Reviewed — no actionable findings" />)
                         : url
-                            ? <Link href={url} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                            ? <CopyPrLink url={url} />
                             : count
                                 ? <Typography variant="caption" color="text.secondary">{count} PR{count > 1 ? 's' : ''}</Typography>
                                 : <Typography variant="caption" color="text.secondary">—</Typography>}

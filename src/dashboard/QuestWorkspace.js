@@ -16,7 +16,6 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
-import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
 import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
@@ -25,6 +24,7 @@ import { useSystemStatus } from '../data/system'
 import { stopQuest } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
+import { CopyPrLink } from '../components/CopyPr'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 // Section header used across the detail views.
@@ -213,7 +213,7 @@ const QuestWorkspace = ({ id, onClose }) => {
                                 <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
                                     <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>{p.repo}</Typography>
                                     {p.url
-                                        ? <Link href={p.url} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>
+                                        ? <CopyPrLink url={p.url} />
                                         : <Typography variant="caption" color="error">{p.err || 'failed'}</Typography>}
                                 </Box>
                             ))}

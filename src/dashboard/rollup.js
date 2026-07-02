@@ -9,8 +9,8 @@ import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import Typography from '@mui/material/Typography'
 import LinearProgress from '@mui/material/LinearProgress'
-import OpenInNewIcon from '@mui/icons-material/OpenInNew'
-import Link from '@mui/material/Link'
+
+import { CopyPrLink } from '../components/CopyPr'
 
 // Terminal run/quest statuses count as "delivered/finished" for progress.
 const DONE_STATUSES = new Set(['done', 'completed', 'stopped', 'cancelled', 'surfaced-only'])
@@ -77,7 +77,7 @@ export const RepoDelivery = ({ prs }) => {
                     {r.open > 0 && <Chip size="small" variant="outlined" color="success" label={`${r.open} PR${r.open > 1 ? 's' : ''} open`} sx={{ height: 20 }} />}
                     {r.failed > 0 && <Chip size="small" variant="outlined" color="error" label={`${r.failed} failed`} sx={{ height: 20 }} />}
                     {r.urls.map((u, i) => (
-                        <Link key={i} href={u} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.3 }}>PR <OpenInNewIcon sx={{ fontSize: 12 }} /></Link>
+                        <CopyPrLink key={i} url={u} label={r.urls.length > 1 ? `PR ${i + 1}` : 'PR'} />
                     ))}
                 </Box>
             ))}
