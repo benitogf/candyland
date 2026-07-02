@@ -99,6 +99,13 @@ func (c *Conductor) StopQuest(id, reason string) bool {
 	return ok
 }
 
+// ArchiveQuest clears a quest from the dashboard while keeping it in the Work
+// history (hide, never delete). Storage-backed via UpdateQuest, so it works for
+// tracked and untracked quests alike. Returns false for an unknown quest.
+func (c *Conductor) ArchiveQuest(id string) bool {
+	return c.UpdateQuest(id, func(q *run.Quest) { q.Archived = true })
+}
+
 // stopChildRuns halts every still-live run in the set (cascade from a stopped
 // quest or campaign). Command reaches only tracked runs with a live executor;
 // terminal/untracked children have already finished and are skipped.

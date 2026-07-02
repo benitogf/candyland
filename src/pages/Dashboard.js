@@ -4,17 +4,35 @@ import Box from '@mui/material/Box'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
+import IconButton from '@mui/material/IconButton'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import ClearIcon from '@mui/icons-material/Clear'
 
 import { candy } from '../config'
 import { PHASES, STATE_META, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, recency } from '../data/ooo'
+import { archiveRun, archiveQuest, archiveCampaign } from '../data/api'
+import { useToast } from '../feedback'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
 const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled'
 const isParentRunning = (p) => p.status === 'running' || p.status === 'planning' || p.status === 'paused' || p.status === 'blocked'
+// Actively working — no dismiss affordance. Anything else on the dashboard
+// (blocked / paused / stopped / done / failed) can be dismissed to the Work history.
+const isActive = (s) => s === 'running' || s === 'planning'
 const statusLabel = (r) => (r.status === 'done' ? 'Done' : r.status === 'cancelled' ? 'Cancelled' : (PHASES[r.phase] || r.status))
+
+// Dismiss (archive) an item from the dashboard — it stays in the Work history.
+// Only shown for non-running items, since dismissing live work would be surprising.
+const DismissButton = ({ onDismiss }) => (
+    <Tooltip title="Dismiss from dashboard — stays in Work">
+        <IconButton size="small" aria-label="dismiss" onClick={(e) => { e.stopPropagation(); onDismiss() }} sx={{ flexShrink: 0 }}>
+            <ClearIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+    </Tooltip>
+)
 
 const FleetDots = ({ agents = [] }) => (
     <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
@@ -26,13 +44,14 @@ const FleetDots = ({ agents = [] }) => (
     </Box>
 )
 
-// A standalone active run. The landing only ever shows active work, so there is
-// no terminal / clear affordance here — finished runs live in the Work history.
-const RunCard = ({ run, onOpen }) => (
+// A standalone run on the landing. Actively-running runs show status + fleet;
+// a run that has stopped/blocked/failed can be dismissed to the Work history.
+const RunCard = ({ run, onOpen, onDismiss }) => (
     <Card onClick={() => onOpen(run.id)} sx={{ cursor: 'pointer', transition: 'background-color 120ms', '&:hover': { backgroundColor: candy.bgPaperHi } }}>
         <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
+                {!isActive(run.status) && <DismissButton onDismiss={onDismiss} />}
             </Box>
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
                 <Box sx={{ minWidth: 0 }}>
@@ -50,7 +69,7 @@ const RunCard = ({ run, onOpen }) => (
 // count, and one fleet-dot row across all their agents) — never a per-child
 // breakdown. The full breakdown lives in the campaign/quest detail view, which the
 // card drills into via onOpenParent. This keeps the landing scannable.
-const ParentCard = ({ parent, kind, title, children, onOpenParent }) => {
+const ParentCard = ({ parent, kind, title, children, onOpenParent, onDismiss }) => {
     const greenT = children.reduce((n, r) => n + (r.tasksGreen || 0), 0)
     const totalT = children.reduce((n, r) => n + (r.tasksTotal || 0), 0)
     const agents = children.flatMap((r) => r.agents || [])
@@ -63,6 +82,8 @@ const ParentCard = ({ parent, kind, title, children, onOpenParent }) => {
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.25 }}>
                     <Chip size="small" color="secondary" variant="outlined" label={`${kind} · ${parent.id}`} sx={{ height: 20 }} />
                     <Chip size="small" color={STATUS_COLOR[parent.status] || 'default'} variant="outlined" label={parent.status} sx={{ height: 20 }} />
+                    <Box sx={{ flexGrow: 1 }} />
+                    {!isActive(parent.status) && <DismissButton onDismiss={onDismiss} />}
                 </Box>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{title}</Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mt: 0.5 }}>
@@ -74,7 +95,7 @@ const ParentCard = ({ parent, kind, title, children, onOpenParent }) => {
     )
 }
 
-const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
+const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) => {
     // Parents: running campaigns, then running quests NOT owned by a shown campaign
     // (a campaign-owned quest's runs already aggregate under the campaign).
     const runningCampaigns = campaigns.filter(isParentRunning)
@@ -104,6 +125,7 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
                     key={`campaign-${c.id}`} parent={c} kind="campaign"
                     title={c.intentBrief?.restatedGoal || c.originalInput || c.id}
                     children={childrenOfCampaign(c)} onOpenParent={onOpenParent}
+                    onDismiss={() => onDismiss('campaign', c.id)}
                 />
             ),
         })),
@@ -114,10 +136,11 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
                     key={`quest-${q.id}`} parent={q} kind="quest"
                     title={q.objective || q.originalObjective || q.id}
                     children={childrenOfQuest(q)} onOpenParent={onOpenParent}
+                    onDismiss={() => onDismiss('quest', q.id)}
                 />
             ),
         })),
-        ...running.map((run) => ({ r: recency(run), node: <RunCard key={`run-${run.id}`} run={run} onOpen={onOpen} /> })),
+        ...running.map((run) => ({ r: recency(run), node: <RunCard key={`run-${run.id}`} run={run} onOpen={onOpen} onDismiss={() => onDismiss('run', run.id)} /> })),
     ].sort((a, b) => b.r - a.r)
 
     return (
@@ -140,15 +163,24 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
     )
 }
 
+const ARCHIVE = { run: archiveRun, quest: archiveQuest, campaign: archiveCampaign }
+
 const Dashboard = () => {
     const navigate = useNavigate()
+    const toast = useToast()
     const { runId, tab } = useParams()
     const liveRuns = useRuns()
-    const campaigns = useCampaigns()
-    const quests = useQuests()
+    const liveCampaigns = useCampaigns()
+    const liveQuests = useQuests()
 
-    // Archived runs are cleared from the dashboard but kept in the Tasks history.
+    // Archived items are cleared from the dashboard but kept in the Work history.
     const runs = liveRuns.filter((r) => !r.archived)
+    const campaigns = liveCampaigns.filter((c) => !c.archived)
+    const quests = liveQuests.filter((q) => !q.archived)
+
+    // Dismiss = archive: hide from the dashboard, keep in Work. ooo pushes the
+    // archived flag back and the filters above drop it on the next render.
+    const dismiss = (kind, id) => ARCHIVE[kind](id).catch((e) => toast(e?.message || 'Dismiss failed — is the candyland server reachable?'))
 
     return (
         <Box>
@@ -158,6 +190,7 @@ const Dashboard = () => {
                 quests={quests}
                 onOpen={(id) => navigate(`/run/${id}`)}
                 onOpenParent={(kind, id) => navigate(`/${kind}/${id}`)}
+                onDismiss={dismiss}
             />
 
             {runId && <LiveRunWorkspace id={runId} tab={tab} onClose={() => navigate('/')} onTab={(t) => navigate(`/run/${runId}/${t}`)} />}

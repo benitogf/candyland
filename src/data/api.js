@@ -30,6 +30,13 @@ export const stopRun = (id) => post(`/runs/${id}/command`, { command: 'stop' })
 // executor to reach). The run is kept as "cancelled" in the Tasks history.
 export const cancelRun = (id) => post(`/runs/${id}/cancel`)
 
+// Archive (dismiss): clear a finished/blocked/stopped item from the dashboard. It
+// stays in the Work history — archive hides, it never deletes. Available for runs,
+// quests, and campaigns.
+export const archiveRun = (id) => post(`/runs/${id}/archive`)
+export const archiveQuest = (id) => post(`/quests/${id}/archive`)
+export const archiveCampaign = (id) => post(`/campaigns/${id}/archive`)
+
 // Quest / campaign control. Stop is the only control the backend exposes for
 // either — terminal, irreversible, and it CASCADES to children (stopping a
 // campaign stops its quests and their runs; stopping a quest stops its runs).

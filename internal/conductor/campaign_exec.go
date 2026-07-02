@@ -127,6 +127,13 @@ func (c *Conductor) StopCampaign(id, reason string) bool {
 	})
 }
 
+// ArchiveCampaign clears a campaign from the dashboard while keeping it in the
+// Work history (hide, never delete). Storage-backed via UpdateCampaign, so it
+// works for tracked and untracked campaigns alike. Returns false for an unknown one.
+func (c *Conductor) ArchiveCampaign(id string) bool {
+	return c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Archived = true })
+}
+
 // haltCampaignDrive cancels and forgets a campaign's running supervisor (if any).
 // Returns true when a live drive was halted.
 func (c *Conductor) haltCampaignDrive(id string) bool {

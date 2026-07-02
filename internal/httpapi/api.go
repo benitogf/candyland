@@ -254,6 +254,20 @@ func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
+	// Archive: clear a campaign from the dashboard while keeping it in the Work
+	// history (hide, never delete).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/campaigns/{id}/archive",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.ArchiveCampaign(mux.Vars(r)["id"]) {
+				http.Error(w, "campaign not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
 	// The campaign's child quests (quests whose CampaignID == id).
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/campaigns/{id}/quests",
@@ -338,6 +352,20 @@ func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
 		Methods: post,
 		Handler: func(w http.ResponseWriter, r *http.Request) {
 			if !c.StopQuest(mux.Vars(r)["id"], reasonFromBody(r)) {
+				http.Error(w, "quest not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	// Archive: clear a quest from the dashboard while keeping it in the Work
+	// history (hide, never delete).
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/quests/{id}/archive",
+		Methods: post,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if !c.ArchiveQuest(mux.Vars(r)["id"]) {
 				http.Error(w, "quest not found", http.StatusNotFound)
 				return
 			}
