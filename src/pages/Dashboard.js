@@ -9,7 +9,7 @@ import Typography from '@mui/material/Typography'
 import { candy } from '../config'
 import { PHASES, STATE_META, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
-import { useRuns, useQuests, useCampaigns } from '../data/ooo'
+import { useRuns, useQuests, useCampaigns, recency } from '../data/ooo'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
 const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled'
@@ -91,6 +91,35 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
 
     const nothing = runningCampaigns.length === 0 && runningQuests.length === 0 && running.length === 0
 
+    // Interleave all active work by recency (ooo envelope `updated`, falling back
+    // to `created`) so the MOST RECENTLY changed item leads regardless of its type
+    // — campaigns, quests, and standalone runs share one newest-first ordering
+    // rather than being grouped by type (which sank a just-launched run below older
+    // programs).
+    const entries = [
+        ...runningCampaigns.map((c) => ({
+            r: recency(c),
+            node: (
+                <ParentCard
+                    key={`campaign-${c.id}`} parent={c} kind="campaign"
+                    title={c.intentBrief?.restatedGoal || c.originalInput || c.id}
+                    children={childrenOfCampaign(c)} onOpenParent={onOpenParent}
+                />
+            ),
+        })),
+        ...runningQuests.map((q) => ({
+            r: recency(q),
+            node: (
+                <ParentCard
+                    key={`quest-${q.id}`} parent={q} kind="quest"
+                    title={q.objective || q.originalObjective || q.id}
+                    children={childrenOfQuest(q)} onOpenParent={onOpenParent}
+                />
+            ),
+        })),
+        ...running.map((run) => ({ r: recency(run), node: <RunCard key={`run-${run.id}`} run={run} onOpen={onOpen} /> })),
+    ].sort((a, b) => b.r - a.r)
+
     return (
         <Box>
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
@@ -104,21 +133,7 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
                 <Typography variant="body2" color="text.secondary">Nothing running. Launch a run, quest, or campaign from detritus to see it here.</Typography>
             ) : (
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
-                    {runningCampaigns.map((c) => (
-                        <ParentCard
-                            key={c.id} parent={c} kind="campaign"
-                            title={c.intentBrief?.restatedGoal || c.originalInput || c.id}
-                            children={childrenOfCampaign(c)} onOpenParent={onOpenParent}
-                        />
-                    ))}
-                    {runningQuests.map((q) => (
-                        <ParentCard
-                            key={q.id} parent={q} kind="quest"
-                            title={q.objective || q.originalObjective || q.id}
-                            children={childrenOfQuest(q)} onOpenParent={onOpenParent}
-                        />
-                    ))}
-                    {running.map((run) => <RunCard key={run.id} run={run} onOpen={onOpen} />)}
+                    {entries.map((e) => e.node)}
                 </Box>
             )}
         </Box>

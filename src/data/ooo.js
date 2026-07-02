@@ -39,6 +39,14 @@ export const isBranchDelivered = (run) => deliverOf(run) === 'branch'
 export const isFeedbackDelivered = (run) => deliverOf(run) === 'feedback'
 export const isReviewDelivered = (run) => deliverOf(run) === 'review'
 
+// Carry the ooo envelope's timestamps onto the item so the UI can order by
+// recency across types (the dashboard interleaves campaigns/quests/runs by when
+// they last changed). Every ooo object is wrapped as {created, updated, index,
+// data}; we surface those as _created/_updated (underscored so they never clash
+// with a domain field). `_updated` (ms) is the recency key; helper `recency()`.
+const withMeta = (e) => (e?.data ? { ...e.data, _created: e.created || 0, _updated: e.updated || e.created || 0 } : null)
+export const recency = (item) => (item?._updated || item?._created || 0)
+
 // Normalize a run for the UI: agents/tasks are always arrays, so panels can
 // .map/.length them safely no matter what the backend (or older persisted data)
 // sent — a null there would otherwise crash the whole view.
@@ -50,7 +58,7 @@ const seq = (r) => parseInt(String(r.id).replace(/\D/g, ''), 10) || 0
 export const useRuns = () => {
     const cache = useOoo('runs/*')
     if (!Array.isArray(cache)) return []
-    return cache.map((e) => e?.data).filter(Boolean).map(normalizeRun).sort((a, b) => seq(b) - seq(a))
+    return cache.map(withMeta).filter(Boolean).map(normalizeRun).sort((a, b) => seq(b) - seq(a))
 }
 
 // One run, live.
@@ -68,7 +76,7 @@ export const useRun = (id) => {
 export const useQuests = () => {
     const cache = useOoo('quests/*')
     if (!Array.isArray(cache)) return []
-    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => seq(b) - seq(a))
+    return cache.map(withMeta).filter(Boolean).sort((a, b) => seq(b) - seq(a))
 }
 
 // One quest, live.
@@ -81,7 +89,7 @@ export const useQuest = (id) => {
 export const useCampaigns = () => {
     const cache = useOoo('campaigns/*')
     if (!Array.isArray(cache)) return []
-    return cache.map((e) => e?.data).filter(Boolean).sort((a, b) => seq(b) - seq(a))
+    return cache.map(withMeta).filter(Boolean).sort((a, b) => seq(b) - seq(a))
 }
 
 // One campaign, live.
