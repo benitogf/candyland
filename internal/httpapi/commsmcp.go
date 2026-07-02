@@ -29,12 +29,14 @@ const commsMCPPath = "/mcp/comms/{agentID}"
 // request time because it is only assigned once the server is listening — the
 // route itself is registered before Start (the data wildcard must already know to
 // defer to it). With the app bound to loopback by default the agent reaches the
-// bus from the same host. DisableLocalhostProtection is set because the agent
-// connects over loopback with a loopback Host header (the SDK's DNS-rebinding
-// guard would otherwise 403 a legitimate localhost→localhost call). The handler
-// is mirrored onto the route oracle so the ooo data wildcard defers to it
-// regardless of registration order — it shares the app's single port rather than
-// spawning a process per agent.
+// bus from the same host. The agent's comms mcp-config URL is aligned to the
+// loopback host (see loopbackHost in the conductor), so the handshake arrives
+// with a loopback Host header over a loopback connection — the SDK's DNS-rebinding
+// guard passes without disabling it, keeping the protection on for a surface that
+// is only ever meant to be reached from the same host. The handler is mirrored
+// onto the route oracle so the ooo data wildcard defers to it regardless of
+// registration order — it shares the app's single port rather than spawning a
+// process per agent.
 func RegisterCommsMCP(server *ooo.Server) {
 	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		agentID := mux.Vars(r)["agentID"]
@@ -45,9 +47,8 @@ func RegisterCommsMCP(server *ooo.Server) {
 		comms.RegisterTools(srv, comms.NewClient(server.Address, agentID, conductor.OrchestratorID))
 		return srv
 	}, &mcp.StreamableHTTPOptions{
-		Stateless:                  true,
-		JSONResponse:               true,
-		DisableLocalhostProtection: true,
+		Stateless:    true,
+		JSONResponse: true,
 	})
 
 	// Mount on the shared router for all methods the Streamable HTTP transport
