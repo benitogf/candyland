@@ -101,20 +101,24 @@ const AgentDetail = ({ agent }) => (
     </Card>
 )
 
-const AgentsPanel = ({ run }) => {
-    const [selectedId, setSelectedId] = useState(run.agents[0]?.id)
-    const selected = run.agents.find((a) => a.id === selectedId) || run.agents[0]
-    if (!selected) return <Typography variant="body2" color="text.secondary">No agents spawned yet — still planning.</Typography>
+// The per-agent lens, reused across runs (coder fleet), quests (the quest-lead),
+// and campaigns (intent-lead / intent-reviewer) — every tier records the same
+// agents[].events shape via the conductor's updateAgentHost, so a campaign or
+// quest's coordinating agents are as fully inspectable as a run's coders.
+const AgentsPanel = ({ agents = [], emptyLabel = 'No agents spawned yet — still planning.', hint = "the per-worker lens — who's running and what each is saying. Pick an agent to read its full live output." }) => {
+    const [selectedId, setSelectedId] = useState(agents[0]?.id)
+    const selected = agents.find((a) => a.id === selectedId) || agents[0]
+    if (!selected) return <Typography variant="body2" color="text.secondary">{emptyLabel}</Typography>
 
     return (
         <Box sx={{ height: { md: '100%' }, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2, flexShrink: 0 }}>
-                the per-worker lens — who's running and what each is saying. Pick an agent to read its full live output.
+                {hint}
             </Typography>
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '300px minmax(0, 1fr)' }, gap: 3, flex: { md: 1 }, minHeight: 0 }}>
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25, minWidth: 0, minHeight: 0, overflowY: { md: 'auto' }, pr: { md: 0.5 } }}>
-                    <Typography variant="overline" color="secondary" sx={{ flexShrink: 0 }}>the fleet · {run.agents.length}</Typography>
-                    {run.agents.map((a) => (
+                    <Typography variant="overline" color="secondary" sx={{ flexShrink: 0 }}>the fleet · {agents.length}</Typography>
+                    {agents.map((a) => (
                         <AgentCard key={a.id} agent={a} selected={a.id === selected.id} onSelect={setSelectedId} />
                     ))}
                 </Box>

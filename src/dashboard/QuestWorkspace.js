@@ -25,6 +25,7 @@ import { stopQuest } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { CopyPrLink } from '../components/CopyPr'
+import AgentsPanel from '../panels/AgentsPanel'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 // Section header used across the detail views.
@@ -173,6 +174,16 @@ const QuestWorkspace = ({ id, onClose }) => {
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
                             created {shortTime(quest.createdAt)} · updated {shortTime(quest.updatedAt)}{quest.lastProgress ? ` · last progress ${shortTime(quest.lastProgress)}` : ''}
                         </Typography>
+                    </Block>
+
+                    <Block title="coordinating agent — full output">
+                        <Box sx={{ height: 520 }}>
+                            <AgentsPanel
+                                agents={quest.agents || []}
+                                emptyLabel="No quest-lead activity yet — the first tick runs discovery."
+                                hint="the quest lead's discovery/triage each tick. Pick it to read its full output."
+                            />
+                        </Box>
                     </Block>
 
                     <Block title="current tick">

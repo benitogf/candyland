@@ -28,6 +28,7 @@ import { stopCampaign } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { CopyPrLink } from '../components/CopyPr'
+import AgentsPanel from '../panels/AgentsPanel'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 const Block = ({ title, children }) => (
@@ -199,6 +200,16 @@ const CampaignWorkspace = ({ id, onClose }) => {
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
                             created {shortTime(campaign.createdAt)} · updated {shortTime(campaign.updatedAt)}{campaign.intentReview?.reviewedAt ? ` · reviewed ${shortTime(campaign.intentReview.reviewedAt)}` : ''}
                         </Typography>
+                    </Block>
+
+                    <Block title="coordinating agents — full output">
+                        <Box sx={{ height: 520 }}>
+                            <AgentsPanel
+                                agents={campaign.agents || []}
+                                emptyLabel="No coordinating agents yet — the intent lead runs first."
+                                hint="the campaign's coordinating agents (intent lead → intent reviewer). Pick one to read its full output."
+                            />
+                        </Box>
                     </Block>
 
                     <Block title={`child quests · ${childQuests.length}`}>

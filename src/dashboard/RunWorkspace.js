@@ -110,7 +110,7 @@ const Scrollable = ({ children }) => (
 // Agents fill the height and own their internal scroll; the rest scroll
 // inside a wrapper. Either way, overflow stays inside the body — not the layout.
 const panelFor = (key, run) => {
-    if (key === 'agents') return <AgentsPanel run={run} />
+    if (key === 'agents') return <AgentsPanel agents={run.agents} />
     if (key === 'tasks') return <Scrollable><TasksPanel run={run} /></Scrollable>
     return <Scrollable><OverviewPanel run={run} /></Scrollable>
 }
