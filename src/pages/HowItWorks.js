@@ -61,6 +61,19 @@ flowchart TB
   classDef you fill:#ff5fa2,stroke:#ff5fa2,color:#150d20,font-weight:bold;
 `
 
+const HIERARCHY = `
+flowchart TB
+  C["🎥 Campaign<br/>supervisor: intent brief → gates → decompose → intent review<br/>one PR per repo from the campaign branch"]:::hl
+  Q["🧭 Quest<br/>quest-lead tick loop: discover · triage · launch<br/>feature build · PR review · compliance check"]
+  R["🛠️ Run<br/>tech lead + coders + reviewer → one PR (or a campaign-branch commit)"]
+  T["✅ Task<br/>one fork-safe slice, defined by a failing test"]
+  C -->|"decomposes into"| Q
+  C -.->|"or directly into"| R
+  Q -->|"launches"| R
+  R -->|"partitions into"| T
+  classDef hl fill:#ff5fa2,stroke:#ff5fa2,color:#150d20,font-weight:bold;
+`
+
 const PLAIN = `
 flowchart LR
   YOU["🧑 You<br/>say what you want"] --> P["💬 Planner<br/>asks a few simple questions"]
@@ -198,7 +211,19 @@ const pillars = [
 const concepts = [
     {
         title: 'Conductor',
-        body: 'Routes a goal into the open Q&A intake, runs the interactive planning loop, then spawns the tech lead and each coder as processes and owns realtime state. The dashboard talks to it.',
+        body: 'A pure-Go orchestrator that spends no model tokens. It drives campaigns, quests, and runs through bounded stages, spawns each agent as a process, runs the tests it gates on, and owns realtime state. The dashboard talks to it; the agents supply the judgment.',
+    },
+    {
+        title: 'Campaign',
+        body: 'The program-level supervisor. An intent-lead agent restates your goal into a brief (scope, commitments, draft work); deterministic gates check it; the conductor decomposes it into child work that commits onto a shared campaign branch; an intent-reviewer emits a per-commitment verdict; then one PR opens per impacted repo. It never asks you mid-flow — roles decide and escalate within the hierarchy.',
+    },
+    {
+        title: 'Quest',
+        body: 'A long-running objective driven by a quest-lead in a bounded tick loop: each tick discovers and triages work, and the conductor launches child runs for accepted items. A quest can be a feature build, a PR review, or a compliance check — it may open many PRs over its life.',
+    },
+    {
+        title: 'Run',
+        body: 'One bounded build. A tech lead partitions it, coders build the slices in parallel, a reviewer checks the integrated diff, and it opens a PR — or, as a campaign/quest child, commits to the shared branch and opens none itself.',
     },
     {
         title: 'Plan contract — the seam',
@@ -265,14 +290,6 @@ const priorArt = [
     ['agent-deck (the one you saw)', 'Full-featured agent deck', 'Avoid: too many moving parts for solo use'],
 ]
 
-const roadmap = [
-    ['Phase 0 — now', 'This PR: the spec. Dashboard shell + this "How it works" page.'],
-    ['Phase 1', 'Go conductor + ooo event stream. Run the interactive planning loop from the dashboard. The Agents view goes live.'],
-    ['Phase 2', 'Drive the implementation loop: the conductor spawns the tech lead and coders (detritus roles, already written) as processes against a settled plan. The Board renders the live task DAG.'],
-    ['Phase 3', 'Full parallel build visualized as a live hierarchy — fork-safe partition, role coders in worktrees, test-first, sequential integration with loop-back on dirty merges.'],
-    ['Phase 4 — maybe', 'pivot-based multi-machine sync, if a single host stops being enough.'],
-]
-
 const Grid3 = ({ children }) => (
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' }, gap: 2 }}>
         {children}
@@ -290,19 +307,21 @@ const DeveloperGuide = () => (
     <Box>
         {/* Hero */}
         <Box sx={{ mb: 5 }}>
-            <Chip label="the spec · read me first" color="primary" variant="outlined" sx={{ mb: 2 }} />
+            <Chip label="how it works" color="primary" variant="outlined" sx={{ mb: 2 }} />
             <Typography variant="h3" gutterBottom>
                 Conduct many agents. Watch all of it. 🍬
             </Typography>
             <Typography variant="h6" color="text.secondary" sx={{ fontWeight: 400, maxWidth: 840 }}>
-                Candyland is a solo orchestration sidecar. detritus launches a run over REST;
-                a tech lead then splits each feature across focused coders running in parallel, integrates their
-                work, and candyland shows everything live — so you stop juggling sessions by hand, watch and audit
-                the build here, and review one finished PR instead.
+                Candyland is a solo orchestration sidecar. detritus launches work over REST; a pure-Go
+                conductor drives it through a hierarchy — campaigns coordinate quests, quests launch runs,
+                and each run splits a feature across focused coders in parallel — while candyland shows every
+                agent live. You stop juggling sessions by hand, watch and audit the work here, and review the
+                pull requests it opens.
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2, fontStyle: 'italic' }}>
-                This page is the blueprint we build against. Candyland is the dashboard; every agent behavior
-                is a detritus skill it wraps.
+                Candyland is the dashboard and the process driver; every agent behavior is a detritus skill it
+                wraps. The conductor spends no model tokens — it spawns agents and owns realtime state; the
+                agents supply all the judgment.
             </Typography>
         </Box>
 
@@ -344,6 +363,24 @@ const DeveloperGuide = () => (
             <DiagramCard caption="The same flow, drawn for engineers: goal in, one PR out, every event mirrored to the dashboard in between.">
                 <MermaidDiagram chart={ARCHITECTURE} />
             </DiagramCard>
+        </Section>
+
+        {/* 1b. The work hierarchy */}
+        <Section
+            kicker="the work hierarchy"
+            title="Campaigns, quests, runs, tasks"
+            intro="Candyland drives work at four nested levels. A campaign is the whole intent→delivery cycle for a program; it coordinates quests. A quest is a long-running objective its lead ticks through, launching runs. A run is one bounded build — a tech lead and coders. A task is a single fork-safe slice inside a run. The conductor moves work down the levels; the intelligence at each level is an agent."
+        >
+            <DiagramCard caption="Campaign coordinates quests; a quest launches runs; a run partitions into tasks. Each level's decisions are made by an agent, spawned by the pure-Go conductor.">
+                <MermaidDiagram chart={HIERARCHY} />
+            </DiagramCard>
+            <SpecNote>
+                Delivery differs by level. A standalone <strong>run</strong> or <strong>quest</strong> opens
+                its own PR(s). Work spawned <em>under a campaign</em> commits onto a shared campaign branch and
+                opens no PR of its own — the campaign opens <strong>one PR per impacted repo</strong> after its
+                intent review passes. A campaign that finds an unmet commitment feeds it back as more work
+                (bounded remediation) rather than parking.
+            </SpecNote>
         </Section>
 
         {/* 2. Plan, then build */}
@@ -551,7 +588,7 @@ const DeveloperGuide = () => (
         <Section
             kicker="we're not starting from scratch"
             title="Prior art — what we borrow, what we avoid"
-            intro="Comparable tools exist; the point of Candyland is the lightweight, solo-first subset. (This table is being refined by a background research pass.)"
+            intro="Comparable tools exist; the point of Candyland is the lightweight, solo-first subset."
         >
             <Card sx={{ overflowX: 'auto' }}>
                 <Table size="small" sx={{ minWidth: 560 }}>
@@ -575,23 +612,6 @@ const DeveloperGuide = () => (
             </Card>
         </Section>
 
-        {/* Roadmap */}
-        <Section kicker="where this goes" title="Build order">
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                {roadmap.map(([phase, what]) => (
-                    <Card key={phase}>
-                        <CardContent sx={{ display: 'flex', gap: 2, alignItems: 'baseline', py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                            <Typography variant="subtitle2" color="primary" sx={{ minWidth: 130, fontWeight: 700 }}>
-                                {phase}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                                {what}
-                            </Typography>
-                        </CardContent>
-                    </Card>
-                ))}
-            </Box>
-        </Section>
     </Box>
 )
 
