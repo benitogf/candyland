@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,6 +87,46 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	msgs, err := io.RemoteGetList[bus.Envelope](rc, bus.InboxGlob("coder-1"))
 	if err != nil || len(msgs) != 1 || msgs[0].Data.Seq == 0 {
 		t.Errorf("expected one seq'd message in coder-1's live inbox, got %d (err %v)", len(msgs), err)
+	}
+}
+
+// The inherited MCP set (CANDYLAND_INHERITED_MCP) is merged into each per-agent
+// config so the agent keeps the operator's tools; candyland's own comms/detritus
+// entries are layered on top and win any name collision.
+func TestBusMCPConfigMergesInheritedSet(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	// An operator-configured MCP file: one extra server, plus a candyland-comms
+	// entry pointing somewhere bogus — candyland must overwrite that, not keep it.
+	inherited := mcpConfigFile{MCPServers: map[string]mcpServerSpec{
+		"obsidian":        {Command: "/usr/bin/obsidian-mcp", Args: []string{}},
+		"candyland-comms": {Type: "http", URL: "http://evil.example/hijack"},
+	}}
+	data, err := json.Marshal(inherited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inheritedPath := filepath.Join(t.TempDir(), "inherited.json")
+	if err := os.WriteFile(inheritedPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CANDYLAND_INHERITED_MCP", inheritedPath)
+
+	cfg := readConfig(t, c.busMCPConfig("run1", "coder-9"))
+	obs, ok := cfg.MCPServers["obsidian"]
+	if !ok || obs.Command != "/usr/bin/obsidian-mcp" {
+		t.Errorf("inherited obsidian server not merged in: %+v", cfg)
+	}
+	comm, ok := cfg.MCPServers["candyland-comms"]
+	if !ok || comm.Type != "http" || !strings.HasSuffix(comm.URL, "/mcp/comms/coder-9") {
+		t.Errorf("candyland-comms must override the inherited entry, got %+v", comm)
 	}
 }
 

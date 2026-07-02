@@ -121,11 +121,19 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	// once, globally, in StartBus (before the server serves). Registering them at
 	// spawn raced ooo's broadcast loop.
 
-	servers := map[string]mcpServerSpec{
-		"candyland-comms": {
-			Type: "http",
-			URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
-		},
+	// Start from the inherited MCP set (the servers the surrounding environment
+	// configured — e.g. obsidian, gmail, linear). Passing --mcp-config otherwise
+	// narrows the agent to only the entries in that file, dropping every tool the
+	// operator had wired; merging the inherited set in preserves them. candyland's
+	// own entries are layered on top below, so they always win a name collision —
+	// the agent can never lose its comms/detritus wiring to an inherited entry.
+	servers := inheritedMCPServers()
+	if servers == nil {
+		servers = map[string]mcpServerSpec{}
+	}
+	servers["candyland-comms"] = mcpServerSpec{
+		Type: "http",
+		URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
 	}
 	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
 	// Constraint). detritus is a passive stdio MCP server: resolve the installed
@@ -163,6 +171,31 @@ func resolveDetritusBin() string {
 		return bin
 	}
 	return ""
+}
+
+// inheritedMCPServers reads the MCP set the surrounding environment configured,
+// so per-agent --mcp-config files merge those servers in rather than narrowing
+// each agent to only candyland's own entries. The source is a claude
+// --mcp-config JSON file ({"mcpServers": {...}}) named by CANDYLAND_INHERITED_MCP
+// (detritus sets this on the candyland process at launch to the operator's config).
+// Returns nil — not an error — when the var is unset, the file is missing, or it
+// is unreadable/invalid JSON: inheritance is best-effort, and candyland's own
+// comms/detritus wiring is added by the caller regardless. The returned map is a
+// fresh copy the caller may mutate.
+func inheritedMCPServers() map[string]mcpServerSpec {
+	path := os.Getenv("CANDYLAND_INHERITED_MCP")
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg mcpConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil || cfg.MCPServers == nil {
+		return nil
+	}
+	return cfg.MCPServers
 }
 
 // busConfigDir is the per-run directory holding the spawned agents'
