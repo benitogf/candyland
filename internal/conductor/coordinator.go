@@ -3,6 +3,7 @@ package conductor
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,11 +125,13 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	// Start from the origin session's MCP servers (the Claude/VSCode session that
 	// launched candyland exports them as CANDYLAND_INHERITED_MCP) so each agent
 	// inherits the same tool surface the human had. candyland's own entries are
-	// layered on top below, so they win on any name conflict.
+	// layered on top below, so they win on any name conflict. The comms URL uses
+	// loopbackHost so the agent's Host header matches the loopback connection (the
+	// go-sdk DNS-rebinding guard rejects a non-loopback Host with 403).
 	servers := inheritedMCPServers()
 	servers["candyland-comms"] = mcpServerSpec{
 		Type: "http",
-		URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
+		URL:  "http://" + loopbackHost(c.server.Address) + "/mcp/comms/" + agentID,
 	}
 	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
 	// Constraint). detritus is a passive stdio MCP server: resolve the installed
@@ -182,6 +185,26 @@ func inheritedMCPServers() map[string]mcpServerSpec {
 		servers[name] = spec
 	}
 	return servers
+}
+
+// loopbackHost aligns the comms MCP handshake origin with the loopback interface
+// the agent actually dials over. The bus is a same-host, loopback-only surface,
+// but server.Address may carry a wildcard (0.0.0.0, ::) or a specific bind host —
+// addressing the agent's HTTP client at that host makes it send a non-loopback
+// Host header, which the go-sdk's DNS-rebinding guard rejects with 403 on a
+// loopback connection. Rewriting the host to 127.0.0.1 (preserving the port) so
+// the Host header matches the loopback connection lets that guard stay enabled
+// rather than being blanket-disabled. A host that is already loopback, or an
+// address we cannot split, is returned unchanged.
+func loopbackHost(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return addr
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
 
 // resolveDetritusBin locates the detritus binary an agent's stdio MCP child

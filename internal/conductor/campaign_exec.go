@@ -114,7 +114,7 @@ func (c *Conductor) BeginCampaign(id string) bool {
 }
 
 // StopCampaign is terminal: it cancels the supervisor and marks the campaign stopped
-// with the reason. A stopped campaign never runs again (Begin/Resume refuse it). It
+// with the reason. A stopped campaign never runs again (BeginCampaign refuses it). It
 // also stops any in-flight child runs so the process trees don't outlive the campaign.
 func (c *Conductor) StopCampaign(id, reason string) bool {
 	c.haltCampaignDrive(id)
@@ -808,7 +808,7 @@ func (c *Conductor) recordPlanGate(id string, passed bool, reason string) bool {
 }
 
 // blockCampaign records a hard blocker with a visible reason. A blocked campaign is
-// not terminal — its branch persists and ResumeCampaign restarts the supervisor; it
+// not terminal — its branch persists and BeginCampaign restarts the supervisor; it
 // never asks the user and never abandons the work (handle/escalate, not abandon).
 func (c *Conductor) blockCampaign(id, reason string) {
 	log.Printf("candyland: campaign %s blocked: %s", id, reason)

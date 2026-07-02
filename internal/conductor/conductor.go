@@ -20,8 +20,8 @@ import (
 // Executor drives a run from planning to PR, calling Update to publish state.
 type Executor interface {
 	// Execute blocks until the run is done or the control channel says stop.
-	// Candyland keeps a lean, flow-level control surface: it must honor "stop"
-	// and "restart" on control (no resume — a stopped run is restarted).
+	// Candyland keeps a lean, flow-level control surface: Stop is the only
+	// control — it must honor "stop" on the channel (no restart/pause/resume).
 	Execute(c *Conductor, id string, control <-chan string)
 	Name() string
 }
@@ -56,11 +56,11 @@ type Conductor struct {
 	// past the highest persisted campaign id by reconcileCampaignSeq after a restart.
 	campaignSeq int
 	// questDrivers tracks each quest's running tick-loop goroutine (id → cancel),
-	// so PauseQuest/StopQuest can halt it — the quest analogue of a run's per-
-	// executor control channel. Guarded by mu.
+	// so StopQuest can halt it — the quest analogue of a run's per-executor
+	// control channel. Guarded by mu.
 	questDrivers map[string]*questDriver
 	// campaignDrivers tracks each campaign's running supervisor goroutine (id →
-	// cancel), so PauseCampaign/StopCampaign can halt it — the campaign analogue of
+	// cancel), so StopCampaign can halt it — the campaign analogue of
 	// questDrivers. Guarded by mu.
 	campaignDrivers map[string]*campaignDriver
 	// folders resolves a run's working folders. Defaults to the folders the run
