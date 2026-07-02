@@ -7,6 +7,7 @@
     "dependencies": {
         "@emotion/react": "^11.13.5",
         "@emotion/styled": "^11.13.5",
+        "@fontsource/noto-color-emoji": "^5.2.12",
         "@mui/icons-material": "^7.3.5",
         "@mui/material": "^7.3.5",
         "mermaid": "^11.4.1",

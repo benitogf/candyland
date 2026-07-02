@@ -43,20 +43,15 @@ func TestCampaignEndpointsLifecycle(t *testing.T) {
 		t.Errorf("campaign autonomy = %q, want L2 (never L1)", cam.AutonomyLevel)
 	}
 
-	// Pause with a reason (idle campaign — no supervisor running yet).
-	if r := post(t, base+"/api/campaigns/"+created.ID+"/pause", map[string]string{"reason": "hold"}); r.StatusCode != http.StatusNoContent {
-		t.Fatalf("pause status = %d, want 204", r.StatusCode)
+	// Stop is terminal, with a reason (idle campaign — no supervisor running yet).
+	if r := post(t, base+"/api/campaigns/"+created.ID+"/stop", map[string]string{"reason": "fin"}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop status = %d, want 204", r.StatusCode)
 	}
 	get, _ = http.Get(base + "/api/campaigns/" + created.ID)
 	_ = json.NewDecoder(get.Body).Decode(&cam)
 	get.Body.Close()
-	if cam.Status != "paused" || cam.PauseReason != "hold" {
-		t.Fatalf("pause not applied: status=%q reason=%q", cam.Status, cam.PauseReason)
-	}
-
-	// Stop is terminal.
-	if r := post(t, base+"/api/campaigns/"+created.ID+"/stop", map[string]string{"reason": "fin"}); r.StatusCode != http.StatusNoContent {
-		t.Fatalf("stop status = %d, want 204", r.StatusCode)
+	if cam.Status != "stopped" || cam.PauseReason != "fin" {
+		t.Fatalf("stop not applied: status=%q reason=%q", cam.Status, cam.PauseReason)
 	}
 	// A stopped campaign can't begin.
 	if r := post(t, base+"/api/campaigns/"+created.ID+"/begin", nil); r.StatusCode != http.StatusConflict {
@@ -93,7 +88,7 @@ func TestCampaignEndpointsNotFound(t *testing.T) {
 	if g, _ := http.Get(base + "/api/campaigns/nope"); g.StatusCode != http.StatusNotFound {
 		t.Errorf("GET unknown campaign = %d, want 404", g.StatusCode)
 	}
-	if r := post(t, base+"/api/campaigns/nope/pause", nil); r.StatusCode != http.StatusNotFound {
-		t.Errorf("pause unknown campaign = %d, want 404", r.StatusCode)
+	if r := post(t, base+"/api/campaigns/nope/stop", nil); r.StatusCode != http.StatusNotFound {
+		t.Errorf("stop unknown campaign = %d, want 404", r.StatusCode)
 	}
 }

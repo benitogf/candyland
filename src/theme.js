@@ -3,10 +3,13 @@ import { candy } from './config'
 
 // The shared font stack. Kept in one place so every view — and the Mermaid
 // diagrams (via `fontFamily: 'inherit'`) — render with the same typeface.
+// "Noto Color Emoji" is last in each stack so emoji codepoints resolve to the
+// bundled color-emoji font (see src/index.js) instead of rendering as tofu on a
+// host with no system emoji font (the packaged WSL/Linux webview).
 const fontStack =
-    '"Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif'
+    '"Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif, "Noto Color Emoji"'
 const monoStack =
-    '"JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace'
+    '"JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace, "Noto Color Emoji"'
 
 // Candyland runs on a near-black canvas with neon candy accents. The dominant
 // accent (primary) is cyan.

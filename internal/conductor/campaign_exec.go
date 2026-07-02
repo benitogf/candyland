@@ -113,33 +113,8 @@ func (c *Conductor) BeginCampaign(id string) bool {
 	return true
 }
 
-// PauseCampaign halts the supervisor without deleting the campaign: it cancels the
-// running drive and records Status=paused + the reason. ResumeCampaign restarts it.
-func (c *Conductor) PauseCampaign(id, reason string) bool {
-	c.haltCampaignDrive(id)
-	return c.UpdateCampaign(id, func(cam *run.Campaign) {
-		if cam.Status == "stopped" || cam.Status == "done" {
-			return // terminal stays terminal
-		}
-		cam.Status = "paused"
-		if reason != "" {
-			cam.PauseReason = reason
-		}
-	})
-}
-
-// ResumeCampaign restarts a paused (or blocked) campaign's supervisor. A campaign
-// that isn't paused/blocked is left as-is (false); a terminal campaign can't resume.
-func (c *Conductor) ResumeCampaign(id string) bool {
-	cam, ok := c.GetCampaign(id)
-	if !ok || (cam.Status != "paused" && cam.Status != "blocked") {
-		return false
-	}
-	return c.BeginCampaign(id)
-}
-
 // StopCampaign is terminal: it cancels the supervisor and marks the campaign stopped
-// with the reason. A stopped campaign never runs again (Begin/Resume refuse it). It
+// with the reason. A stopped campaign never runs again (BeginCampaign refuses it). It
 // also stops any in-flight child runs so the process trees don't outlive the campaign.
 func (c *Conductor) StopCampaign(id, reason string) bool {
 	c.haltCampaignDrive(id)
@@ -150,6 +125,13 @@ func (c *Conductor) StopCampaign(id, reason string) bool {
 			cam.PauseReason = reason
 		}
 	})
+}
+
+// ArchiveCampaign clears a campaign from the dashboard while keeping it in the
+// Work history (hide, never delete). Storage-backed via UpdateCampaign, so it
+// works for tracked and untracked campaigns alike. Returns false for an unknown one.
+func (c *Conductor) ArchiveCampaign(id string) bool {
+	return c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Archived = true })
 }
 
 // haltCampaignDrive cancels and forgets a campaign's running supervisor (if any).
@@ -168,9 +150,14 @@ func (c *Conductor) haltCampaignDrive(id string) bool {
 
 // stopCampaignChildren stops every still-running child run of a campaign (best-effort).
 func (c *Conductor) stopCampaignChildren(id string) {
-	for _, r := range c.CampaignChildRuns(id) {
-		if r.Status == "running" || r.Status == "planning" {
-			c.Command(r.ID, "stop")
+	// Halt live child runs. CampaignChildRuns covers grandchild runs too (a child
+	// quest's runs inherit the CampaignID), so this reaches the whole run subtree.
+	c.stopChildRuns(c.CampaignChildRuns(id))
+	// Cascade to child quests: mark them stopped and halt their tick drives so no
+	// quest keeps ticking (and launching runs) after the campaign is stopped.
+	for _, q := range c.CampaignChildQuests(id) {
+		if q.Status != "stopped" && q.Status != "done" {
+			c.StopQuest(q.ID, "campaign stopped")
 		}
 	}
 }
@@ -821,7 +808,7 @@ func (c *Conductor) recordPlanGate(id string, passed bool, reason string) bool {
 }
 
 // blockCampaign records a hard blocker with a visible reason. A blocked campaign is
-// not terminal — its branch persists and ResumeCampaign restarts the supervisor; it
+// not terminal — its branch persists and BeginCampaign restarts the supervisor; it
 // never asks the user and never abandons the work (handle/escalate, not abandon).
 func (c *Conductor) blockCampaign(id, reason string) {
 	log.Printf("candyland: campaign %s blocked: %s", id, reason)

@@ -300,6 +300,7 @@ type Quest struct {
 	// CLI can name a no-op as such rather than show an undifferentiated "done".
 	Summary       string        `json:"summary,omitempty"`
 	PauseReason   string        `json:"pauseReason,omitempty"`
+	Archived      bool          `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"`
 	TokensUsed    int           `json:"tokensUsed"`
@@ -460,6 +461,7 @@ type Campaign struct {
 	// so an operator still learns the campaign delivered partial after a clean PR.
 	Status        string        `json:"status"`
 	PauseReason   string        `json:"pauseReason,omitempty"`
+	Archived      bool          `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
 	Notes         []string      `json:"notes,omitempty"`
 	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
 	TokenBudget   int           `json:"tokenBudget,omitempty"`
