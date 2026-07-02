@@ -59,13 +59,6 @@ export const useRun = (id) => {
     return normalizeRun(cache?.data || null)
 }
 
-// One run's audit record (the verification timeline), live from audits/<id>.
-// Null until the run reaches a terminal state and the conductor writes it.
-export const useAudit = (id) => {
-    const cache = useOoo(id ? `audits/${encodeURIComponent(id)}` : null)
-    return cache?.data || null
-}
-
 // ── Quests & Campaigns ───────────────────────────────────────────────────────
 // The work/history section pivots Runs ↔ Quests ↔ Campaigns over three open ooo
 // filters (runs/*, quests/*, campaigns/*), all read live the same way as runs —

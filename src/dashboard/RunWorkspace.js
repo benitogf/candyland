@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
@@ -7,6 +8,7 @@ import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
 import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
+import Link from '@mui/material/Link'
 import Step from '@mui/material/Step'
 import StepLabel from '@mui/material/StepLabel'
 import LinearProgress from '@mui/material/LinearProgress'
@@ -25,22 +27,18 @@ import CallMergeIcon from '@mui/icons-material/CallMerge'
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
 import { deliverOf } from '../data/ooo'
-import { StateChip, StateLegend } from '../components/StatusBits'
+import { StateChip, LegendButton } from '../components/StatusBits'
 import EditRunDialog from '../components/EditRunDialog'
 import RunSwitcher from './RunSwitcher'
 import AgentsPanel from '../panels/AgentsPanel'
-import BoardPanel from '../panels/BoardPanel'
 import TasksPanel from '../panels/TasksPanel'
-import SessionsPanel from '../panels/SessionsPanel'
-import AuditPanel from '../panels/AuditPanel'
 
+// Agents (live states + full output) is the default lens for a task run — the
+// thing you want on landing. Overview/intent is a secondary tab.
 const TABS = [
-    { key: 'overview', label: 'Overview' },
     { key: 'agents', label: 'Agents' },
-    { key: 'board', label: 'Board' },
+    { key: 'overview', label: 'Overview' },
     { key: 'tasks', label: 'Tasks' },
-    { key: 'sessions', label: 'Sessions' },
-    { key: 'audit', label: 'Audit' },
 ]
 
 // ── Developer: the full, detailed view ──────────────────────────────────────
@@ -56,7 +54,12 @@ const Meter = ({ label, right, value, color }) => (
 
 // General run summary — budget + completion. Applies to any run (no per-task
 // assumptions), replaces the earlier per-agent chart.
-const OverviewPanel = ({ run }) => (
+const OverviewPanel = ({ run }) => {
+    // A task-run is a child launched by a quest/campaign — the parent owns the
+    // program-level delivery narrative, so we drop the "one PR" system framing
+    // here and keep the view to this run's own info only.
+    const isTaskRun = !!(run.questId || run.campaignId)
+    return (
     <Box>
         {run.prompt && (
             <Card sx={{ mb: 3 }}>
@@ -86,32 +89,32 @@ const OverviewPanel = ({ run }) => (
                 ))}
         </Box>
 
-        <Card sx={{ borderLeft: '3px solid', borderColor: 'warning.main', backgroundColor: 'rgba(255, 217, 61, 0.06)' }}>
-            <CardContent>
-                <Chip label="how this works" size="small" color="warning" variant="outlined" sx={{ mb: 1.5, fontWeight: 700 }} />
-                <Typography variant="body2" color="text.secondary">
-                    Every tab is one lens on the <em>same</em> run, derived from each agent's <code>stream-json</code> stream plus the test runs the
-                    conductor owns — state is never self-reported (<b>green</b> = the defining test passing). The deliverable is one PR; merging stays your call.
-                </Typography>
-            </CardContent>
-        </Card>
+        {!isTaskRun && (
+            <Card sx={{ borderLeft: '3px solid', borderColor: 'warning.main', backgroundColor: 'rgba(255, 217, 61, 0.06)' }}>
+                <CardContent>
+                    <Chip label="how this works" size="small" color="warning" variant="outlined" sx={{ mb: 1.5, fontWeight: 700 }} />
+                    <Typography variant="body2" color="text.secondary">
+                        Every tab is one lens on the <em>same</em> run, derived from each agent's <code>stream-json</code> stream plus the test runs the
+                        conductor owns — state is never self-reported (<b>green</b> = the defining test passing). The deliverable is one PR; merging stays your call.
+                    </Typography>
+                </CardContent>
+            </Card>
+        )}
     </Box>
-)
+    )
+}
 
-// Scroll wrapper for document-flow panels (Overview / Board / Tasks / Simple) so
+// Scroll wrapper for document-flow panels (Overview / Tasks / Simple) so
 // their overflow scrolls inside the body region, never the dialog itself.
 const Scrollable = ({ children }) => (
     <Box sx={{ height: { md: '100%' }, overflowY: { md: 'auto' }, overflowX: 'hidden' }}>{children}</Box>
 )
 
-// Agents/Sessions fill the height and own their internal scroll; the rest scroll
+// Agents fill the height and own their internal scroll; the rest scroll
 // inside a wrapper. Either way, overflow stays inside the body — not the layout.
 const panelFor = (key, run) => {
     if (key === 'agents') return <AgentsPanel run={run} />
-    if (key === 'sessions') return <SessionsPanel run={run} />
-    if (key === 'board') return <Scrollable><BoardPanel run={run} /></Scrollable>
     if (key === 'tasks') return <Scrollable><TasksPanel run={run} /></Scrollable>
-    if (key === 'audit') return <Scrollable><AuditPanel run={run} /></Scrollable>
     return <Scrollable><OverviewPanel run={run} /></Scrollable>
 }
 
@@ -251,9 +254,18 @@ const CancelControl = ({ onCancel }) => (
 )
 
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
+    const navigate = useNavigate()
     const [editing, setEditing] = useState(false)
     const isPlanning = !!planning
-    const active = TABS.some((t) => t.key === tab) ? tab : 'overview'
+    // The task-run's place in the IA: a child launched by a quest or campaign.
+    // Its parent context is a link UP (never embedded), so this view stays scoped
+    // to run-level info only — matching how the quest view links up to a campaign.
+    const parent = run.questId
+        ? { kind: 'quest', id: run.questId, path: `/quest/${run.questId}` }
+        : run.campaignId
+            ? { kind: 'campaign', id: run.campaignId, path: `/campaign/${run.campaignId}` }
+            : null
+    const active = TABS.some((t) => t.key === tab) ? tab : TABS[0].key
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = !isPlanning
@@ -274,11 +286,17 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
             {/* Header — aligned to the body column */}
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2 }}>
                 <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
+                                <Chip size="small" color="secondary" variant="outlined" label={`run · ${run.id}`} />
+                                {parent && (
+                                    <Link component="button" type="button" onClick={() => navigate(parent.path)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>↑ {parent.id}</Link>
+                                )}
+                            </Box>
                             <Typography variant="h5" sx={{ fontWeight: 800 }} noWrap>{runLabel(run)}</Typography>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.25 }}>
-                                <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '60vw' }}>{repo} · {run.branch}</Typography>
+                                <Typography variant="body2" color="text.secondary" noWrap sx={{ fontFamily: 'monospace', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{repo} · {run.branch}</Typography>
                             </Box>
                         </Box>
                         {isPlanning
@@ -308,21 +326,15 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                     </Box>
 
                     {showTabs && (
-                        <Tabs value={active} onChange={(_, v) => onTab(v)} sx={{ mt: 1.5 }} variant="scrollable" scrollButtons="auto">
-                            {TABS.map((t) => <Tab key={t.key} value={t.key} label={t.label} />)}
-                        </Tabs>
+                        <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Tabs value={active} onChange={(_, v) => onTab(v)} sx={{ flexGrow: 1, minWidth: 0 }} variant="scrollable" scrollButtons="auto">
+                                {TABS.map((t) => <Tab key={t.key} value={t.key} label={t.label} />)}
+                            </Tabs>
+                            <LegendButton />
+                        </Box>
                     )}
                 </Box>
             </Box>
-
-            {showTabs && (
-                <Box sx={{ px: { xs: 2, sm: 4 }, py: 1, borderBottom: '1px solid', borderColor: 'divider', backgroundColor: 'background.paper' }}>
-                    <Box sx={{ maxWidth: 1180, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
-                        <Typography variant="overline" color="text.disabled" sx={{ flexShrink: 0 }}>legend</Typography>
-                        <StateLegend />
-                    </Box>
-                </Box>
-            )}
 
             {/* Run-level error advisory — visible across tabs */}
             {run.error && (

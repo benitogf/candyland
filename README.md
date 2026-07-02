@@ -231,7 +231,7 @@ Release `detritus --setup` pulls from. Build locally with `bazel build //:releas
 
 | Layer    | Choice                                                          |
 | -------- | --------------------------------------------------------------- |
-| UI       | React 19, Vite 7, MUI 7, xterm                                  |
+| UI       | React 19, Vite 7, MUI 7                                         |
 | Realtime | `ooo` + `ooo-client` over WebSocket                             |
 | Backend  | Go (ooo server + conductor), `mono` boilerplate, single binary |
 | Agents   | headless `claude -p --output-format stream-json`                |

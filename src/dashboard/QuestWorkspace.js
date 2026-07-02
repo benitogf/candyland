@@ -10,6 +10,8 @@ import CircularProgress from '@mui/material/CircularProgress'
 import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
+import Tab from '@mui/material/Tab'
+import Tabs from '@mui/material/Tabs'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
@@ -20,10 +22,11 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
 import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
-import { useQuest, useRuns, isBranchDelivered } from '../data/ooo'
+import { useQuest, useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
 import { pauseQuest, resumeQuest, stopQuest } from '../data/api'
 import { useToast } from '../feedback'
+import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 // Section header used across the detail views.
 const Block = ({ title, children }) => (
@@ -88,25 +91,30 @@ const QuestWorkspace = ({ id, onClose }) => {
         )
     }
 
+    const [tab, setTab] = React.useState('activity')
     const fail = (e) => toast(e?.message || 'Command failed — is the candyland server reachable?')
     const childRuns = allRuns.filter((r) => r.questId === quest.id)
     const ticks = quest.ticks || []
     const currentTick = ticks[ticks.length - 1] || null
-    const prs = quest.prs || []
+    // PRs the quest reported: its own list plus any opened during ticks — the
+    // per-repo delivery rollup merges them.
+    const tickPrs = ticks.flatMap((t) => t.prs || [])
+    const prs = [...(quest.prs || []), ...tickPrs]
+    const runsDone = childRuns.filter((r) => isFinished(r.status)).length
     const openRun = (runId) => navigate(`/run/${runId}`)
 
     return (
         <Dialog fullScreen open onClose={onClose} aria-label="Quest workspace" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2, pb: 2 }}>
-                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                     <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                            <Chip size="small" color="secondary" variant="outlined" label={`quest · ${quest.id}`} />
+                            <Chip size="small" color="secondary" variant="outlined" label={`quest · ${quest.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[quest.status] || 'default'} variant="outlined" label={quest.status} />
                             {quest.autonomyLevel && <Chip size="small" variant="outlined" label={AUTONOMY_LABEL[quest.autonomyLevel] || quest.autonomyLevel} />}
                             {quest.campaignId && <Link component="button" type="button" onClick={() => navigate(`/campaign/${quest.campaignId}`)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>↑ {quest.campaignId}</Link>}
                         </Box>
-                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>{quest.objective || quest.originalObjective || quest.id}</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{quest.objective || quest.originalObjective || quest.id}</Typography>
                     </Box>
                     <QuestControls
                         quest={quest} reachable={reachable}
@@ -118,15 +126,49 @@ const QuestWorkspace = ({ id, onClose }) => {
                 </Box>
             </Box>
 
+            <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 } }}>
+                <Box sx={{ maxWidth: 1100, mx: 'auto' }}>
+                    <Tabs value={tab} onChange={(_, v) => setTab(v)} aria-label="Quest detail sections">
+                        <Tab value="activity" label="Activity" />
+                        <Tab value="objective" label="Objective & intent" />
+                    </Tabs>
+                </Box>
+            </Box>
+
             <Box sx={{ flexGrow: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                 <Box sx={{ maxWidth: 1100, mx: 'auto', px: { xs: 2, sm: 4 }, py: 3 }}>
                     {quest.pauseReason && (quest.status === 'paused' || quest.status === 'blocked') && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {quest.pauseReason}</Alert>
                     )}
 
-                    <Block title="objective">
-                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{quest.originalObjective || quest.objective}</Typography>
-                        {quest.scope && <Typography variant="body2" sx={{ mt: 1 }}><b>Scope:</b> {quest.scope}</Typography>}
+                    {tab === 'objective' && (
+                        <Block title="objective">
+                            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{quest.originalObjective || quest.objective}</Typography>
+                            {quest.scope && <Typography variant="body2" sx={{ mt: 1 }}><b>Scope:</b> {quest.scope}</Typography>}
+                        </Block>
+                    )}
+
+                    {tab === 'activity' && (
+                    <>
+                    <Block title="rollup">
+                        <StatGrid done={runsDone} total={childRuns.length}>
+                            <Stat label="items done" value={quest.itemsCompleted || 0} sub={`${quest.itemsSkipped || 0} skipped · ${quest.itemsBlocked || 0} blocked`} color="success.main" />
+                            <Stat label="child runs" value={`${runsDone}/${childRuns.length}`} />
+                            <Stat label="PRs opened" value={quest.prsOpened || 0} />
+                            <Stat label="ticks" value={ticks.length} />
+                            <Stat label="tokens" value={(quest.tokensUsed || 0).toLocaleString()} sub={quest.tokenBudget ? `of ${quest.tokenBudget.toLocaleString()}` : undefined} />
+                        </StatGrid>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>per-repo delivery</Typography>
+                            <RepoDelivery prs={prs} />
+                        </Box>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>agent activity</Typography>
+                            <AgentActivity entities={[...childRuns, quest]} />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
+                            created {shortTime(quest.createdAt)} · updated {shortTime(quest.updatedAt)}{quest.lastProgress ? ` · last progress ${shortTime(quest.lastProgress)}` : ''}
+                        </Typography>
                     </Block>
 
                     <Block title="current tick">
@@ -145,16 +187,17 @@ const QuestWorkspace = ({ id, onClose }) => {
                             : (quest.workItems || []).map((it) => <Finding key={it.id} item={it} onRun={openRun} />)}
                     </Block>
 
+                    {/* Child runs are listed as drill-downs only — a link plus status.
+                        Per-run delivery detail (PR links, branch-committed state) is
+                        run-level and lives in the run workspace; the quest's own
+                        deliverables are aggregated in the PRs block below. */}
                     <Block title={`child runs · ${childRuns.length}`}>
                         {childRuns.length === 0
                             ? <Empty>No child runs launched yet.</Empty>
                             : childRuns.map((r) => (
                                 <Box key={r.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => openRun(r.id)} sx={{ fontWeight: 600 }}>{runLabel(r)}</Link>
+                                    <Link component="button" type="button" onClick={() => openRun(r.id)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{runLabel(r)}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[r.status] || 'default'} label={r.status} sx={{ height: 20 }} />
-                                    {isBranchDelivered(r)
-                                        ? <Chip size="small" variant="outlined" color="secondary" label="committed" title="Committed to the campaign branch — the parent opens the PR" sx={{ height: 20, ml: 'auto' }} />
-                                        : r.prUrl && <Link href={r.prUrl} target="_blank" rel="noreferrer" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, ml: 'auto' }}>PR <OpenInNewIcon sx={{ fontSize: 13 }} /></Link>}
                                 </Box>
                             ))}
                     </Block>
@@ -171,6 +214,8 @@ const QuestWorkspace = ({ id, onClose }) => {
                                 </Box>
                             ))}
                     </Block>
+                    </>
+                    )}
                 </Box>
             </Box>
         </Dialog>

@@ -27,7 +27,7 @@ const STATUS_OPTIONS = {
 const Select = ({ label, value, onChange, width = 150, children }) => (
     <TextField
         select size="small" label={label} value={value} onChange={(e) => onChange(e.target.value)}
-        sx={{ minWidth: width }} SelectProps={{ displayEmpty: true }}
+        sx={{ minWidth: width }} SelectProps={{ displayEmpty: true }} InputLabelProps={{ shrink: true }}
     >
         {children}
     </TextField>
@@ -54,8 +54,8 @@ const FilterBar = ({ level, filters, runs, quests, campaigns, onChange, onClear 
 
             {showParent && (
                 <Select label="Parent" value={filters.parent} onChange={(v) => onChange('parent', v)} width={170}>
-                    <MenuItem value="">Any parent</MenuItem>
                     <MenuItem value="none">No parent</MenuItem>
+                    <MenuItem value="any">Any parent</MenuItem>
                     {campaignOpts.length > 0 && <MenuItem disabled value="__c">— campaigns —</MenuItem>}
                     {campaignOpts.map((id) => <MenuItem key={id} value={id}>{id}</MenuItem>)}
                     {level === 'runs' && questOpts.length > 0 && <MenuItem disabled value="__q">— quests —</MenuItem>}

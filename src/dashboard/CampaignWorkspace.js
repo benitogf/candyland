@@ -10,6 +10,10 @@ import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
 import Typography from '@mui/material/Typography'
+import Accordion from '@mui/material/Accordion'
+import AccordionSummary from '@mui/material/AccordionSummary'
+import AccordionDetails from '@mui/material/AccordionDetails'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import CloseIcon from '@mui/icons-material/Close'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
@@ -17,6 +21,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
 import { useCampaign, useQuests, useRuns } from '../data/ooo'
+import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 const Block = ({ title, children }) => (
     <Card sx={{ mb: 2.5 }}>
@@ -25,6 +30,17 @@ const Block = ({ title, children }) => (
             {children}
         </CardContent>
     </Card>
+)
+
+// Secondary, collapsed-by-default section — used to tuck the campaign intent
+// below the live child/agent activity that now leads the workspace.
+const CollapsedBlock = ({ title, children }) => (
+    <Accordion disableGutters sx={{ mb: 2.5, backgroundImage: 'none' }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="overline" color="secondary">{title}</Typography>
+        </AccordionSummary>
+        <AccordionDetails>{children}</AccordionDetails>
+    </Accordion>
 )
 
 const Empty = ({ children }) => <Typography variant="body2" color="text.secondary">{children}</Typography>
@@ -74,21 +90,34 @@ const CampaignWorkspace = ({ id, onClose }) => {
     const verdicts = campaign.intentReview?.verdicts || []
     const verdictFor = (cid) => verdicts.find((v) => v.commitmentId === cid)
     const childQuests = allQuests.filter((q) => q.campaignId === campaign.id || (campaign.questIds || []).includes(q.id))
-    const childRuns = allRuns.filter((r) => r.campaignId === campaign.id || (campaign.runIds || []).includes(r.id))
+    // Only the campaign's DIRECT child runs belong at this level. A quest's child
+    // runs inherit CampaignID (quest_exec.go), so filtering on campaignId alone
+    // would pull those grandchild runs up here — they belong under their quest.
+    // Runs launched by the campaign itself carry no questId (linkCampaignChild).
+    const childRuns = allRuns.filter((r) => !r.questId && (r.campaignId === campaign.id || (campaign.runIds || []).includes(r.id)))
     const prs = campaign.prs || []
     const routing = campaign.reviewRouting?.length ? campaign.reviewRouting : brief.reviewRouting || []
+
+    // Rollup aggregates across the campaign's children and its own review.
+    const questsDone = childQuests.filter((q) => isFinished(q.status)).length
+    const runsDone = childRuns.filter((r) => isFinished(r.status)).length
+    const childrenDone = questsDone + runsDone
+    const childrenTotal = childQuests.length + childRuns.length
+    const verdictCounts = verdicts.reduce((acc, v) => { acc[v.verdict] = (acc[v.verdict] || 0) + 1; return acc }, {})
+    const gateState = (g) => (!g?.decidedAt ? 'pending' : g.passed ? 'passed' : 'failed')
+    const gateColor = (g) => (!g?.decidedAt ? 'default' : g.passed ? 'success' : 'error')
 
     return (
         <Dialog fullScreen open onClose={onClose} aria-label="Campaign workspace" PaperProps={{ sx: { backgroundColor: 'background.default', backgroundImage: 'none', display: 'flex', flexDirection: 'column' } }}>
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', px: { xs: 2, sm: 4 }, pt: 2, pb: 2 }}>
-                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box sx={{ maxWidth: 1100, mx: 'auto', display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
                     <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                            <Chip size="small" color="secondary" variant="outlined" label={`campaign · ${campaign.id}`} />
+                            <Chip size="small" color="secondary" variant="outlined" label={`campaign · ${campaign.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[campaign.status] || 'default'} variant="outlined" label={campaign.status} />
                             {campaign.autonomyLevel && <Chip size="small" variant="outlined" label={AUTONOMY_LABEL[campaign.autonomyLevel] || campaign.autonomyLevel} />}
                         </Box>
-                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5 }}>{brief.restatedGoal || campaign.originalInput || campaign.id}</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{brief.restatedGoal || campaign.originalInput || campaign.id}</Typography>
                     </Box>
                     {/* Campaign control endpoints don't exist yet — state is read-only. */}
                     <Chip label="read-only" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
@@ -102,34 +131,36 @@ const CampaignWorkspace = ({ id, onClose }) => {
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {campaign.pauseReason}</Alert>
                     )}
 
-                    <Block title="original intent">
-                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{campaign.originalInput}</Typography>
-                    </Block>
-
-                    <Block title="intent brief">
-                        {brief.restatedGoal
-                            ? (
+                    <Block title="rollup">
+                        <StatGrid done={childrenDone} total={childrenTotal}>
+                            <Stat label="quests" value={`${questsDone}/${childQuests.length}`} />
+                            <Stat label="runs" value={`${runsDone}/${childRuns.length}`} />
+                            <Stat label="PRs" value={prs.filter((p) => p.url).length} sub={`of ${prs.length} repo${prs.length === 1 ? '' : 's'}`} />
+                            <Stat label="commitments" value={commitments.length} sub={verdicts.length ? `${verdictCounts.satisfied || 0} satisfied` : 'unreviewed'} color="success.main" />
+                            <Stat label="tokens" value={(campaign.tokensUsed || 0).toLocaleString()} sub={campaign.tokenBudget ? `of ${campaign.tokenBudget.toLocaleString()}` : undefined} />
+                        </StatGrid>
+                        <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                            <Chip size="small" variant="outlined" color={gateColor(campaign.briefGate)} label={`brief gate: ${gateState(campaign.briefGate)}`} sx={{ height: 22 }} />
+                            <Chip size="small" variant="outlined" color={gateColor(campaign.planGate)} label={`plan gate: ${gateState(campaign.planGate)}`} sx={{ height: 22 }} />
+                            {verdicts.length > 0 && (
                                 <>
-                                    <Typography variant="body2"><b>Restated goal:</b> {brief.restatedGoal}</Typography>
-                                    {brief.roughSizing && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Sizing: {brief.roughSizing}</Typography>}
-                                    {brief.scopeByDomain?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">scope by domain</Typography><Bullets items={brief.scopeByDomain} /></Box>}
-                                    {commitments.length > 0 && (
-                                        <Box sx={{ mt: 1.5 }}>
-                                            <Typography variant="caption" color="text.secondary">commitments</Typography>
-                                            {commitments.map((c) => (
-                                                <Typography key={c.id} component="div" variant="body2" color="text.secondary" sx={{ pl: 1 }}>• {c.statement}</Typography>
-                                            ))}
-                                        </Box>
-                                    )}
-                                    {brief.openQuestions?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">open questions</Typography><Bullets items={brief.openQuestions} /></Box>}
+                                    {verdictCounts.satisfied > 0 && <Chip size="small" variant="outlined" color="success" label={`${verdictCounts.satisfied} satisfied`} sx={{ height: 22 }} />}
+                                    {verdictCounts.partial > 0 && <Chip size="small" variant="outlined" color="warning" label={`${verdictCounts.partial} partial`} sx={{ height: 22 }} />}
+                                    {verdictCounts.missed > 0 && <Chip size="small" variant="outlined" color="error" label={`${verdictCounts.missed} missed`} sx={{ height: 22 }} />}
                                 </>
-                            )
-                            : <Empty>Brief not yet produced.</Empty>}
-                    </Block>
-
-                    <Block title="gates">
-                        <Gate label="brief gate" gate={campaign.briefGate} />
-                        <Gate label="plan gate" gate={campaign.planGate} />
+                            )}
+                        </Box>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>per-repo delivery</Typography>
+                            <RepoDelivery prs={prs} />
+                        </Box>
+                        <Box sx={{ mt: 2 }}>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>agent activity</Typography>
+                            <AgentActivity entities={[...childRuns, ...childQuests, campaign]} />
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
+                            created {shortTime(campaign.createdAt)} · updated {shortTime(campaign.updatedAt)}{campaign.intentReview?.reviewedAt ? ` · reviewed ${shortTime(campaign.intentReview.reviewedAt)}` : ''}
+                        </Typography>
                     </Block>
 
                     <Block title={`child quests · ${childQuests.length}`}>
@@ -137,7 +168,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                             ? <Empty>No child quests launched yet.</Empty>
                             : childQuests.map((q) => (
                                 <Box key={q.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => navigate(`/quest/${q.id}`)} sx={{ fontWeight: 600 }}>{q.objective || q.id}</Link>
+                                    <Link component="button" type="button" onClick={() => navigate(`/quest/${q.id}`)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{q.objective || q.id}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[q.status] || 'default'} label={q.status} sx={{ height: 20 }} />
                                 </Box>
                             ))}
@@ -148,7 +179,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                             ? <Empty>No child runs launched yet.</Empty>
                             : childRuns.map((r) => (
                                 <Box key={r.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => navigate(`/run/${r.id}`)} sx={{ fontWeight: 600 }}>{runLabel(r)}</Link>
+                                    <Link component="button" type="button" onClick={() => navigate(`/run/${r.id}`)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{runLabel(r)}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[r.status] || 'default'} label={r.status} sx={{ height: 20 }} />
                                 </Box>
                             ))}
@@ -187,6 +218,36 @@ const CampaignWorkspace = ({ id, onClose }) => {
                                 )
                             })}
                     </Block>
+
+                    <CollapsedBlock title="gates">
+                        <Gate label="brief gate" gate={campaign.briefGate} />
+                        <Gate label="plan gate" gate={campaign.planGate} />
+                    </CollapsedBlock>
+
+                    <CollapsedBlock title="original intent">
+                        <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>{campaign.originalInput}</Typography>
+                    </CollapsedBlock>
+
+                    <CollapsedBlock title="intent brief">
+                        {brief.restatedGoal
+                            ? (
+                                <>
+                                    <Typography variant="body2"><b>Restated goal:</b> {brief.restatedGoal}</Typography>
+                                    {brief.roughSizing && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Sizing: {brief.roughSizing}</Typography>}
+                                    {brief.scopeByDomain?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">scope by domain</Typography><Bullets items={brief.scopeByDomain} /></Box>}
+                                    {commitments.length > 0 && (
+                                        <Box sx={{ mt: 1.5 }}>
+                                            <Typography variant="caption" color="text.secondary">commitments</Typography>
+                                            {commitments.map((c) => (
+                                                <Typography key={c.id} component="div" variant="body2" color="text.secondary" sx={{ pl: 1 }}>• {c.statement}</Typography>
+                                            ))}
+                                        </Box>
+                                    )}
+                                    {brief.openQuestions?.length > 0 && <Box sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">open questions</Typography><Bullets items={brief.openQuestions} /></Box>}
+                                </>
+                            )
+                            : <Empty>Brief not yet produced.</Empty>}
+                    </CollapsedBlock>
                 </Box>
             </Box>
         </Dialog>

@@ -19,6 +19,7 @@ import { runLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, deliverOf } from '../data/ooo'
 import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
+import CopyReference from '../components/CopyReference'
 
 // ── The one work/history section ─────────────────────────────────────────────
 // A single section that PIVOTS by level — Runs/Tasks · Quests · Campaigns —
@@ -120,6 +121,7 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Typography variant="body2" sx={{ fontWeight: 600 }}>{runLabel(r)}</Typography>
                             {r.archived && <Chip size="small" variant="outlined" label="cleared" sx={{ height: 18, fontSize: 10 }} />}
+                            <CopyReference kind="run" id={r.id} />
                         </Box>
                     </TableCell>
                     <TableCell><StatusChip status={r.status} text={statusText(r)} /></TableCell>
@@ -137,7 +139,10 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
     </>
 )
 
-const QuestsTable = ({ rows, onOpen, onPivot }) => (
+// Clicking a quest row drills the section down to that quest's child runs
+// (parent-filtered), rather than opening the quest's overview modal. The
+// campaign parent link still pivots up via onPivot.
+const QuestsTable = ({ rows, onDrill, onPivot }) => (
     <>
         <TableHead>
             <TableRow>
@@ -150,9 +155,12 @@ const QuestsTable = ({ rows, onOpen, onPivot }) => (
         </TableHead>
         <TableBody>
             {rows.map((q) => (
-                <TableRow key={q.id} hover onClick={() => onOpen('quest', q.id)} sx={{ cursor: 'pointer' }}>
+                <TableRow key={q.id} hover onClick={() => onDrill('runs', q.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{q.objective || q.originalObjective || q.id}</Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{q.objective || q.originalObjective || q.id}</Typography>
+                            <CopyReference kind="quest" id={q.id} />
+                        </Box>
                         <FolderText folder={folderOf(q)} />
                     </TableCell>
                     <TableCell><StatusChip status={q.status} text={statusText(q)} /></TableCell>
@@ -171,7 +179,9 @@ const QuestsTable = ({ rows, onOpen, onPivot }) => (
     </>
 )
 
-const CampaignsTable = ({ rows, onOpen }) => (
+// Clicking a campaign row drills the section down to that campaign's child
+// quests (parent-filtered), rather than opening the campaign's overview modal.
+const CampaignsTable = ({ rows, onDrill }) => (
     <>
         <TableHead>
             <TableRow>
@@ -183,9 +193,12 @@ const CampaignsTable = ({ rows, onOpen }) => (
         </TableHead>
         <TableBody>
             {rows.map((c) => (
-                <TableRow key={c.id} hover onClick={() => onOpen('campaign', c.id)} sx={{ cursor: 'pointer' }}>
+                <TableRow key={c.id} hover onClick={() => onDrill('quests', c.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{c.intentBrief?.restatedGoal || c.originalInput || c.id}</Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{c.intentBrief?.restatedGoal || c.originalInput || c.id}</Typography>
+                            <CopyReference kind="campaign" id={c.id} />
+                        </Box>
                     </TableCell>
                     <TableCell><StatusChip status={c.status} text={statusText(c)} /></TableCell>
                     <TableCell>
@@ -254,6 +267,10 @@ const Tasks = () => {
         else p.delete('parent')
         setParams(p)
     }
+    // Drill DOWN into an item's children: pivot to the child level filtered to
+    // this item's id. Mechanically the same URL mutation as pivotToParent (set
+    // level + parent), just invoked from a row click to go one level down.
+    const pivotToChildren = pivotToParent
     const setFilter = (key, value) => {
         const p = new URLSearchParams(params)
         if (value) p.set(key, value)
@@ -300,8 +317,8 @@ const Tasks = () => {
                     {filtered.length === 0
                         ? <TableBody><TableRow><TableCell colSpan={COLSPAN[level]} sx={{ color: 'text.secondary' }}>{empty}</TableCell></TableRow></TableBody>
                         : level === 'runs' ? <RunsTable rows={filtered} onOpen={openDetail} onPivot={pivotToParent} />
-                            : level === 'quests' ? <QuestsTable rows={filtered} onOpen={openDetail} onPivot={pivotToParent} />
-                                : <CampaignsTable rows={filtered} onOpen={openDetail} />}
+                            : level === 'quests' ? <QuestsTable rows={filtered} onDrill={pivotToChildren} onPivot={pivotToParent} />
+                                : <CampaignsTable rows={filtered} onDrill={pivotToChildren} />}
                 </Table>
             </Card>
         </Box>

@@ -9,8 +9,6 @@
         "@emotion/styled": "^11.13.5",
         "@mui/icons-material": "^7.3.5",
         "@mui/material": "^7.3.5",
-        "@xterm/addon-fit": "^0.11.0",
-        "@xterm/xterm": "^6.0.0",
         "mermaid": "^11.4.1",
         "ooo-client": "^1.0.0",
         "react": "^19.2.0",

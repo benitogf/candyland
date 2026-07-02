@@ -5,8 +5,11 @@
 //
 // The filter keys (all optional, all strings in the URL):
 //   q         text search (matches id/title/objective/intent/folder/branch)
-//   parent    'none' = no-parent (runs with no questId/campaignId), else a
-//             campaign id (cN) or quest id (qN) to filter children by
+//   parent    'none' = no-parent (runs with no questId/campaignId) — this is the
+//             DEFAULT so the Work list leads with top-level work and children are
+//             reached by drilling into their parent; 'any' = show every item flat
+//             (children included); a campaign id (cN) or quest id (qN) filters to
+//             that parent's children
 //   repo      folder/repo substring
 //   status    exact status (running|paused|done|cancelled|stopped|blocked|…)
 //   pr        PR state: 'open' (has a PR) | 'none' (no PR)
@@ -33,7 +36,10 @@ export const folderOf = (item) => item.folders?.[0] || ''
 // Read the active filter set out of URLSearchParams.
 export const readFilters = (params) => ({
     q: params.get('q') || '',
-    parent: params.get('parent') || '',
+    // Default to no-parent: the Work list leads with top-level runs/quests, and
+    // children are reached by drilling into their parent (pick "Any parent" to
+    // flatten). Absence of the param means the default, not "show everything".
+    parent: params.get('parent') || 'none',
     repo: params.get('repo') || '',
     status: params.get('status') || '',
     pr: params.get('pr') || '',
@@ -41,8 +47,10 @@ export const readFilters = (params) => ({
     to: params.get('to') || '',
 })
 
-// True when no narrowing filter is set (text is handled separately).
-export const noFilters = (f) => !f.parent && !f.repo && !f.status && !f.pr && !f.from && !f.to
+// True when only the defaults are active (text is handled separately). The
+// default parent is 'none', so it is not itself a narrowing filter — only an
+// explicit parent id or 'any' counts.
+export const noFilters = (f) => (!f.parent || f.parent === 'none') && !f.repo && !f.status && !f.pr && !f.from && !f.to
 
 // Apply the shared filters to one item. `level` tells us how to read parent
 // links: a run's parent is questId/campaignId, a quest's parent is campaignId,
@@ -53,12 +61,14 @@ export const matchFilters = (item, f, level, textFields) => {
         const needle = lc(f.q)
         if (!textFields.some((s) => lc(s).includes(needle))) return false
     }
-    // parent: 'none' surfaces items executed outside any quest/campaign
+    // parent: 'none' (the default) surfaces items executed outside any
+    // quest/campaign; 'any' flattens (no parent narrowing); a specific id filters
+    // to that parent's children.
     if (f.parent === 'none') {
         if (level === 'runs' && (item.questId || item.campaignId)) return false
         if (level === 'quests' && item.campaignId) return false
         // campaigns have no parent — always "no parent", so they pass
-    } else if (f.parent) {
+    } else if (f.parent && f.parent !== 'any') {
         const parents = [item.questId, item.campaignId].filter(Boolean)
         if (!parents.includes(f.parent)) return false
     }
