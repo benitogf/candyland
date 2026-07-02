@@ -8,7 +8,7 @@ import CloseIcon from '@mui/icons-material/Close'
 
 import { useRun } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
-import { commandRun, cancelRun } from '../data/api'
+import { stopRun, cancelRun } from '../data/api'
 import { useToast } from '../feedback'
 import RunWorkspace from './RunWorkspace'
 
@@ -34,8 +34,8 @@ export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
         )
     }
 
-    // Show the server's reason (e.g. a 409 "not restart-able") rather than always
-    // blaming reachability — the request may well have reached the server.
+    // Show the server's reason rather than always blaming reachability — the
+    // request may well have reached the server.
     const cmdFail = (e) => toast(e?.message || 'Command failed — is the candyland server reachable?')
     // A run sits in "planning" only briefly: detritus begins it right after
     // creating it. Show a transient "starting" view until the executor spawns.
@@ -48,17 +48,16 @@ export const LiveRunWorkspace = ({ id, tab, onClose, onTab }) => {
         )
         : null
 
-    // Lean, flow-level control surface: Stop and Restart while running, and
-    // Cancel (abandon) available in every state — including while still in
-    // planning, where Stop has no executor to reach. No per-agent control, no
-    // resume. Cancel always closes the workspace, even if the delete couldn't
-    // land, so the user is never trapped.
+    // Lean, flow-level control surface: Stop is the only interaction while a run
+    // is live (no restart, edit, pause, or resume), and Cancel (abandon) is
+    // available while still in planning, where Stop has no executor to reach.
+    // Cancel always closes the workspace, even if the delete couldn't land, so
+    // the user is never trapped.
     const controls = {
         status: run.status,
         controllable: true,
         reachable,
-        stop: () => commandRun(id, 'stop').catch(cmdFail),
-        restart: () => commandRun(id, 'restart').catch(cmdFail),
+        stop: () => stopRun(id).catch(cmdFail),
         cancel: () => cancelRun(id).catch(cmdFail).finally(onClose),
     }
 

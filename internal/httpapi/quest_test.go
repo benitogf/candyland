@@ -74,7 +74,7 @@ func TestQuestCreateFeedbackRequiresTargetPR(t *testing.T) {
 }
 
 // The quest REST surface mirrors the run endpoints: create returns {id}, the
-// snapshot is served from storage, and pause/resume/stop drive the lifecycle.
+// snapshot is served from storage, and stop is the terminal lifecycle control.
 func TestQuestEndpointsLifecycle(t *testing.T) {
 	_, srv := questServer(t)
 	base := "http://" + srv.Address
@@ -103,26 +103,15 @@ func TestQuestEndpointsLifecycle(t *testing.T) {
 		t.Fatalf("snapshot wrong: %+v", q)
 	}
 
-	// Pause with a reason.
-	if r := post(t, base+"/api/quests/"+created.ID+"/pause", map[string]string{"reason": "hold"}); r.StatusCode != http.StatusNoContent {
-		t.Fatalf("pause status = %d, want 204", r.StatusCode)
+	// Stop is terminal, with a reason.
+	if r := post(t, base+"/api/quests/"+created.ID+"/stop", map[string]string{"reason": "fin"}); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("stop status = %d, want 204", r.StatusCode)
 	}
 	get, _ = http.Get(base + "/api/quests/" + created.ID)
 	_ = json.NewDecoder(get.Body).Decode(&q)
 	get.Body.Close()
-	if q.Status != "paused" || q.PauseReason != "hold" {
-		t.Fatalf("pause not applied: status=%q reason=%q", q.Status, q.PauseReason)
-	}
-
-	// Resume (a paused quest with no real claude will resume then settle — we only
-	// assert the endpoint accepts it).
-	if r := post(t, base+"/api/quests/"+created.ID+"/resume", nil); r.StatusCode != http.StatusNoContent {
-		t.Fatalf("resume status = %d, want 204", r.StatusCode)
-	}
-
-	// Stop is terminal.
-	if r := post(t, base+"/api/quests/"+created.ID+"/stop", map[string]string{"reason": "fin"}); r.StatusCode != http.StatusNoContent {
-		t.Fatalf("stop status = %d, want 204", r.StatusCode)
+	if q.Status != "stopped" || q.PauseReason != "fin" {
+		t.Fatalf("stop not applied: status=%q reason=%q", q.Status, q.PauseReason)
 	}
 	// A stopped quest can't begin.
 	if r := post(t, base+"/api/quests/"+created.ID+"/begin", nil); r.StatusCode != http.StatusConflict {
@@ -159,7 +148,7 @@ func TestQuestEndpointsNotFound(t *testing.T) {
 	if g, _ := http.Get(base + "/api/quests/nope"); g.StatusCode != http.StatusNotFound {
 		t.Errorf("GET unknown quest = %d, want 404", g.StatusCode)
 	}
-	if r := post(t, base+"/api/quests/nope/pause", nil); r.StatusCode != http.StatusNotFound {
-		t.Errorf("pause unknown quest = %d, want 404", r.StatusCode)
+	if r := post(t, base+"/api/quests/nope/stop", nil); r.StatusCode != http.StatusNotFound {
+		t.Errorf("stop unknown quest = %d, want 404", r.StatusCode)
 	}
 }

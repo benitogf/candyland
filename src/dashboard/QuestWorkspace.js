@@ -15,8 +15,6 @@ import Tabs from '@mui/material/Tabs'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
-import PauseCircleIcon from '@mui/icons-material/PauseCircle'
-import PlayCircleIcon from '@mui/icons-material/PlayCircle'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
 
@@ -24,8 +22,9 @@ import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
 import { useQuest, useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
-import { pauseQuest, resumeQuest, stopQuest } from '../data/api'
+import { stopQuest } from '../data/api'
 import { useToast } from '../feedback'
+import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 // Section header used across the detail views.
@@ -40,20 +39,27 @@ const Block = ({ title, children }) => (
 
 const Empty = ({ children }) => <Typography variant="body2" color="text.secondary">{children}</Typography>
 
-// Quest control: pause/resume/stop are the only quest controls the backend
-// exposes (lean, flow-level — no per-tick control). Disabled when offline.
-const QuestControls = ({ quest, reachable, onPause, onResume, onStop }) => {
+// Quest control: Stop is the only interaction (lean, flow-level — no pause,
+// resume, or per-tick control). Stop is terminal, irreversible, and CASCADES to
+// the quest's child runs, so it goes through a confirmation naming that scope.
+const QuestControls = ({ quest, reachable, childRunCount, onStop }) => {
+    const [confirm, setConfirm] = React.useState(false)
     const offline = reachable === false
     const tip = offline ? 'Server unreachable — start ./candyland to control this quest' : ''
     const terminal = quest.status === 'done' || quest.status === 'stopped'
     if (terminal) return <Chip label={quest.status} size="small" color={STATUS_COLOR[quest.status] || 'default'} variant="outlined" sx={{ flexShrink: 0 }} />
+    const scope = childRunCount > 0
+        ? `this quest and its ${childRunCount} run${childRunCount === 1 ? '' : 's'}`
+        : 'this quest'
     return (
         <Tooltip title={tip} disableHoverListener={!offline}>
             <Box component="span" sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
-                {quest.status === 'paused'
-                    ? <Button color="primary" variant="contained" startIcon={<PlayCircleIcon />} disabled={offline} onClick={onResume}>Resume</Button>
-                    : <Button color="inherit" variant="outlined" startIcon={<PauseCircleIcon />} disabled={offline} onClick={onPause}>Pause</Button>}
-                <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} disabled={offline} onClick={onStop}>Stop</Button>
+                <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} disabled={offline} onClick={() => setConfirm(true)}>Stop</Button>
+                <ConfirmStopDialog
+                    open={confirm} what="this quest" scope={scope}
+                    onCancel={() => setConfirm(false)}
+                    onConfirm={() => { setConfirm(false); onStop() }}
+                />
             </Box>
         </Tooltip>
     )
@@ -117,9 +123,7 @@ const QuestWorkspace = ({ id, onClose }) => {
                         <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{quest.objective || quest.originalObjective || quest.id}</Typography>
                     </Box>
                     <QuestControls
-                        quest={quest} reachable={reachable}
-                        onPause={() => pauseQuest(id).catch(fail)}
-                        onResume={() => resumeQuest(id).catch(fail)}
+                        quest={quest} reachable={reachable} childRunCount={childRuns.length}
                         onStop={() => stopQuest(id).catch(fail)}
                     />
                     <IconButton onClick={onClose} aria-label="close" sx={{ flexShrink: 0 }}><CloseIcon /></IconButton>

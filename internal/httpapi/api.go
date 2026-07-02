@@ -1,6 +1,6 @@
 // Package httpapi wires the conductor to ooo: it opens the realtime run paths
 // for subscription and exposes REST endpoints the React app calls to create
-// runs, begin the build after planning, send Stop/Restart, and fetch the
+// runs, begin the build after planning, send Stop, and fetch the
 // planning questions. No data is hardcoded in the client.
 package httpapi
 
@@ -121,7 +121,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
-	// Stop / Restart.
+	// Stop — the only run command.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/runs/{id}/command",
 		Methods: post,
@@ -133,22 +133,15 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			// Lean control surface: stop pauses a live run; restart re-runs from a
-			// clean slate — including a FINISHED/failed run, whose executor has
-			// exited (Restart relaunches it; Command only reaches a live executor).
+			// Lean control surface: stop is the only run command — it halts a live
+			// run. No restart/edit/pause/resume.
 			id := mux.Vars(r)["id"]
-			var ok bool
-			switch body.Command {
-			case "stop":
-				ok = c.Command(id, "stop")
-			case "restart":
-				ok = c.Restart(id)
-			default:
+			if body.Command != "stop" {
 				http.Error(w, "unknown command: "+body.Command, http.StatusBadRequest)
 				return
 			}
-			if !ok {
-				http.Error(w, "run not found or not "+body.Command+"-able", http.StatusConflict)
+			if !c.Command(id, "stop") {
+				http.Error(w, "run not found or not stop-able", http.StatusConflict)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -164,29 +157,6 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		Handler: func(w http.ResponseWriter, r *http.Request) {
 			if !c.Cancel(mux.Vars(r)["id"]) {
 				http.Error(w, "run not found", http.StatusNotFound)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-
-	// Edit: change a finished run's task in place and reset it to planning.
-	// Distinct from restart, which re-runs the task as-is.
-	server.Endpoint(ooo.EndpointConfig{
-		Path:    "/api/runs/{id}/edit",
-		Methods: post,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			var spec run.Spec
-			if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if strings.TrimSpace(spec.Prompt) == "" || len(spec.Folders) == 0 {
-				http.Error(w, "a prompt and at least one folder are required", http.StatusBadRequest)
-				return
-			}
-			if !c.Edit(mux.Vars(r)["id"], spec) {
-				http.Error(w, "run not found or can't be edited while running", http.StatusConflict)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -212,7 +182,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 }
 
 // registerCampaignEndpoints mounts the campaign REST surface, mirroring the quest
-// endpoints: create, begin (kick the supervisor), read status, pause/resume, stop,
+// endpoints: create, begin (kick the supervisor), read status, stop (cascades),
 // and the child quests/runs rollups. Campaign state is served from storage (so it
 // works for untracked campaigns too), exactly like the run/quest snapshot endpoints.
 func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
@@ -270,33 +240,8 @@ func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
-	// Pause the supervisor (no delete) with a reason.
-	server.Endpoint(ooo.EndpointConfig{
-		Path:    "/api/campaigns/{id}/pause",
-		Methods: post,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			if !c.PauseCampaign(mux.Vars(r)["id"], reasonFromBody(r)) {
-				http.Error(w, "campaign not found", http.StatusNotFound)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-
-	// Resume a paused (or blocked) campaign.
-	server.Endpoint(ooo.EndpointConfig{
-		Path:    "/api/campaigns/{id}/resume",
-		Methods: post,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			if !c.ResumeCampaign(mux.Vars(r)["id"]) {
-				http.Error(w, "campaign not found or not paused", http.StatusConflict)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-
-	// Stop: terminal halt with a reason.
+	// Stop: terminal halt with a reason. Cascades to the campaign's child quests
+	// and runs.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/campaigns/{id}/stop",
 		Methods: post,
@@ -329,7 +274,7 @@ func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
 }
 
 // registerQuestEndpoints mounts the quest REST surface, mirroring the run
-// endpoints' style: create, begin (kick the tick loop), read status, pause/resume,
+// endpoints' style: create, begin (kick the tick loop), read status, stop (cascades),
 // stop, and the child-runs / findings rollups. Quest state is served from storage
 // (so it works for untracked quests too), exactly like the run snapshot endpoint.
 func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
@@ -387,33 +332,7 @@ func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
-	// Pause future ticks (no delete) with a reason.
-	server.Endpoint(ooo.EndpointConfig{
-		Path:    "/api/quests/{id}/pause",
-		Methods: post,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			if !c.PauseQuest(mux.Vars(r)["id"], reasonFromBody(r)) {
-				http.Error(w, "quest not found", http.StatusNotFound)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-
-	// Resume a paused quest.
-	server.Endpoint(ooo.EndpointConfig{
-		Path:    "/api/quests/{id}/resume",
-		Methods: post,
-		Handler: func(w http.ResponseWriter, r *http.Request) {
-			if !c.ResumeQuest(mux.Vars(r)["id"]) {
-				http.Error(w, "quest not found or not paused", http.StatusConflict)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-
-	// Stop: terminal halt with a reason.
+	// Stop: terminal halt with a reason. Cascades to the quest's child runs.
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/quests/{id}/stop",
 		Methods: post,

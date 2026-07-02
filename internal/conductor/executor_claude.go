@@ -97,27 +97,12 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 				cancel()
 				stopped = true
 				c.Update(id, func(r *run.Run) { r.Status = "paused" })
-			case "restart":
-				cancel()
-				ctx, cancel = context.WithCancel(context.Background())
-				stopped = false // a fresh re-run — the next <-done is a real completion
-				// A restart is a fresh re-run — clear any prior error so the new run
-				// can reach completion (the phase/green gates key off r.Error).
-				c.Update(id, func(r *run.Run) { r.Status = "running"; r.Error = "" })
-				done = run1(ctx)
-			case "quit":
-				// Terminate this executor entirely (used by Edit to re-plan a paused
-				// run): kill the process tree and exit the goroutine. The conductor
-				// has already reset the run, so we publish nothing here.
-				cancel()
-				c.cleanupBusConfigs(id) // a re-planned run regenerates these on its next spawn
-				return
 			}
 		case <-done:
 			if stopped {
 				// Stopped — park on the control channel only. Setting done to nil
 				// stops this select from spinning on the now-closed done channel
-				// (a busy loop); a restart installs a fresh done below.
+				// (a busy loop).
 				done = nil
 				continue
 			}

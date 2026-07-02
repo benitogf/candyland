@@ -19,17 +19,14 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
-import ReplayIcon from '@mui/icons-material/Replay'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
-import EditIcon from '@mui/icons-material/Edit'
 import CallMergeIcon from '@mui/icons-material/CallMerge'
 
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
 import { deliverOf } from '../data/ooo'
 import { StateChip, LegendButton } from '../components/StatusBits'
-import EditRunDialog from '../components/EditRunDialog'
-import RunSwitcher from './RunSwitcher'
+import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import AgentsPanel from '../panels/AgentsPanel'
 import TasksPanel from '../panels/TasksPanel'
 
@@ -183,27 +180,14 @@ const DeliveryOutcome = ({ run }) => {
     return null
 }
 
-const RunControls = ({ run, controls, done, onEdit }) => {
+// Stop is the ONLY live-run control (no restart, edit, pause, or resume). A
+// finished / failed / stopped run shows its terminal outcome and nothing more —
+// runs are not re-runnable from the UI.
+const RunControls = ({ run, controls, done }) => {
+    const [confirm, setConfirm] = useState(false)
     const offline = controls.reachable === false
-    const offlineTip = 'Server unreachable — start ./candyland to control this run'
     const outcome = <DeliveryOutcome run={run} />
     const hasOutcome = deliverOf(run) !== 'pr'
-    const RestartButton = ({ label }) => (
-        <Tooltip title={offline ? offlineTip : 'Re-run this task as-is'} disableHoverListener={false}>
-            <Box component="span">
-                <Button color="primary" variant="contained" startIcon={<ReplayIcon />} disabled={offline} onClick={controls.restart}>{label}</Button>
-            </Box>
-        </Tooltip>
-    )
-    // Edit re-opens the task setup (changing it re-plans) — distinct from Restart
-    // (re-run as-is). Offered on finished runs.
-    const EditButton = () => (
-        <Tooltip title={offline ? offlineTip : 'Change the request and re-plan'} disableHoverListener={false}>
-            <Box component="span">
-                <Button color="inherit" variant="outlined" startIcon={<EditIcon />} disabled={offline} onClick={onEdit}>Edit</Button>
-            </Box>
-        </Tooltip>
-    )
 
     if (!controls.controllable) {
         if (done && hasOutcome) return outcome
@@ -218,29 +202,27 @@ const RunControls = ({ run, controls, done, onEdit }) => {
         return (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                 {run.error
-                    ? <><Chip label="failed" size="small" color="error" variant="outlined" /><RestartButton label="Restart" /></>
+                    ? <Chip label="failed" size="small" color="error" variant="outlined" />
                     : hasOutcome
                         ? outcome
                         : run.prUrl
                             ? <Button component="a" href={run.prUrl} target="_blank" rel="noreferrer" color="secondary" variant="outlined" endIcon={<OpenInNewIcon />}>PR #{run.prUrl.split('/').pop()}</Button>
                             : <Chip label="completed" size="small" color="success" variant="outlined" />}
-                <EditButton />
             </Box>
         )
     }
     if (controls.status === 'paused') {
-        return (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
-                <Chip label="stopped" size="small" color="warning" variant="outlined" />
-                <RestartButton label="Restart" />
-                <EditButton />
-            </Box>
-        )
+        return <Chip label="stopped" size="small" color="warning" variant="outlined" sx={{ flexShrink: 0 }} />
     }
     return (
-        <Tooltip title={offline ? offlineTip : ''} disableHoverListener={!offline}>
+        <Tooltip title={offline ? 'Server unreachable — start ./candyland to control this run' : ''} disableHoverListener={!offline}>
             <Box component="span" sx={{ flexShrink: 0 }}>
-                <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} disabled={offline} onClick={controls.stop}>Stop run</Button>
+                <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} disabled={offline} onClick={() => setConfirm(true)}>Stop run</Button>
+                <ConfirmStopDialog
+                    open={confirm} what="this run" scope="this run"
+                    onCancel={() => setConfirm(false)}
+                    onConfirm={() => { setConfirm(false); controls.stop() }}
+                />
             </Box>
         </Tooltip>
     )
@@ -255,7 +237,6 @@ const CancelControl = ({ onCancel }) => (
 
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
     const navigate = useNavigate()
-    const [editing, setEditing] = useState(false)
     const isPlanning = !!planning
     // The task-run's place in the IA: a child launched by a quest or campaign.
     // Its parent context is a link UP (never embedded), so this view stays scoped
@@ -301,8 +282,7 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                         </Box>
                         {isPlanning
                             ? <CancelControl onCancel={controls.cancel} />
-                            : <RunControls run={run} controls={controls} done={done} onEdit={() => setEditing(true)} />}
-                        <RunSwitcher current={{ id: run.id, label: runLabel(run) }} />
+                            : <RunControls run={run} controls={controls} done={done} />}
                         <IconButton onClick={onClose} aria-label="close" sx={{ flexShrink: 0 }}><CloseIcon /></IconButton>
                     </Box>
 
@@ -354,7 +334,6 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                         : panelFor(active, run)}
                 </Box>
             </Box>
-            <EditRunDialog run={run} open={editing} onClose={() => setEditing(false)} />
         </Dialog>
     )
 }

@@ -83,26 +83,19 @@ func TestTraceEndpointNotFound(t *testing.T) {
 	}
 }
 
-// OriginalIntent is set once at creation and survives an Edit that changes the
-// active Prompt — review can still compare output against the original ask.
-func TestOriginalIntentSurvivesEdit(t *testing.T) {
+// OriginalIntent is set once at creation from the initial ask — review can compare
+// output against the original request.
+func TestOriginalIntentSetAtCreation(t *testing.T) {
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	c := conductor.New(srv)
 
 	id := c.Create(run.Spec{Prompt: "first ask", Folders: []string{"/tmp"}})
-	if !c.Edit(id, run.Spec{Prompt: "a totally different request", Folders: []string{"/tmp"}}) {
-		t.Fatal("edit failed")
-	}
-
 	r, ok := c.Get(id)
 	if !ok {
-		t.Fatal("run not found after edit")
-	}
-	if r.Prompt != "a totally different request" {
-		t.Errorf("prompt = %q, want the edited prompt", r.Prompt)
+		t.Fatal("run not found after create")
 	}
 	if r.OriginalIntent != "first ask" {
-		t.Errorf("originalIntent = %q, want %q (must not be rewritten by Edit)", r.OriginalIntent, "first ask")
+		t.Errorf("originalIntent = %q, want %q", r.OriginalIntent, "first ask")
 	}
 }

@@ -389,56 +389,6 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 	}
 }
 
-// A tech lead that exits non-zero the FIRST time (no marker) and succeeds the
-// SECOND (marker present) — so a restart of the failed run recovers and delivers.
-const failFirstThenSucceed = `#!/usr/bin/env bash
-prompt="$2"
-if [[ "$prompt" == *"code reviewer"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
-  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
-elif [[ "$prompt" == *"tech lead"* ]]; then
-  if [[ -f "$CANDYLAND_TEST_MARKER" ]]; then
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"a_test\"}]"}]}}'
-    echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
-  else
-    touch "$CANDYLAND_TEST_MARKER"
-    echo "tech lead boom (first attempt)" >&2
-    exit 1
-  fi
-else
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
-  echo "work by $$" > "candyland_$$.txt"
-  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
-fi
-`
-
-func TestRestartRecoversFailedRun(t *testing.T) {
-	c, _ := deliveryConductor(t, failFirstThenSucceed)
-	t.Setenv("CANDYLAND_TEST_MARKER", filepath.Join(t.TempDir(), "marker"))
-	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "1") // fail fast on the first run
-
-	id := c.Create(run.Spec{Prompt: "do the thing"})
-	c.Begin(id)
-
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
-	if r.Error == "" {
-		t.Fatal("the first run should fail (tech lead exits non-zero)")
-	}
-
-	// Restart the FAILED run — its executor has already exited, so this must
-	// relaunch a fresh one (not just signal a dead control channel).
-	if !c.Restart(id) {
-		t.Fatal("Restart should succeed for a finished/failed run")
-	}
-	r = waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" && r.Error == "" }, 20*time.Second)
-	if r.Error != "" {
-		t.Fatalf("restart did not recover the run: %q", r.Error)
-	}
-	if r.PrURL == "" {
-		t.Error("the recovered run should open a PR")
-	}
-}
 
 func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	c, _ := deliveryConductor(t, slowCoder)

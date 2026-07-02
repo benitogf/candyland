@@ -2,6 +2,7 @@ import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
@@ -9,6 +10,7 @@ import CircularProgress from '@mui/material/CircularProgress'
 import Dialog from '@mui/material/Dialog'
 import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import Accordion from '@mui/material/Accordion'
 import AccordionSummary from '@mui/material/AccordionSummary'
@@ -16,11 +18,16 @@ import AccordionDetails from '@mui/material/AccordionDetails'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import CloseIcon from '@mui/icons-material/Close'
 import OpenInNewIcon from '@mui/icons-material/OpenInNew'
+import StopCircleIcon from '@mui/icons-material/StopCircle'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 
 import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
 import { runLabel } from '../util'
 import { useCampaign, useQuests, useRuns } from '../data/ooo'
+import { useSystemStatus } from '../data/system'
+import { stopCampaign } from '../data/api'
+import { useToast } from '../feedback'
+import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
 
 const Block = ({ title, children }) => (
@@ -67,8 +74,35 @@ const Gate = ({ label, gate }) => {
 
 const VERDICT_COLOR = { satisfied: 'success', partial: 'warning', missed: 'error' }
 
+// Campaign control: Stop is the only interaction, and it CASCADES to every child
+// quest and run, so it goes through a confirmation naming that scope.
+const CampaignControls = ({ campaign, reachable, questCount, runCount, onStop }) => {
+    const [confirm, setConfirm] = React.useState(false)
+    const offline = reachable === false
+    const terminal = campaign.status === 'done' || campaign.status === 'stopped'
+    if (terminal) return <Chip label={campaign.status} size="small" color={STATUS_COLOR[campaign.status] || 'default'} variant="outlined" sx={{ flexShrink: 0 }} />
+    const parts = []
+    if (questCount > 0) parts.push(`${questCount} quest${questCount === 1 ? '' : 's'}`)
+    if (runCount > 0) parts.push(`${runCount} run${runCount === 1 ? '' : 's'}`)
+    const scope = parts.length ? `this campaign and its ${parts.join(' / ')}` : 'this campaign'
+    return (
+        <Tooltip title={offline ? 'Server unreachable — start ./candyland to control this campaign' : ''} disableHoverListener={!offline}>
+            <Box component="span" sx={{ flexShrink: 0 }}>
+                <Button color="error" variant="outlined" startIcon={<StopCircleIcon />} disabled={offline} onClick={() => setConfirm(true)}>Stop</Button>
+                <ConfirmStopDialog
+                    open={confirm} what="this campaign" scope={scope}
+                    onCancel={() => setConfirm(false)}
+                    onConfirm={() => { setConfirm(false); onStop() }}
+                />
+            </Box>
+        </Tooltip>
+    )
+}
+
 const CampaignWorkspace = ({ id, onClose }) => {
     const navigate = useNavigate()
+    const { reachable } = useSystemStatus()
+    const toast = useToast()
     const campaign = useCampaign(id)
     const allQuests = useQuests()
     const allRuns = useRuns()
@@ -119,8 +153,12 @@ const CampaignWorkspace = ({ id, onClose }) => {
                         </Box>
                         <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{brief.restatedGoal || campaign.originalInput || campaign.id}</Typography>
                     </Box>
-                    {/* Campaign control endpoints don't exist yet — state is read-only. */}
-                    <Chip label="read-only" size="small" variant="outlined" sx={{ flexShrink: 0 }} />
+                    <CampaignControls
+                        campaign={campaign} reachable={reachable}
+                        questCount={childQuests.length}
+                        runCount={allRuns.filter((r) => r.campaignId === campaign.id).length}
+                        onStop={() => stopCampaign(id).catch((e) => toast(e?.message || 'Command failed — is the candyland server reachable?'))}
+                    />
                     <IconButton onClick={onClose} aria-label="close" sx={{ flexShrink: 0 }}><CloseIcon /></IconButton>
                 </Box>
             </Box>

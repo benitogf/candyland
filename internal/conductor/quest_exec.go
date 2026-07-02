@@ -82,44 +82,30 @@ func (c *Conductor) BeginQuest(id string) bool {
 	return true
 }
 
-// PauseQuest halts future ticks without deleting the quest: it cancels the running
-// drive and records Status=paused + the reason. ResumeQuest restarts the drive.
-func (c *Conductor) PauseQuest(id, reason string) bool {
-	// Halt any live drive. A quest not currently driving is still allowed to pause
-	// (so a quest paused between drives stays paused); the UpdateQuest below decides
-	// the outcome (unknown quest → false), so the halt result is intentionally unused.
-	c.haltQuestDrive(id)
-	return c.UpdateQuest(id, func(q *run.Quest) {
-		if q.Status == "stopped" || q.Status == "done" {
-			return // terminal stays terminal
-		}
-		q.Status = "paused"
-		if reason != "" {
-			q.PauseReason = reason
-		}
-	})
-}
-
-// ResumeQuest restarts a paused quest's drive. A quest that isn't paused is left
-// as-is (returns false), and a terminal quest can't resume.
-func (c *Conductor) ResumeQuest(id string) bool {
-	q, ok := c.GetQuest(id)
-	if !ok || q.Status != "paused" {
-		return false
-	}
-	return c.BeginQuest(id)
-}
-
-// StopQuest is terminal: it cancels the drive and marks the quest stopped with the
-// reason. A stopped quest never ticks again (BeginQuest/ResumeQuest refuse it).
+// StopQuest is terminal: it cancels the drive, marks the quest stopped with the
+// reason, and CASCADES to the quest's child runs (halting any that are still
+// live). A stopped quest never ticks again (BeginQuest refuses it).
 func (c *Conductor) StopQuest(id, reason string) bool {
 	c.haltQuestDrive(id)
-	return c.UpdateQuest(id, func(q *run.Quest) {
+	ok := c.UpdateQuest(id, func(q *run.Quest) {
 		q.Status = "stopped"
 		if reason != "" {
 			q.PauseReason = reason
 		}
 	})
+	if ok {
+		c.stopChildRuns(c.QuestChildRuns(id))
+	}
+	return ok
+}
+
+// stopChildRuns halts every still-live run in the set (cascade from a stopped
+// quest or campaign). Command reaches only tracked runs with a live executor;
+// terminal/untracked children have already finished and are skipped.
+func (c *Conductor) stopChildRuns(runs []run.Run) {
+	for _, r := range runs {
+		c.Command(r.ID, "stop")
+	}
 }
 
 // haltQuestDrive cancels and forgets a quest's running drive goroutine (if any).

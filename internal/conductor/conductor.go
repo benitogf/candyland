@@ -395,7 +395,7 @@ func (c *Conductor) signal(rt *runtime, cmd string) bool {
 	}
 }
 
-// Command forwards stop|restart to the run's executor.
+// Command forwards a control command (only "stop") to the run's executor.
 func (c *Conductor) Command(id, cmd string) bool {
 	c.mu.Lock()
 	rt := c.runs[id]
@@ -436,107 +436,6 @@ func (c *Conductor) Cancel(id string) bool {
 	c.publish(rt.r)
 	rt.mu.Unlock()
 	log.Printf("candyland: run %s cancelled", id)
-	return true
-}
-
-// Restart re-runs a run from a clean slate. While the executor goroutine is still
-// alive (running/paused), it signals that loop to re-run. For a FINISHED run
-// (done or failed — the goroutine has already returned), it clears the error and
-// previous result and launches a fresh executor. A cancelled run was dropped from
-// tracking and can't be restarted (start a new run instead). Returns false for an
-// unknown or cancelled run.
-func (c *Conductor) Restart(id string) bool {
-	rt := c.tracked(id) // rehydrate from ooo if the backend restarted since the run ran
-	if rt == nil {
-		return false
-	}
-	rt.mu.Lock()
-	cancelled := rt.cancelled
-	alive := rt.r.Status == "running" || rt.r.Status == "paused"
-	rt.mu.Unlock()
-	if cancelled {
-		return false
-	}
-
-	if alive {
-		// The executor loop is still running — let it re-run (it clears the error
-		// and re-runs fanOut with a fresh context).
-		return c.signal(rt, "restart")
-	}
-
-	// Finished run: the previous executor goroutine has returned. Reset the run to
-	// a clean running state (clearing the error so the re-run can reach completion)
-	// and launch a fresh executor on a FRESH control channel (so any stale command
-	// from the prior generation can't reach it).
-	ctrl := newControl()
-	rt.mu.Lock()
-	rt.control = ctrl
-	rt.mu.Unlock()
-	c.Update(id, func(r *run.Run) {
-		r.Status = "running"
-		r.Error = ""
-		r.PrURL = ""
-		r.Phase = 0
-		r.Progress = 0
-		r.HasDag = false
-		// Empty (non-nil) slices marshal to [] — the UI treats agents/tasks as
-		// arrays (.map/.length); nil would marshal to null and crash it.
-		r.Agents = []run.Agent{}
-		r.Tasks = []run.Task{}
-	})
-	log.Printf("candyland: run %s restarted", id)
-	go (&ClaudeExecutor{}).Execute(c, id, ctrl)
-	return true
-}
-
-// Edit changes a run's task (folders/prompt/title) in place and resets it
-// to planning — clearing the previous result and INVALIDATING the cached planning
-// questions so they regenerate from the new prompt. The run keeps its id (and its
-// row in the Tasks history); the UI's planning flow then re-asks the (new)
-// questions and Begin re-runs it. Works on a finished (done/failed) or a stopped
-// (paused) run; a paused run's parked executor is terminated first so a re-plan +
-// Begin can't leave two executors on the control channel. Refused for an actively
-// running run (stop it first) or a cancelled/unknown run.
-func (c *Conductor) Edit(id string, spec run.Spec) bool {
-	rt := c.tracked(id) // rehydrate from ooo if the backend restarted since the run ran
-	if rt == nil {
-		return false
-	}
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.cancelled || rt.r.Status == "running" {
-		return false // cancelled is gone; an actively running build must be stopped first
-	}
-	if rt.r.Status == "paused" {
-		// Terminate the parked executor (it's waiting on control, so "quit" reaches
-		// it directly and it exits) before we re-plan, so Begin spawns a single
-		// fresh executor rather than racing the old one.
-		select {
-		case rt.control <- "quit":
-		default:
-		}
-	}
-	rt.r.Folders = spec.Folders
-	rt.r.Prompt = spec.Prompt
-	rt.r.Title = spec.Title
-	rt.r.Branch = runBranch(spec, id)
-	// Deliver/TargetPR are intentionally NOT re-applied from the edit spec: which
-	// PR a run updates (or whether it opens a new one) is a launch-time decision,
-	// not something a mid-run prompt/scope edit should silently flip. A re-plan
-	// keeps the original delivery target; relaunch a fresh run to change it.
-	rt.r.Status = "planning"
-	rt.r.Error = ""
-	rt.r.PrURL = ""
-	rt.r.Phase = 0
-	rt.r.Progress = 0
-	rt.r.HasDag = false
-	// Empty (non-nil) slices marshal to [] — the UI treats agents/tasks as arrays;
-	// nil would marshal to null and crash the planning view's .map/.length.
-	rt.r.Agents = []run.Agent{}
-	rt.r.Tasks = []run.Task{}
-	recompute(&rt.r)
-	c.publish(rt.r)
-	log.Printf("candyland: run %s edited — re-planning", id)
 	return true
 }
 

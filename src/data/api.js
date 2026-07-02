@@ -2,8 +2,9 @@ import { domain, ssl } from '../config'
 
 // REST calls to the conductor. Candyland is observe-only: runs are CREATED and
 // STARTED by detritus over REST (POST /api/runs → /api/runs/{id}/begin). The UI
-// only observes and controls EXISTING runs (stop / restart / cancel / edit) —
-// it never creates or plans a run.
+// only observes and STOPS existing work — Stop is the single interaction on runs,
+// quests, and campaigns (no restart, edit, pause, or resume). It never creates or
+// plans a run.
 const base = `${ssl ? 'https' : 'http'}://${domain}/api`
 
 const post = async (path, body) => {
@@ -22,24 +23,19 @@ const post = async (path, body) => {
     return text ? JSON.parse(text) : null
 }
 
-// Stop | restart.
-export const commandRun = (id, command) => post(`/runs/${id}/command`, { command })
+// Stop: the only run interaction. Terminal and irreversible.
+export const stopRun = (id) => post(`/runs/${id}/command`, { command: 'stop' })
 
 // Cancel: abandon a run (works while still in the planning Q&A, where stop has no
 // executor to reach). The run is kept as "cancelled" in the Tasks history.
 export const cancelRun = (id) => post(`/runs/${id}/cancel`)
 
-// Edit: change a finished run's task in place and reset it to planning, then it
-// re-runs. Distinct from restart (re-run as-is).
-export const editRun = (id, spec) => post(`/runs/${id}/edit`, spec)
-
-// Quest control. Candyland observes quests the same way it observes runs;
-// pause/resume/stop are the only quest controls the backend exposes. Pause and
-// stop carry an optional reason recorded on the quest. Campaigns have no control
-// endpoints yet — they are surfaced read-only.
-export const pauseQuest = (id, reason) => post(`/quests/${id}/pause`, reason ? { reason } : undefined)
-export const resumeQuest = (id) => post(`/quests/${id}/resume`)
+// Quest / campaign control. Stop is the only control the backend exposes for
+// either — terminal, irreversible, and it CASCADES to children (stopping a
+// campaign stops its quests and their runs; stopping a quest stops its runs).
+// Stop carries an optional reason recorded on the record.
 export const stopQuest = (id, reason) => post(`/quests/${id}/stop`, reason ? { reason } : undefined)
+export const stopCampaign = (id, reason) => post(`/campaigns/${id}/stop`, reason ? { reason } : undefined)
 
 // System info: platform, dependency state (claude/git/gh), recommendations.
 // Doubles as the backend reachability probe.

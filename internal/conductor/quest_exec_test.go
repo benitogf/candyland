@@ -144,73 +144,53 @@ else
 fi
 `
 
-// Pause/resume/stop state transitions: a paused quest stops ticking; resume
-// continues; stop is terminal (a stopped quest never ticks again and can't begin).
-func TestQuestPauseResumeStop(t *testing.T) {
+// Stop is the only quest control and it is terminal: status flips to stopped with
+// the reason, and a stopped quest never ticks again (BeginQuest refuses it).
+func TestQuestStopIsTerminal(t *testing.T) {
 	c, _ := newQuestServer(t)
 	id := c.CreateQuest(run.QuestSpec{Objective: "x", Folders: []string{"/repo"}})
 
-	// Pause an idle (never-begun) quest: status flips, no drive needed.
-	if !c.PauseQuest(id, "operator hold") {
-		t.Fatal("PauseQuest should succeed on a known quest")
-	}
-	q, _ := c.GetQuest(id)
-	if q.Status != "paused" || q.PauseReason != "operator hold" {
-		t.Fatalf("pause not recorded: status=%q reason=%q", q.Status, q.PauseReason)
-	}
-
-	// A paused quest does not tick: BeginQuest resumes it (status running), but with
-	// no real claude here discovery fails fast and it blocks — the point is only that
-	// resume is refused unless paused, and a non-paused quest can't be "resumed".
-	if c.ResumeQuest("nope") {
-		t.Error("ResumeQuest on an unknown quest must return false")
-	}
-
-	// Stop is terminal: status stopped, and a stopped quest refuses begin/resume.
 	if !c.StopQuest(id, "done for the day") {
 		t.Fatal("StopQuest should succeed")
 	}
-	q, _ = c.GetQuest(id)
+	q, _ := c.GetQuest(id)
 	if q.Status != "stopped" || q.PauseReason != "done for the day" {
 		t.Fatalf("stop not recorded: status=%q reason=%q", q.Status, q.PauseReason)
 	}
 	if c.BeginQuest(id) {
 		t.Error("a stopped quest must not be begin-able")
 	}
-	if c.ResumeQuest(id) {
-		t.Error("a stopped quest must not be resumable")
-	}
 }
 
-// A running quest, paused mid-drive, stops ticking — no further ticks are recorded
-// after the pause settles. Uses a live bus + repo so the loop genuinely runs.
-func TestQuestPauseHaltsTicking(t *testing.T) {
+// A running quest, stopped mid-drive, stops ticking — no further ticks are recorded
+// after the stop settles. Uses a live bus + repo so the loop genuinely runs.
+func TestQuestStopHaltsTicking(t *testing.T) {
 	c, repo := deliveryConductor(t, pauseTickClaude)
 	t.Setenv("CANDYLAND_QUEST_ITEM_ATTEMPTS", "100") // don't let the thrash cap stop it first
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "loops forever until paused",
+		Objective:     "loops forever until stopped",
 		Folders:       []string{repo},
 		AutonomyLevel: run.AutonomyUnattended,
 	})
 	c.BeginQuest(id)
 
-	// Let at least one tick land, then pause.
+	// Let at least one tick land, then stop.
 	waitForQuest(t, c, id, func(q run.Quest) bool { return len(q.Ticks) >= 1 }, 60*time.Second)
-	if !c.PauseQuest(id, "halt") {
-		t.Fatal("pause failed")
+	if !c.StopQuest(id, "halt") {
+		t.Fatal("stop failed")
 	}
-	// Wait for the drive to settle paused.
-	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "paused" }, 30*time.Second)
-	if q.Status != "paused" {
-		t.Fatalf("quest did not pause: status=%q", q.Status)
+	// Wait for the drive to settle stopped.
+	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "stopped" }, 30*time.Second)
+	if q.Status != "stopped" {
+		t.Fatalf("quest did not stop: status=%q", q.Status)
 	}
 	settled := len(q.Ticks)
-	// No further ticks after the pause settles.
+	// No further ticks after the stop settles.
 	time.Sleep(500 * time.Millisecond)
 	q2, _ := c.GetQuest(id)
 	if len(q2.Ticks) > settled {
-		t.Errorf("paused quest kept ticking: %d ticks after pause, was %d", len(q2.Ticks), settled)
+		t.Errorf("stopped quest kept ticking: %d ticks after stop, was %d", len(q2.Ticks), settled)
 	}
 }
 
