@@ -4,13 +4,12 @@ import Box from '@mui/material/Box'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
-import Link from '@mui/material/Link'
 import Typography from '@mui/material/Typography'
 
 import { candy } from '../config'
 import { PHASES, STATE_META, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
-import { useRuns, useQuests, useCampaigns, isBranchDelivered } from '../data/ooo'
+import { useRuns, useQuests, useCampaigns } from '../data/ooo'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
 const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled'
@@ -46,52 +45,30 @@ const RunCard = ({ run, onOpen }) => (
     </Card>
 )
 
-// One child run under a parent — a compact, clickable row that drills into the
-// EXISTING run UI (/run/:id via onOpen). Branch-delivered children read as
-// "committed", never as a missing PR.
-const ChildRunRow = ({ run, onOpen }) => {
-    const terminal = isTerminal(run)
-    return (
-        <Box
-            onClick={() => onOpen(run.id)}
-            sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, px: 1, borderRadius: 1, cursor: 'pointer', '&:hover': { backgroundColor: candy.bgPaperHi } }}
-        >
-            <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 0, flexGrow: 1, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
-            <Typography variant="caption" color={terminal ? 'text.secondary' : 'secondary'} sx={{ fontWeight: 700, flexShrink: 0 }}>{statusLabel(run)}</Typography>
-            {isBranchDelivered(run)
-                ? <Chip size="small" variant="outlined" color="secondary" label="committed" sx={{ height: 18, fontSize: 10, flexShrink: 0 }} />
-                : run.prUrl && <Link href={run.prUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} sx={{ fontSize: 12, flexShrink: 0 }}>PR</Link>}
-            <FleetDots agents={run.agents} />
-        </Box>
-    )
-}
-
-// A running campaign/quest PARENT, aggregating its child runs. The header drills
-// into the existing campaign/quest detail (onOpenParent); each child row drills
-// into the existing run UI (onOpen). This is an aggregation + navigation layer
-// over the existing run/task presentation, not a new observability stack.
-const ParentCard = ({ parent, kind, title, children, onOpen, onOpenParent }) => {
+// A running campaign/quest PARENT. The dashboard is a calm, MINIMAL overview: a
+// short title plus the AGGREGATED state (how many child runs, their combined green
+// count, and one fleet-dot row across all their agents) — never a per-child
+// breakdown. The full breakdown lives in the campaign/quest detail view, which the
+// card drills into via onOpenParent. This keeps the landing scannable.
+const ParentCard = ({ parent, kind, title, children, onOpenParent }) => {
     const greenT = children.reduce((n, r) => n + (r.tasksGreen || 0), 0)
     const totalT = children.reduce((n, r) => n + (r.tasksTotal || 0), 0)
+    const agents = children.flatMap((r) => r.agents || [])
     return (
-        <Card sx={{ borderColor: 'secondary.main' }}>
+        <Card
+            onClick={() => onOpenParent(kind, parent.id)}
+            sx={{ borderColor: 'secondary.main', cursor: 'pointer', transition: 'background-color 120ms', '&:hover': { backgroundColor: candy.bgPaperHi } }}
+        >
             <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-                <Box
-                    onClick={() => onOpenParent(kind, parent.id)}
-                    sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1, cursor: 'pointer' }}
-                >
-                    <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.25 }}>
-                            <Chip size="small" color="secondary" variant="outlined" label={`${kind} · ${parent.id}`} sx={{ height: 20 }} />
-                            <Chip size="small" color={STATUS_COLOR[parent.status] || 'default'} variant="outlined" label={parent.status} sx={{ height: 20 }} />
-                        </Box>
-                        <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{title}</Typography>
-                        <Typography variant="caption" color="text.secondary">{children.length} run{children.length === 1 ? '' : 's'} · {greenT}/{totalT} green</Typography>
-                    </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.25 }}>
+                    <Chip size="small" color="secondary" variant="outlined" label={`${kind} · ${parent.id}`} sx={{ height: 20 }} />
+                    <Chip size="small" color={STATUS_COLOR[parent.status] || 'default'} variant="outlined" label={parent.status} sx={{ height: 20 }} />
                 </Box>
-                {children.length === 0
-                    ? <Typography variant="caption" color="text.secondary" sx={{ pl: 1 }}>No child runs launched yet.</Typography>
-                    : children.map((r) => <ChildRunRow key={r.id} run={r} onOpen={onOpen} />)}
+                <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{title}</Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary">{children.length} run{children.length === 1 ? '' : 's'} · {greenT}/{totalT} green</Typography>
+                    <FleetDots agents={agents} />
+                </Box>
             </CardContent>
         </Card>
     )
@@ -131,14 +108,14 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent }) => {
                         <ParentCard
                             key={c.id} parent={c} kind="campaign"
                             title={c.intentBrief?.restatedGoal || c.originalInput || c.id}
-                            children={childrenOfCampaign(c)} onOpen={onOpen} onOpenParent={onOpenParent}
+                            children={childrenOfCampaign(c)} onOpenParent={onOpenParent}
                         />
                     ))}
                     {runningQuests.map((q) => (
                         <ParentCard
                             key={q.id} parent={q} kind="quest"
                             title={q.objective || q.originalObjective || q.id}
-                            children={childrenOfQuest(q)} onOpen={onOpen} onOpenParent={onOpenParent}
+                            children={childrenOfQuest(q)} onOpenParent={onOpenParent}
                         />
                     ))}
                     {running.map((run) => <RunCard key={run.id} run={run} onOpen={onOpen} />)}
