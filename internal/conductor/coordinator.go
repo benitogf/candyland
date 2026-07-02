@@ -3,6 +3,7 @@ package conductor
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,11 +122,18 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	// once, globally, in StartBus (before the server serves). Registering them at
 	// spawn raced ooo's broadcast loop.
 
-	servers := map[string]mcpServerSpec{
-		"candyland-comms": {
-			Type: "http",
-			URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
-		},
+	// Start from the inherited origin MCP set (the servers the launching detritus
+	// session had), then overlay candyland-comms + detritus so those two are always
+	// preserved even if the inherited set names them. The inherited set is passed by
+	// path (DETRITUS_ORIGIN_MCP points at a JSON file), never inline, so secret env
+	// values are not carried on argv.
+	servers := loadInheritedMCP()
+	servers["candyland-comms"] = mcpServerSpec{
+		Type: "http",
+		// Reach the bus over loopback: the agent runs on the same host, and the
+		// server may be bound to an unspecified/all-interfaces address (0.0.0.0, ::)
+		// that is not itself a connectable host — loopbackHost normalizes it.
+		URL: "http://" + loopbackHost(c.server.Address) + "/mcp/comms/" + agentID,
 	}
 	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
 	// Constraint). detritus is a passive stdio MCP server: resolve the installed
@@ -163,6 +171,48 @@ func resolveDetritusBin() string {
 		return bin
 	}
 	return ""
+}
+
+// loadInheritedMCP loads the origin MCP set the launching detritus session
+// exported. DETRITUS_ORIGIN_MCP holds a filesystem PATH to a JSON file (an
+// {"mcpServers":{...}} document) — a path, not inline JSON, so secret env values
+// in the servers' Env are never placed on argv. Returns an empty (non-nil) map
+// when the var is unset, the file is unreadable, or the JSON is malformed:
+// inheritance is best-effort and never blocks a spawn.
+func loadInheritedMCP() map[string]mcpServerSpec {
+	servers := map[string]mcpServerSpec{}
+	path := os.Getenv("DETRITUS_ORIGIN_MCP")
+	if path == "" {
+		return servers
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return servers
+	}
+	var cfg mcpConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return servers
+	}
+	for name, spec := range cfg.MCPServers {
+		servers[name] = spec
+	}
+	return servers
+}
+
+// loopbackHost normalizes a listen address into one an agent on the same host
+// can connect to. A server bound to an unspecified address (0.0.0.0, ::, or an
+// empty host) advertises an address that is not itself connectable, so the host
+// is rewritten to loopback while the port is preserved. Any other host (an
+// explicit interface or hostname) is returned unchanged.
+func loopbackHost(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || net.ParseIP(host).IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // busConfigDir is the per-run directory holding the spawned agents'

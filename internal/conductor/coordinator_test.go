@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,6 +87,64 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	msgs, err := io.RemoteGetList[bus.Envelope](rc, bus.InboxGlob("coder-1"))
 	if err != nil || len(msgs) != 1 || msgs[0].Data.Seq == 0 {
 		t.Errorf("expected one seq'd message in coder-1's live inbox, got %d (err %v)", len(msgs), err)
+	}
+}
+
+// The comms URL host is normalized to loopback so an agent on the same host can
+// reach a server bound to an unspecified/all-interfaces address.
+func TestLoopbackHost(t *testing.T) {
+	cases := map[string]string{
+		"0.0.0.0:8080":     "127.0.0.1:8080",
+		"[::]:8080":        "127.0.0.1:8080",
+		":8080":            "127.0.0.1:8080",
+		"127.0.0.1:0":      "127.0.0.1:0",
+		"192.168.1.5:9000": "192.168.1.5:9000",
+		"not-an-addr":      "not-an-addr",
+	}
+	for in, want := range cases {
+		if got := loopbackHost(in); got != want {
+			t.Errorf("loopbackHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The inherited origin MCP set (DETRITUS_ORIGIN_MCP → path to a JSON file) is
+// merged into each per-agent config while candyland-comms + detritus are
+// preserved. Unset/unreadable/malformed input degrades to no inherited servers.
+func TestBusMCPConfigMergesInheritedSet(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	// A JSON file describing an inherited server (and one that collides with a
+	// preserved name, to prove the overlay wins).
+	inherited := mcpConfigFile{MCPServers: map[string]mcpServerSpec{
+		"origin-thing":    {Command: "/bin/origin", Args: []string{"--flag"}},
+		"candyland-comms": {Command: "/should/be/overridden"},
+	}}
+	data, err := json.Marshal(inherited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(t.TempDir(), "origin.json")
+	if err := os.WriteFile(f, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DETRITUS_ORIGIN_MCP", f)
+
+	cfg := readConfig(t, c.busMCPConfig("run1", "coder-1"))
+	origin, ok := cfg.MCPServers["origin-thing"]
+	if !ok || origin.Command != "/bin/origin" {
+		t.Errorf("inherited origin-thing not merged: %+v", cfg)
+	}
+	comms, ok := cfg.MCPServers["candyland-comms"]
+	if !ok || comms.Type != "http" || comms.Command != "" {
+		t.Errorf("candyland-comms must be preserved over an inherited collision: %+v", comms)
 	}
 }
 
