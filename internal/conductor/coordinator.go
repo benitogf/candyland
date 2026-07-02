@@ -121,11 +121,14 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	// once, globally, in StartBus (before the server serves). Registering them at
 	// spawn raced ooo's broadcast loop.
 
-	servers := map[string]mcpServerSpec{
-		"candyland-comms": {
-			Type: "http",
-			URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
-		},
+	// Start from the origin session's MCP servers (the Claude/VSCode session that
+	// launched candyland exports them as CANDYLAND_INHERITED_MCP) so each agent
+	// inherits the same tool surface the human had. candyland's own entries are
+	// layered on top below, so they win on any name conflict.
+	servers := inheritedMCPServers()
+	servers["candyland-comms"] = mcpServerSpec{
+		Type: "http",
+		URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
 	}
 	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
 	// Constraint). detritus is a passive stdio MCP server: resolve the installed
@@ -149,6 +152,36 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 		return ""
 	}
 	return path
+}
+
+// inheritedMCPServers returns the origin session's MCP servers, so a spawned
+// agent gets the same tool surface the human's session had. The launcher exports
+// CANDYLAND_INHERITED_MCP as either an mcp-config JSON document ({"mcpServers":
+// {...}}) or a path to one. Malformed/missing input yields an empty (never nil)
+// map, so callers can always assign candyland's own entries on top.
+func inheritedMCPServers() map[string]mcpServerSpec {
+	servers := map[string]mcpServerSpec{}
+	raw := os.Getenv("CANDYLAND_INHERITED_MCP")
+	if raw == "" {
+		return servers
+	}
+	data := []byte(raw)
+	if !json.Valid(data) {
+		// Not inline JSON — treat it as a path to a config file.
+		fileData, err := os.ReadFile(raw)
+		if err != nil {
+			return servers
+		}
+		data = fileData
+	}
+	var cfg mcpConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return servers
+	}
+	for name, spec := range cfg.MCPServers {
+		servers[name] = spec
+	}
+	return servers
 }
 
 // resolveDetritusBin locates the detritus binary an agent's stdio MCP child
