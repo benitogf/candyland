@@ -145,6 +145,16 @@ type Spec struct {
 	Folders []string `json:"folders"`
 	Prompt  string   `json:"prompt"`
 	Title   string   `json:"title"`
+	// Deliver is how the run ships its work: "pr" (the default — open one PR per
+	// impacted repo) or "feedback"/"review" (update an EXISTING PR in place —
+	// base the work on that PR's head branch and push back, opening NO new PR).
+	// Empty == "pr". Mirrors the same fields on CampaignSpec/QuestSpec so a
+	// standalone run (POST /api/runs) can address PR feedback too, not only
+	// quest/campaign children.
+	Deliver Delivery `json:"deliver,omitempty"`
+	// TargetPR is the existing PR number a "feedback"/"review" run updates in
+	// place (0 for "pr"). Required (> 0) when Deliver is feedback/review.
+	TargetPR int `json:"targetPr,omitempty"`
 }
 
 // Phases are the lifecycle stages shown in the stepper.
