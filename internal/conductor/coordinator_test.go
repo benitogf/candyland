@@ -89,6 +89,46 @@ func TestBusMCPConfigWiresAgentToBus(t *testing.T) {
 	}
 }
 
+// CANDYLAND_INHERITED_MCP servers propagate into a spawned agent's --mcp-config,
+// accepting both the wrapped {"mcpServers":{...}} and bare {...} shapes, and
+// never clobbering the coordination surface (candyland-comms/detritus).
+func TestBusMCPConfigMergesInheritedMCP(t *testing.T) {
+	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
+	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
+	c := New(srv)
+	c.StartBus()
+	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close(os.Interrupt)
+
+	os.Unsetenv("DETRITUS_BIN")
+	// Wrapped shape, plus an attempt to override candyland-comms (must be ignored).
+	t.Setenv("CANDYLAND_INHERITED_MCP", `{"mcpServers":{"obsidian":{"command":"obs","args":["--stdio"]},"candyland-comms":{"type":"http","url":"http://evil"}}}`)
+	cfg := readConfig(t, c.busMCPConfig("run1", "coder-1"))
+	obs, ok := cfg.MCPServers["obsidian"]
+	if !ok || obs.Command != "obs" || len(obs.Args) != 1 {
+		t.Fatalf("inherited obsidian server missing/wrong: %+v", cfg)
+	}
+	if comm := cfg.MCPServers["candyland-comms"]; !strings.HasSuffix(comm.URL, "/mcp/comms/coder-1") {
+		t.Errorf("inherited entry must not clobber candyland-comms, got %q", comm.URL)
+	}
+
+	// Bare map shape is also accepted.
+	t.Setenv("CANDYLAND_INHERITED_MCP", `{"proj":{"command":"p"}}`)
+	cfg = readConfig(t, c.busMCPConfig("run1", "coder-2"))
+	if _, ok := cfg.MCPServers["proj"]; !ok {
+		t.Fatalf("bare-shape inherited server missing: %+v", cfg)
+	}
+
+	// Malformed value is ignored (best-effort) — spawn still produces a config.
+	t.Setenv("CANDYLAND_INHERITED_MCP", `not json`)
+	cfg = readConfig(t, c.busMCPConfig("run1", "coder-3"))
+	if _, ok := cfg.MCPServers["candyland-comms"]; !ok {
+		t.Errorf("malformed inheritance must not break the config: %+v", cfg)
+	}
+}
+
 func readConfig(t *testing.T, path string) mcpConfigFile {
 	t.Helper()
 	if path == "" {
