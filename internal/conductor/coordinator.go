@@ -3,6 +3,7 @@ package conductor
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,11 +122,18 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	// once, globally, in StartBus (before the server serves). Registering them at
 	// spawn raced ooo's broadcast loop.
 
-	servers := map[string]mcpServerSpec{
-		"candyland-comms": {
-			Type: "http",
-			URL:  "http://" + c.server.Address + "/mcp/comms/" + agentID,
-		},
+	// Seed with the origin session's inherited MCP servers (obsidian, project
+	// servers, …) that detritus enumerated and handed us via CANDYLAND_INHERITED_MCP.
+	// candyland-comms + detritus are overlaid on top below, so our own wiring always
+	// wins over any same-named inherited entry — the coordination bus and the
+	// Composition Constraint tools can never be shadowed.
+	servers := inheritedMCPServers()
+	servers["candyland-comms"] = mcpServerSpec{
+		Type: "http",
+		// loopbackHost normalizes the app address to a loopback host so the agent
+		// reaches the bus with a loopback Host header — the comms MCP handler relies
+		// on that (it no longer disables the SDK's DNS-rebinding guard).
+		URL: "http://" + loopbackHost(c.server.Address) + "/mcp/comms/" + agentID,
 	}
 	// The agent needs detritus' kb_*/code_*/skill_* tools (the Composition
 	// Constraint). detritus is a passive stdio MCP server: resolve the installed
@@ -163,6 +171,59 @@ func resolveDetritusBin() string {
 		return bin
 	}
 	return ""
+}
+
+// inheritedMCPEnv names the env var carrying the origin Claude session's
+// inherited MCP servers. detritus enumerates that set at launch, writes it to a
+// private (0600) file shaped like an --mcp-config ({"mcpServers": {...}}), and
+// sets this var to that file's PATH — the file, not an inline value, because the
+// server blocks may hold secret env tokens. The name and file-path transport MUST
+// match detritus' candyland_client.go (detritusOriginMCPEnv); a mismatch silently
+// drops every inherited server.
+const inheritedMCPEnv = "CANDYLAND_INHERITED_MCP"
+
+// inheritedMCPServers reads the origin session's inherited MCP servers from the
+// file whose path is in CANDYLAND_INHERITED_MCP and returns them as a fresh map
+// (so callers can overlay their own entries). It degrades to an empty non-nil map
+// on any problem — unset var, missing/unreadable file, or malformed JSON — so a
+// broken handshake never blocks a spawn; the agent just gets the base comms +
+// detritus wiring. The env values inside the file are never logged.
+func inheritedMCPServers() map[string]mcpServerSpec {
+	servers := map[string]mcpServerSpec{}
+	path := os.Getenv(inheritedMCPEnv)
+	if path == "" {
+		return servers
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return servers
+	}
+	var cfg mcpConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return servers
+	}
+	for name, spec := range cfg.MCPServers {
+		servers[name] = spec
+	}
+	return servers
+}
+
+// loopbackHost normalizes a server listen address to one presenting a loopback
+// host, preserving the port. A wildcard bind (0.0.0.0, ::, or empty host) becomes
+// 127.0.0.1 so the agent connects over loopback with a loopback Host header — the
+// comms MCP handler no longer disables the SDK's DNS-rebinding guard, which 403s a
+// non-loopback Host on a localhost→localhost call. An address already presenting a
+// concrete host (including 127.0.0.1) is returned unchanged. Unparseable input is
+// returned as-is rather than guessed at.
+func loopbackHost(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // busConfigDir is the per-run directory holding the spawned agents'
