@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/ooo"
@@ -135,6 +136,16 @@ func (c *Conductor) busMCPConfig(runID, agentID string) string {
 	if detritusBin := resolveDetritusBin(); detritusBin != "" {
 		servers["detritus"] = mcpServerSpec{Command: detritusBin, Args: []string{}}
 	}
+	// Inherited MCP servers: the parent session may have MCP servers the agent
+	// should also see (e.g. an Obsidian or project-specific stdio server). They
+	// are passed down via CANDYLAND_INHERITED_MCP. Merge them in without letting
+	// them clobber the coordination surface (candyland-comms/detritus always win).
+	for name, spec := range loadInheritedMCP() {
+		if name == "candyland-comms" || name == "detritus" {
+			continue
+		}
+		servers[name] = spec
+	}
 	cfg := mcpConfigFile{MCPServers: servers}
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -163,6 +174,28 @@ func resolveDetritusBin() string {
 		return bin
 	}
 	return ""
+}
+
+// loadInheritedMCP reads CANDYLAND_INHERITED_MCP and returns the MCP servers the
+// parent session wants spawned agents to inherit. The env var holds either a full
+// --mcp-config object ({"mcpServers":{...}}) or a bare server map ({...}); both
+// shapes are accepted. It is best-effort: an unset or unparseable value yields no
+// servers (nil) rather than an error, so a malformed inheritance never blocks a
+// spawn.
+func loadInheritedMCP() map[string]mcpServerSpec {
+	raw := os.Getenv("CANDYLAND_INHERITED_MCP")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var wrapped mcpConfigFile
+	if err := json.Unmarshal([]byte(raw), &wrapped); err == nil && wrapped.MCPServers != nil {
+		return wrapped.MCPServers
+	}
+	var bare map[string]mcpServerSpec
+	if err := json.Unmarshal([]byte(raw), &bare); err == nil {
+		return bare
+	}
+	return nil
 }
 
 // busConfigDir is the per-run directory holding the spawned agents'
