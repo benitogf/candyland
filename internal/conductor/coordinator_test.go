@@ -113,6 +113,26 @@ func TestBusMCPConfigNoBus(t *testing.T) {
 	}
 }
 
+// The comms MCP handshake origin is aligned to loopback so the agent's HTTP
+// client sends a loopback Host header over its loopback connection — letting the
+// SDK's DNS-rebinding guard stay enabled. A wildcard or non-loopback bind host is
+// rewritten to 127.0.0.1 (port preserved); a loopback host is left unchanged.
+func TestLoopbackHostAlignsOrigin(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"0.0.0.0:8080", "127.0.0.1:8080"},
+		{"[::]:8080", "127.0.0.1:8080"},
+		{"192.168.1.5:9000", "127.0.0.1:9000"},
+		{"127.0.0.1:0", "127.0.0.1:0"},
+		{"[::1]:1234", "[::1]:1234"},
+		{"not-a-hostport", "not-a-hostport"},
+	}
+	for _, tc := range cases {
+		if got := loopbackHost(tc.in); got != tc.want {
+			t.Errorf("loopbackHost(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // CPB6: the retry cap is K=3 (no quota thrash).
 func TestEscalationCapIsThree(t *testing.T) {
 	if maxReplans() != 3 || maxAttempts() != 3 {
