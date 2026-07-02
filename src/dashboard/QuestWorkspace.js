@@ -78,6 +78,7 @@ const QuestWorkspace = ({ id, onClose }) => {
     const toast = useToast()
     const quest = useQuest(id)
     const allRuns = useRuns()
+    const [tab, setTab] = React.useState('activity')
 
     if (!quest) {
         return (
@@ -91,7 +92,6 @@ const QuestWorkspace = ({ id, onClose }) => {
         )
     }
 
-    const [tab, setTab] = React.useState('activity')
     const fail = (e) => toast(e?.message || 'Command failed — is the candyland server reachable?')
     const childRuns = allRuns.filter((r) => r.questId === quest.id)
     const ticks = quest.ticks || []
