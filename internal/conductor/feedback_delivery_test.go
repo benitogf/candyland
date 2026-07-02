@@ -219,6 +219,32 @@ func TestFeedbackDeliveryUpdatesExistingPR(t *testing.T) {
 	}
 }
 
+// D1b: a standalone run created with Deliver+TargetPR ON THE SPEC (the path a
+// POST /api/runs feedback request takes) routes to feedback delivery end to end —
+// Create stamps the fields, the executor bases work on the PR head and pushes
+// back, opening NO new PR. This is the wiring the standalone-run change added,
+// distinct from D1 which sets the fields via a post-create Update.
+func TestFeedbackDeliveryViaSpec(t *testing.T) {
+	const head = "feature/existing-pr"
+	c, repo := deliveryConductor(t, feedbackClaude)
+	writeFeedbackGh(t, head)
+	pushHeadBranch(t, repo, head)
+
+	id := c.Create(run.Spec{Prompt: "address the review", Deliver: run.DeliverFeedback, TargetPR: 42})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" || r.Error != "" {
+		t.Fatalf("spec-driven feedback run did not finish clean: status=%q error=%q", r.Status, r.Error)
+	}
+	if ghCreateInvoked(t) {
+		t.Fatal("spec-driven feedback delivery must NOT open a new PR (gh pr create was invoked)")
+	}
+	if r.PrURL != "https://github.com/example/repo/pull/42" {
+		t.Fatalf("spec-driven feedback run must record the EXISTING PR url, got %q", r.PrURL)
+	}
+}
+
 // reviewNoFindingsClaude drives a run whose reviewer returns REVIEW_CLEAN with no
 // findings — and (critically) the tech lead emits NO partition work, so nothing is
 // applied. Actually the simplest no-findings review: a clean reviewer + a partition

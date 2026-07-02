@@ -322,7 +322,12 @@ func (c *Conductor) Create(spec run.Spec) string {
 		Folders:        spec.Folders,
 		// Include the run id so two runs from the same prompt don't collide on the
 		// branch (and therefore on the push / PR head).
-		Branch:       runBranch(spec, id),
+		Branch: runBranch(spec, id),
+		// Deliver/TargetPR ride from the spec so a standalone run can update an
+		// existing PR in place (feedback/review) instead of always opening a new
+		// one. Empty Deliver stays "pr" (the default new-PR-per-repo delivery).
+		Deliver:      spec.Deliver,
+		TargetPR:     spec.TargetPR,
 		Status:       "planning",
 		Phase:        0,
 		TokensBudget: 900,
@@ -515,6 +520,10 @@ func (c *Conductor) Edit(id string, spec run.Spec) bool {
 	rt.r.Prompt = spec.Prompt
 	rt.r.Title = spec.Title
 	rt.r.Branch = runBranch(spec, id)
+	// Deliver/TargetPR are intentionally NOT re-applied from the edit spec: which
+	// PR a run updates (or whether it opens a new one) is a launch-time decision,
+	// not something a mid-run prompt/scope edit should silently flip. A re-plan
+	// keeps the original delivery target; relaunch a fresh run to change it.
 	rt.r.Status = "planning"
 	rt.r.Error = ""
 	rt.r.PrURL = ""
