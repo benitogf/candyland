@@ -14,6 +14,9 @@ import TableCell from '@mui/material/TableCell'
 import TableHead from '@mui/material/TableHead'
 import TableRow from '@mui/material/TableRow'
 import Typography from '@mui/material/Typography'
+import VisibilityIcon from '@mui/icons-material/Visibility'
+import CallSplitIcon from '@mui/icons-material/CallSplit'
+import HubIcon from '@mui/icons-material/Hub'
 
 import MermaidDiagram from '../components/MermaidDiagram'
 import Section, { DiagramCard, SpecNote } from '../components/Section'
@@ -190,19 +193,22 @@ gantt
 
 // ── Page content ─────────────────────────────────────────────────────────────
 
+// Icons are MUI SVGs, not emoji: the variation-selector emoji (👁️, ✂️) don't
+// render in the webview's font stack (they show as blank), so use vector icons
+// that render reliably and match the rest of the UI.
 const pillars = [
     {
-        emoji: '👁️',
+        Icon: VisibilityIcon,
         title: 'Observe',
         body: 'See every session, agent, and token budget live. The dashboard is the single source of truth for what is being worked on right now.',
     },
     {
-        emoji: '✂️',
+        Icon: CallSplitIcon,
         title: 'Distribute',
         body: 'A tech lead partitions each feature and hands each coder only its slice — small context, sharp focus, lower cost.',
     },
     {
-        emoji: '🔗',
+        Icon: HubIcon,
         title: 'Coordinate',
         body: 'Coders run in parallel, then the tech lead integrates their worktrees sequentially so nothing collides on the way to one PR.',
     },
@@ -329,9 +335,9 @@ const DeveloperGuide = () => (
             {pillars.map((p) => (
                 <Card key={p.title}>
                     <CardContent>
-                        <Typography variant="h4" component="div" sx={{ mb: 1 }}>
-                            {p.emoji}
-                        </Typography>
+                        <Box sx={{ mb: 1 }}>
+                            <p.Icon sx={{ fontSize: 40, color: 'primary.main' }} />
+                        </Box>
                         <Typography variant="h6" color="primary" gutterBottom>
                             {p.title}
                         </Typography>
