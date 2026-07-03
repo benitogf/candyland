@@ -20,10 +20,11 @@ import { useToast } from '../feedback'
 // against (§9 of the contract). Labels are display-only.
 const MODELS = [
     { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+    { value: 'claude-fable-5', label: 'Fable 5' },
     { value: 'claude-sonnet-5', label: 'Sonnet 5' },
     { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
 ]
-const THINKING = ['low', 'medium', 'high']
+const THINKING = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // Roles grouped by tier — the render order and grouping of the settings table.
 const TIERS = [

@@ -50,12 +50,13 @@ type Settings struct {
 // modelOptions is the curated select of models the UI offers and the API accepts.
 var modelOptions = map[string]bool{
 	"claude-opus-4-8":           true,
+	"claude-fable-5":            true,
 	"claude-sonnet-5":           true,
 	"claude-haiku-4-5-20251001": true,
 }
 
 // thinkingOptions is the curated select of effort levels (contract §9).
-var thinkingOptions = map[string]bool{"low": true, "medium": true, "high": true}
+var thinkingOptions = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
 // allRoles is every configurable level, in the contract's order.
 var allRoles = []string{
@@ -157,7 +158,7 @@ func ValidateSettings(s Settings) error {
 			return fmt.Errorf("role %q: unknown model %q", role, lc.Model)
 		}
 		if lc.Thinking != "" && !thinkingOptions[lc.Thinking] {
-			return fmt.Errorf("role %q: unknown thinking %q (allowed: low, medium, high)", role, lc.Thinking)
+			return fmt.Errorf("role %q: unknown thinking %q (allowed: low, medium, high, xhigh, max)", role, lc.Thinking)
 		}
 	}
 	return nil
