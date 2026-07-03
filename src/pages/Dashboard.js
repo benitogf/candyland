@@ -10,7 +10,7 @@ import Typography from '@mui/material/Typography'
 import ClearIcon from '@mui/icons-material/Clear'
 
 import { candy } from '../config'
-import { PHASES, STATE_META, STATUS_COLOR } from '../meta/run'
+import { PHASES, STATUS_COLOR } from '../meta/run'
 import { runLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, recency } from '../data/ooo'
 import { archiveRun, archiveQuest, archiveCampaign } from '../data/api'
@@ -34,18 +34,10 @@ const DismissButton = ({ onDismiss }) => (
     </Tooltip>
 )
 
-const FleetDots = ({ agents = [] }) => (
-    <Box sx={{ display: 'flex', gap: 0.5, flexShrink: 0 }}>
-        {agents.length === 0
-            ? <Typography variant="caption" color="text.secondary">planning…</Typography>
-            : agents.map((a) => (
-                <Box key={a.id} title={`${a.role} · ${STATE_META[a.state]?.label || a.state}`} sx={{ width: 10, height: 10, borderRadius: '50%', backgroundColor: STATE_META[a.state]?.dot || candy.line }} />
-            ))}
-    </Box>
-)
-
-// A standalone run on the landing. Actively-running runs show status + fleet;
-// a run that has stopped/blocked/failed can be dismissed to the Work history.
+// A standalone run on the landing. Actively-running runs show status; a run that
+// has stopped/blocked/failed can be dismissed to the Work history. The card is
+// deliberately minimal — a title plus one status line — with the live per-agent
+// detail reserved for the run workspace, not the landing.
 const RunCard = ({ run, onOpen, onDismiss }) => (
     <Card onClick={() => onOpen(run.id)} sx={{ cursor: 'pointer', transition: 'background-color 120ms', '&:hover': { backgroundColor: candy.bgPaperHi } }}>
         <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
@@ -53,26 +45,22 @@ const RunCard = ({ run, onOpen, onDismiss }) => (
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
                 {!isActive(run.status) && <DismissButton onDismiss={onDismiss} />}
             </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
-                <Box sx={{ minWidth: 0 }}>
-                    <Typography variant="caption" color="secondary" sx={{ fontWeight: 700 }}>{statusLabel(run)}</Typography>
-                    <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.tokensUsed}k tok</Typography>
-                </Box>
-                <FleetDots agents={run.agents} />
+            <Box sx={{ minWidth: 0 }}>
+                <Typography variant="caption" color="secondary" sx={{ fontWeight: 700 }}>{statusLabel(run)}</Typography>
+                <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.tokensUsed}k tok</Typography>
             </Box>
         </CardContent>
     </Card>
 )
 
 // A running campaign/quest PARENT. The dashboard is a calm, MINIMAL overview: a
-// short title plus the AGGREGATED state (how many child runs, their combined green
-// count, and one fleet-dot row across all their agents) — never a per-child
-// breakdown. The full breakdown lives in the campaign/quest detail view, which the
-// card drills into via onOpenParent. This keeps the landing scannable.
+// short title plus the AGGREGATED state (how many child runs and their combined
+// green count) — never a per-child or per-agent breakdown. The full breakdown
+// lives in the campaign/quest detail view, which the card drills into via
+// onOpenParent. This keeps the landing scannable.
 const ParentCard = ({ parent, kind, title, children, onOpenParent, onDismiss }) => {
     const greenT = children.reduce((n, r) => n + (r.tasksGreen || 0), 0)
     const totalT = children.reduce((n, r) => n + (r.tasksTotal || 0), 0)
-    const agents = children.flatMap((r) => r.agents || [])
     return (
         <Card
             onClick={() => onOpenParent(kind, parent.id)}
@@ -86,9 +74,8 @@ const ParentCard = ({ parent, kind, title, children, onOpenParent, onDismiss }) 
                     {!isActive(parent.status) && <DismissButton onDismiss={onDismiss} />}
                 </Box>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{title}</Typography>
-                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mt: 0.5 }}>
+                <Box sx={{ mt: 0.5 }}>
                     <Typography variant="caption" color="text.secondary">{children.length} run{children.length === 1 ? '' : 's'} · {greenT}/{totalT} green</Typography>
-                    <FleetDots agents={agents} />
                 </Box>
             </CardContent>
         </Card>

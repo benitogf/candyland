@@ -35,7 +35,10 @@ export const STATE_ICON = {
 
 export const StateIcon = ({ state, size = 15 }) => {
     const m = STATE_META[state] || STATE_META.idle
-    const Icon = STATE_ICON[state]
+    // Unknown/empty states (e.g. an agent the backend hasn't stamped yet arrives
+    // with state '') must still render — fall back to the idle icon exactly as the
+    // STATE_META lookup above does, or <Icon> is undefined and the whole view crashes.
+    const Icon = STATE_ICON[state] || STATE_ICON.idle
     const spin = state === 'working' || state === 'retrying'
     return (
         <Icon

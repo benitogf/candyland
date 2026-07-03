@@ -285,6 +285,19 @@ const Tasks = () => {
 
     const openDetail = (kind, id) => navigate(`/${kind}/${id}`)
 
+    // When the list is scoped to a specific parent (a drill-down from a campaign/
+    // quest row, or a parent link), surface it as a removable chip — the Parent
+    // dropdown alone is too easy to miss, and there was no obvious way to get back
+    // to the unscoped list. 'none'/'any' are not a parent scope, so no chip.
+    const scopedParent = filters.parent && filters.parent !== 'none' && filters.parent !== 'any' ? filters.parent : ''
+    const parentEntity = scopedParent
+        ? campaigns.find((c) => c.id === scopedParent) || quests.find((q) => q.id === scopedParent)
+        : null
+    const parentKind = scopedParent ? (scopedParent[0] === 'c' ? 'campaign' : 'quest') : ''
+    const parentTitle = parentEntity
+        ? (parentEntity.intentBrief?.restatedGoal || parentEntity.originalInput || parentEntity.objective || parentEntity.originalObjective || '')
+        : ''
+
     const empty = items.length === 0
         ? `No ${level} yet — they're launched from detritus.`
         : 'Nothing matches the active filters.'
@@ -311,6 +324,19 @@ const Tasks = () => {
                 onChange={setFilter}
                 onClear={clearFilters}
             />
+
+            {scopedParent && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2, flexWrap: 'wrap' }}>
+                    <Typography variant="body2" color="text.secondary">Showing children of</Typography>
+                    <Chip
+                        color="secondary"
+                        variant="outlined"
+                        onDelete={() => setFilter('parent', '')}
+                        label={`${parentKind} · ${scopedParent}${parentTitle ? ` — ${parentTitle}` : ''}`}
+                        sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                    />
+                </Box>
+            )}
 
             <Card sx={{ overflowX: 'auto' }}>
                 <Table size="small" sx={{ minWidth: 720 }}>
