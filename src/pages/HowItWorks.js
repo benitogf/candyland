@@ -291,16 +291,6 @@ const steps = [
     { label: 'You get one PR', body: 'Candyland opens a single pull request for the feature. Reviewing and merging stay your call — that is the safety floor.' },
 ]
 
-const priorArt = [
-    ['Vibe Kanban', 'Kanban board to run/queue many coding agents', 'Task-board mental model; minimal dashboard'],
-    ['Conductor / Crystal', 'Desktop apps running parallel Claude Code in git worktrees', 'Worktree-per-agent isolation'],
-    ['Claude Squad', 'tmux-based manager for multiple Claude/Codex sessions', 'Lightweight session multiplexing'],
-    ['CrewAI / LangGraph', 'Multi-agent frameworks (roles / state graph)', 'Role specialization + a coordinating lead'],
-    ['Temporal / Inngest', 'Durable workflow engines with state dashboards', 'Durable task state; observable runs'],
-    ['Langfuse / AgentOps', 'Agent tracing & token/cost dashboards', 'What to visualize: traces, tokens, cost'],
-    ['agent-deck (the one you saw)', 'Full-featured agent deck', 'Avoid: too many moving parts for solo use'],
-]
-
 const Grid3 = ({ children }) => (
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' }, gap: 2 }}>
         {children}
@@ -596,34 +586,6 @@ const DeveloperGuide = () => (
                 what each agent does (decisions + choreography). The split is what keeps the dashboard a slim
                 coordination layer holding no skills of its own.
             </SpecNote>
-        </Section>
-
-        {/* Prior art */}
-        <Section
-            kicker="we're not starting from scratch"
-            title="Prior art — what we borrow, what we avoid"
-            intro="Comparable tools exist; the point of Candyland is the lightweight, solo-first subset."
-        >
-            <Card sx={{ overflowX: 'auto' }}>
-                <Table size="small" sx={{ minWidth: 560 }}>
-                    <TableHead>
-                        <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Tool</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>What it is</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>What we take from it</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {priorArt.map(([a, b, c]) => (
-                            <TableRow key={a}>
-                                <TableCell sx={{ color: 'secondary.main', whiteSpace: 'nowrap' }}>{a}</TableCell>
-                                <TableCell sx={{ color: 'text.secondary' }}>{b}</TableCell>
-                                <TableCell sx={{ color: 'text.secondary' }}>{c}</TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
-            </Card>
         </Section>
 
     </Box>

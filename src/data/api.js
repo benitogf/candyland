@@ -1,10 +1,10 @@
 import { domain, ssl } from '../config'
 
-// REST calls to the conductor. Candyland is observe-only: runs are CREATED and
-// STARTED by detritus over REST (POST /api/runs → /api/runs/{id}/begin). The UI
-// only observes and STOPS existing work — Stop is the single interaction on runs,
-// quests, and campaigns (no restart, edit, pause, or resume). It never creates or
-// plans a run.
+// REST calls to the conductor. Runs are CREATED and STARTED by detritus over
+// REST (POST /api/runs → /api/runs/{id}/begin). The UI observes work, STOPS it,
+// and CONFIGURES the conductor (per-level model/thinking via the settings
+// endpoint) — Stop is the single interaction on runs, quests, and campaigns (no
+// restart, edit, pause, or resume). It never creates or plans a run.
 const base = `${ssl ? 'https' : 'http'}://${domain}/api`
 
 const post = async (path, body) => {
@@ -43,6 +43,17 @@ export const archiveCampaign = (id) => post(`/campaigns/${id}/archive`)
 // Stop carries an optional reason recorded on the record.
 export const stopQuest = (id, reason) => post(`/quests/${id}/stop`, reason ? { reason } : undefined)
 export const stopCampaign = (id, reason) => post(`/campaigns/${id}/stop`, reason ? { reason } : undefined)
+
+// Settings: the per-level agent config (model + thinking per role). GET returns
+// the full defaults-overlaid object `{levels:{<role>:{model,thinking}}}`; POST
+// validates + saves the whole object and returns the saved result. This is the
+// UI's one configuration surface — it still never creates or plans work.
+export const fetchSettings = async () => {
+    const res = await fetch(`${base}/settings`)
+    if (!res.ok) throw new Error(`settings: ${res.status}`)
+    return res.json()
+}
+export const saveSettings = (levels) => post('/settings', { levels })
 
 // System info: platform, dependency state (claude/git/gh), recommendations.
 // Doubles as the backend reachability probe.

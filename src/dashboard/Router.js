@@ -3,10 +3,12 @@ import { Route, Routes, Navigate } from 'react-router-dom'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import HistoryIcon from '@mui/icons-material/History'
 import MenuBookIcon from '@mui/icons-material/MenuBook'
+import SettingsIcon from '@mui/icons-material/Settings'
 
 import Dashboard from '../pages/Dashboard'
 import Tasks from '../pages/Tasks'
 import HowItWorks from '../pages/HowItWorks'
+import Settings from '../pages/Settings'
 import WorkDetail from './WorkDetail'
 
 // The whole product is one dashboard. Opening a run is a route-driven full-screen
@@ -17,10 +19,12 @@ export const navItems = [
     { path: '/', label: 'Dashboard', icon: DashboardIcon, match: (p) => p === '/' || p.startsWith('/run') },
     { path: '/tasks', label: 'Work', icon: HistoryIcon, match: (p) => p.startsWith('/tasks') || p.startsWith('/quest') || p.startsWith('/campaign') },
     { path: '/how-it-works', label: 'How it works', icon: MenuBookIcon, match: (p) => p.startsWith('/how-it-works') },
+    { path: '/settings', label: 'Settings', icon: SettingsIcon, match: (p) => p.startsWith('/settings') },
 ]
 
 export const getCurrentSection = (pathname) => {
     if (pathname.startsWith('/how-it-works')) return 'How it works'
+    if (pathname.startsWith('/settings')) return 'Settings'
     if (pathname.startsWith('/tasks')) return 'Work'
     if (pathname.startsWith('/run/')) return 'Run'
     if (pathname.startsWith('/quest/')) return 'Quest'
@@ -35,6 +39,7 @@ export const getCurrentSection = (pathname) => {
 const Router = () => (
     <Routes>
         <Route path="/how-it-works" element={<HowItWorks />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/tasks" element={<Tasks />} />
         <Route path="/quest/:id" element={<><Tasks /><WorkDetail kind="quest" /></>} />
         <Route path="/campaign/:id" element={<><Tasks /><WorkDetail kind="campaign" /></>} />

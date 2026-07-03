@@ -25,6 +25,7 @@ import { useSystemStatus } from '../data/system'
 import { stopQuest } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
+import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
 import { CopyPrLink } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
@@ -145,6 +146,16 @@ const QuestWorkspace = ({ id, onClose }) => {
                     {quest.pauseReason && (quest.status === 'paused' || quest.status === 'blocked') && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {quest.pauseReason}</Alert>
                     )}
+
+                    {/* Terminal summary — names a no-op terminal (e.g. surfaced-only)
+                        so it never reads as an undifferentiated done. Mirrors the
+                        pauseReason surface above. */}
+                    {quest.summary && (
+                        <Alert severity="info" variant="outlined" icon={false} sx={{ mb: 2.5 }}>{quest.summary}</Alert>
+                    )}
+
+                    {quest.status === 'blocked' && <PostmortemBlock postmortem={quest.postmortem} />}
+                    <EscalationsBlock escalations={quest.escalations} />
 
                     {tab === 'objective' && (
                         <Block title="objective">

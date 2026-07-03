@@ -29,6 +29,7 @@ import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { CopyPrButton } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import TasksPanel from '../panels/TasksPanel'
+import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
 
 // Agents (live states + full output) is the default lens for a task run — the
 // thing you want on landing. Overview/intent is a secondary tab.
@@ -307,6 +308,17 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                 <Box sx={{ px: { xs: 2, sm: 4 }, pt: 1.5 }}>
                     <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
                         <Alert severity="error" variant="outlined">{run.error}</Alert>
+                    </Box>
+                </Box>
+            )}
+
+            {/* Read-only audit surfaces — the blocked postmortem (§3) and the
+                recorded decision-escalation trail (§2). Both self-guard on absence. */}
+            {(run.postmortem || (run.escalations || []).length > 0) && (
+                <Box sx={{ px: { xs: 2, sm: 4 }, pt: 1.5 }}>
+                    <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
+                        <PostmortemBlock postmortem={run.postmortem} />
+                        <EscalationsBlock escalations={run.escalations} />
                     </Box>
                 </Box>
             )}

@@ -28,6 +28,7 @@ import { useSystemStatus } from '../data/system'
 import { stopCampaign } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
+import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
 import { CopyPrLink } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
@@ -169,6 +170,9 @@ const CampaignWorkspace = ({ id, onClose }) => {
                     {campaign.pauseReason && (campaign.status === 'paused' || campaign.status === 'blocked') && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {campaign.pauseReason}</Alert>
                     )}
+
+                    {campaign.status === 'blocked' && <PostmortemBlock postmortem={campaign.postmortem} />}
+                    <EscalationsBlock escalations={campaign.escalations} />
 
                     <Block title="rollup">
                         <StatGrid done={childrenDone} total={childrenTotal}>

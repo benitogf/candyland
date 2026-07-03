@@ -69,8 +69,12 @@ export const matchFilters = (item, f, level, textFields) => {
         if (level === 'quests' && item.campaignId) return false
         // campaigns have no parent — always "no parent", so they pass
     } else if (f.parent && f.parent !== 'any') {
+        // An item matches a specific parent scope when it is a CHILD of that
+        // parent OR when it IS that parent — nothing is its own parent, so a
+        // pivot back to an item's own level (or a ParentLink landing) would
+        // otherwise drop the selected item and show an empty table.
         const parents = [item.questId, item.campaignId].filter(Boolean)
-        if (!parents.includes(f.parent)) return false
+        if (item.id !== f.parent && !parents.includes(f.parent)) return false
     }
     // repo / folder
     if (f.repo && !lc(folderOf(item)).includes(lc(f.repo))) return false
