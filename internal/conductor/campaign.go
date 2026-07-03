@@ -51,10 +51,15 @@ func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 	if deliver == "" {
 		deliver = run.DeliverPR
 	}
+	title := strings.TrimSpace(spec.Title)
+	if title == "" {
+		title = deriveTitle(spec.Input)
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	cam := run.Campaign{
 		ID:            id,
+		Title:         title,
 		OriginalInput: spec.Input,
 		Folders:       spec.Folders,
 		Status:        "running",

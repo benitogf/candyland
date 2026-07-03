@@ -119,11 +119,13 @@ func (c *Conductor) BeginCampaign(id string) bool {
 func (c *Conductor) StopCampaign(id, reason string) bool {
 	c.haltCampaignDrive(id)
 	c.stopCampaignChildren(id)
+	if reason == "" {
+		reason = "manual stop" // q4 fix: a stop always records a reason (q4 recorded none)
+	}
 	return c.UpdateCampaign(id, func(cam *run.Campaign) {
 		cam.Status = "stopped"
-		if reason != "" {
-			cam.PauseReason = reason
-		}
+		cam.StopReason = reason
+		cam.PauseReason = reason
 	})
 }
 
@@ -544,27 +546,7 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 	title := campaignPRTitle(cam)
 	body := campaignPRBody(cam, brief, annotations)
 
-	prs := make([]run.PR, 0, len(folders))
-	for _, repo := range folders {
-		repo = expandHome(repo)
-		if !isGitRepo(ctx, repo) {
-			continue // only impacted git repos get a PR
-		}
-		base, _ := currentBranch(ctx, repo)
-		pr := run.PR{Repo: repoBase(repo)}
-		// Only repos the campaign branch actually exists on have work to deliver.
-		if sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err != nil || sha == "" {
-			continue
-		}
-		if err := pushBranch(ctx, repo, branch); err != nil {
-			pr.Err = "push failed: " + err.Error()
-		} else if url, err := openPR(ctx, repo, base, branch, title, body); err != nil {
-			pr.Err = "PR failed: " + err.Error()
-		} else {
-			pr.URL = url
-		}
-		prs = append(prs, pr)
-	}
+	prs := openBranchPRs(ctx, folders, branch, title, body)
 
 	opened := 0
 	for _, pr := range prs {

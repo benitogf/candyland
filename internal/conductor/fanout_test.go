@@ -153,7 +153,7 @@ fi
 
 // A stub gh that echoes a per-repo PR URL (derived from the integration worktree's
 // repo dir), so two repos produce two distinct PRs.
-const perRepoGh = "#!/usr/bin/env bash\nrepo=$(basename \"$(dirname \"$PWD\")\")\necho \"https://github.com/example/$repo/pull/7\"\n"
+const perRepoGh = "#!/usr/bin/env bash\nif [[ \"$*\" == *defaultBranchRef* ]]; then echo 'main'; exit 0; fi\nrepo=$(basename \"$(dirname \"$PWD\")\")\necho \"https://github.com/example/$repo/pull/7\"\n"
 
 func writeGh(t *testing.T, script string) {
 	t.Helper()

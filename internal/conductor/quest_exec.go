@@ -87,11 +87,13 @@ func (c *Conductor) BeginQuest(id string) bool {
 // live). A stopped quest never ticks again (BeginQuest refuses it).
 func (c *Conductor) StopQuest(id, reason string) bool {
 	c.haltQuestDrive(id)
+	if reason == "" {
+		reason = "manual stop" // q4 fix: a stop always records a reason (q4 recorded none)
+	}
 	ok := c.UpdateQuest(id, func(q *run.Quest) {
 		q.Status = "stopped"
-		if reason != "" {
-			q.PauseReason = reason
-		}
+		q.StopReason = reason
+		q.PauseReason = reason
 	})
 	if ok {
 		c.stopChildRuns(c.QuestChildRuns(id))
@@ -213,6 +215,11 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	if ctx.Err() != nil {
 		return false // paused/stopped mid-discovery — not a failure
 	}
+	// q4 fix — own-artifacts triage guard: drop any surfaced item that points at the
+	// loop's OWN delivery artifacts (its quest/<id> or campaign/<id> branch, or a PR
+	// it already opened). Without it, discovery re-surfaces the quest's own PR/branch
+	// as new work and the loop feeds on itself (q4 ticks 3–10 reconcile/supersede).
+	items = dropOwnArtifacts(q, items)
 	rec.DiscoverySummary = summary
 	if perr != "" {
 		rec.Blockers = append(rec.Blockers, perr)
@@ -240,7 +247,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		} else {
 			rec.NextAction = "no safe work remaining — stopping"
 			c.recordTick(id, rec, tokens, nil)
-			c.finishQuest(id)
+			c.finishQuest(ctx, id)
 			return false
 		}
 	}
@@ -456,19 +463,53 @@ func (c *Conductor) recordTick(id string, rec run.Tick, addTokens int, items []r
 	})
 }
 
-// finishQuest moves a quest to its terminal state, choosing between plain "done"
-// (it shipped, or its delivery is the branch commit by design) and the distinct
-// "surfaced-only" no-op state (Q2). A concurrent Stop is authoritative and left
-// alone.
-func (c *Conductor) finishQuest(id string) {
+// finishQuest moves a quest to its terminal state. A standalone CONVERGE quest
+// first opens ONE PR per impacted repo from its quest/<id> branch (the campaign
+// delivery shape, via openBranchPRs) — its child runs accumulated their commits
+// there with no per-finding PRs. A perFinding/feedback/review/campaign-child quest
+// has already delivered per child run, so no terminal PR opens. It then chooses
+// between plain "done" and the distinct "surfaced-only" no-op state (Q2). A
+// concurrent Stop is authoritative and left alone.
+func (c *Conductor) finishQuest(ctx context.Context, id string) {
+	q, ok := c.GetQuest(id)
+	if !ok {
+		return
+	}
+	// The terminal per-repo PR open is I/O (git push + gh) — do it OUTSIDE the
+	// UpdateQuest write lock, then persist the result in a single mutation.
+	var prs []run.PR
+	if branch := QuestBranch(q); strings.HasPrefix(branch, "quest/") && q.ItemsCompleted > 0 {
+		prs = openBranchPRs(ctx, q.Folders, branch, questPRTitle(q), questPRBody(q))
+	}
 	c.UpdateQuest(id, func(q *run.Quest) {
 		if q.Status == "stopped" {
 			return // a concurrent Stop is authoritative
+		}
+		if prs != nil {
+			q.PRs = prs
+			recomputeQuestRollups(q) // fold the terminal PRs into PRsOpened
 		}
 		q.Status = questTerminalStatus(q)
 		q.Summary = questTerminalSummary(q)
 		q.LastProgress = time.Now().UTC().Format(time.RFC3339)
 	})
+}
+
+// questPRTitle is the title of a converge quest's terminal PR: its display Title,
+// else the first line of its objective, truncated (the prTitle/campaignPRTitle
+// primitive).
+func questPRTitle(q run.Quest) string {
+	if t := strings.TrimSpace(q.Title); t != "" {
+		return truncate(t, 72)
+	}
+	return truncate(orDefault(firstLine(q.OriginalObjective), "candyland quest "+q.ID), 72)
+}
+
+// questPRBody is the body of a converge quest's terminal PR.
+func questPRBody(q run.Quest) string {
+	return "Delivered by a candyland quest (bounded — converge to one PR per repo).\n\n## Objective\n\n" +
+		strings.TrimSpace(q.OriginalObjective) +
+		"\n\n🍬 Opened by [candyland](https://github.com/benitogf/candyland)."
 }
 
 // questIsNoOp reports whether a terminal quest delivered NOTHING in-scope: zero
@@ -542,6 +583,13 @@ func recomputeQuestRollups(q *run.Quest) {
 			}
 		}
 	}
+	// A converge quest's terminal per-repo PRs live on q.PRs (opened at finish, not
+	// on any tick), so fold them in too.
+	for _, pr := range q.PRs {
+		if pr.URL != "" {
+			prs++
+		}
+	}
 	q.PRsOpened = prs
 	q.ItemsCompleted = completed
 	q.ItemsSkipped = skipped
@@ -609,6 +657,56 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 			continue
 		}
 		out = append(out, it)
+	}
+	return out
+}
+
+// ownArtifactTokens are the lowercased strings that identify a quest's OWN delivery
+// artifacts: its shared branch (quest/<id> or campaign/<id>) and every PR URL it has
+// already opened (on prior ticks or its terminal delivery). A surfaced work item that
+// mentions any of these is the loop rediscovering its own output.
+func ownArtifactTokens(q run.Quest) []string {
+	var toks []string
+	if b := QuestBranch(q); b != "" {
+		toks = append(toks, strings.ToLower(b))
+	}
+	for _, t := range q.Ticks {
+		for _, pr := range t.PRs {
+			if pr.URL != "" {
+				toks = append(toks, strings.ToLower(pr.URL))
+			}
+		}
+	}
+	for _, pr := range q.PRs {
+		if pr.URL != "" {
+			toks = append(toks, strings.ToLower(pr.URL))
+		}
+	}
+	return toks
+}
+
+// dropOwnArtifacts filters out work items that reference the quest's own delivery
+// artifacts (its branch or an already-opened PR), so discovery can never feed the
+// loop its own output as new work (q4 fix 3). Items are matched against title,
+// evidence, and classification.
+func dropOwnArtifacts(q run.Quest, items []questWorkItem) []questWorkItem {
+	own := ownArtifactTokens(q)
+	if len(own) == 0 || len(items) == 0 {
+		return items
+	}
+	out := make([]questWorkItem, 0, len(items))
+	for _, it := range items {
+		hay := strings.ToLower(it.Title + " " + it.Evidence + " " + it.Classification)
+		self := false
+		for _, tok := range own {
+			if strings.Contains(hay, tok) {
+				self = true
+				break
+			}
+		}
+		if !self {
+			out = append(out, it)
+		}
 	}
 	return out
 }
@@ -704,8 +802,37 @@ func questBriefPrompt(q run.Quest, tickID string) string {
 		}
 		fmt.Fprintf(&b, "TARGET PR: #%d — this is %s work on that EXISTING PR. Fetch and read the PR (its diff and review comments) BEFORE surfacing anything; every finding must come from what you read. Do NOT emit WORKITEMS_NONE without having read PR #%d.\n", q.TargetPR, mode, q.TargetPR)
 	}
+	// Own-artifacts guard (q4 fix 3): tell the lead never to surface the quest's own
+	// delivery artifacts as work. Name the branch it delivers on and any PR it opened
+	// so a rediscovery of them is unambiguous.
+	if branch := QuestBranch(q); branch != "" {
+		fmt.Fprintf(&b, "OWN DELIVERY BRANCH (never surface it or work items about it): %s\n", branch)
+	}
+	if urls := openedPRURLs(q); len(urls) > 0 {
+		fmt.Fprintf(&b, "YOUR OWN OPEN PRs (never surface them as new work — do not reconcile/supersede your own output): %s\n", strings.Join(urls, ", "))
+	}
+	b.WriteString("Do NOT surface, reconcile, or supersede your own prior deliveries (the branch/PRs above) — those are your output, not new work.\n")
 	fmt.Fprintf(&b, "TICK: %s\n", tickID)
 	return b.String()
+}
+
+// openedPRURLs collects every PR URL a quest has opened (prior ticks + terminal
+// delivery), for naming the loop's own artifacts in the brief.
+func openedPRURLs(q run.Quest) []string {
+	var urls []string
+	for _, t := range q.Ticks {
+		for _, pr := range t.PRs {
+			if pr.URL != "" {
+				urls = append(urls, pr.URL)
+			}
+		}
+	}
+	for _, pr := range q.PRs {
+		if pr.URL != "" {
+			urls = append(urls, pr.URL)
+		}
+	}
+	return urls
 }
 
 // childRunPrompt is the prompt for the child run launched to do one work item. It

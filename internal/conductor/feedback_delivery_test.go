@@ -115,6 +115,7 @@ func writeFeedbackGh(t *testing.T, headBranch string) {
 	log := filepath.Join(dir, "gh.log")
 	script := "#!/usr/bin/env bash\n" +
 		"echo \"$@\" >> \"" + log + "\"\n" +
+		"if [[ \"$*\" == *defaultBranchRef* ]]; then echo 'main'; exit 0; fi\n" +
 		"if [[ \"$*\" == *headRefName* ]]; then echo '" + headBranch + "'; exit 0; fi\n" +
 		"if [[ \"$*\" == *\"--json url\"* ]]; then echo 'https://github.com/example/repo/pull/42'; exit 0; fi\n" +
 		"if [[ \"$1\" == pr && \"$2\" == create ]]; then echo 'https://github.com/example/repo/pull/99'; exit 0; fi\n" +

@@ -128,18 +128,27 @@ func TestUpdateQuestDurable(t *testing.T) {
 	}
 }
 
-// QuestBranch derives campaign/<id> only for a campaign-owned (branch-delivered)
-// quest, and "" for a standalone (pr-delivered) quest.
+// QuestBranch derives the shared branch a quest's child runs accumulate on:
+// campaign/<id> for a campaign-child quest (any policy), quest/<id> for a standalone
+// converge quest, and "" for a perFinding (adventure) or feedback/review quest.
 func TestQuestBranchDerivation(t *testing.T) {
-	branch := QuestBranch(run.Quest{CampaignID: "c42", Deliver: run.DeliverBranch})
-	if branch != "campaign/c42" {
-		t.Errorf("branch-delivered quest branch = %q, want campaign/c42", branch)
+	// Campaign-child quest → the campaign branch, regardless of convergence policy.
+	if b := QuestBranch(run.Quest{ID: "q1", CampaignID: "c42", Deliver: run.DeliverBranch}); b != "campaign/c42" {
+		t.Errorf("campaign-child quest branch = %q, want campaign/c42", b)
 	}
-	if b := QuestBranch(run.Quest{CampaignID: "c42", Deliver: run.DeliverPR}); b != "" {
-		t.Errorf("pr-delivered quest branch = %q, want empty", b)
+	if b := QuestBranch(run.Quest{ID: "q1", CampaignID: "c42", Convergence: run.ConvergePerFinding}); b != "campaign/c42" {
+		t.Errorf("campaign-child quest (perFinding) branch = %q, want campaign/c42", b)
 	}
-	// branch delivery with no campaign link has no shared branch to derive.
-	if b := QuestBranch(run.Quest{Deliver: run.DeliverBranch}); b != "" {
-		t.Errorf("orphan branch quest = %q, want empty", b)
+	// Standalone converge quest → its own quest/<id> branch.
+	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergeConverge}); b != "quest/q7" {
+		t.Errorf("standalone converge quest branch = %q, want quest/q7", b)
+	}
+	// Standalone perFinding (adventure) quest → no shared branch (a PR per finding).
+	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergePerFinding}); b != "" {
+		t.Errorf("perFinding quest branch = %q, want empty", b)
+	}
+	// Feedback/review quest works the target PR's head branch — no owned branch.
+	if b := QuestBranch(run.Quest{ID: "q7", Deliver: run.DeliverReview, TargetPR: 9}); b != "" {
+		t.Errorf("feedback/review quest branch = %q, want empty", b)
 	}
 }

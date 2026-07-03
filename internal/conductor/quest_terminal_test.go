@@ -65,11 +65,13 @@ func TestCampaignChildLinkedBothWaysAtLaunch(t *testing.T) {
 	}
 }
 
-// O5: a standalone quest child run serializes deliver:"pr" (present, not omitted)
-// so the frontend can key UI on r.deliver. Empty/omitted would break the UI.
+// O5: a standalone perFinding (adventure) quest child run serializes deliver:"pr"
+// (present, not omitted) so the frontend can key UI on r.deliver. Empty/omitted
+// would break the UI. (A converge quest's child delivers "branch" — see
+// TestQuestConvergeOpensOnePRAtTerminal.)
 func TestStandaloneChildSerializesDeliverPR(t *testing.T) {
 	c, _ := newQuestServer(t)
-	childID := c.linkQuestChild(run.Quest{ID: "q1", Folders: []string{"/repo"}}, run.Spec{Folders: []string{"/repo"}, Prompt: "p", Title: "t"})
+	childID := c.linkQuestChild(run.Quest{ID: "q1", Folders: []string{"/repo"}, Convergence: run.ConvergePerFinding}, run.Spec{Folders: []string{"/repo"}, Prompt: "p", Title: "t"})
 	child, ok := c.Get(childID)
 	if !ok {
 		t.Fatalf("child %q not tracked", childID)

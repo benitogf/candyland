@@ -70,6 +70,38 @@ func currentBranch(ctx context.Context, dir string) (string, error) {
 	return git(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
+// defaultBranch resolves the repo's DEFAULT branch — the base every new PR must
+// target, never the current checkout (q4 fix: PRs failed with
+// `--base feat/candyland-ux-overhaul` because the base came from the checked-out
+// branch; mirrors /gh convention 6). It asks gh for the repo's default branch
+// first, then falls back to origin/HEAD's symbolic ref. An error is returned when
+// neither resolves, so a caller can degrade to currentBranch rather than open a PR
+// against a wrong base silently.
+func defaultBranch(ctx context.Context, repo string) (string, error) {
+	if out, err := runCmd(ctx, repo, ghBin(), "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"); err == nil {
+		if b := strings.TrimSpace(out); b != "" {
+			return b, nil
+		}
+	}
+	if out, err := git(ctx, repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if b := strings.TrimPrefix(strings.TrimSpace(out), "origin/"); b != "" {
+			return b, nil
+		}
+	}
+	return "", fmt.Errorf("could not resolve the default branch for %s", repoBase(repo))
+}
+
+// prBase resolves the base branch a new PR must target in repo: the repo's fetched
+// default branch, falling back to the current checkout only if the default can't be
+// resolved (better a PR than none). It is the single site every new-PR open uses.
+func prBase(ctx context.Context, repo string) string {
+	if b, err := defaultBranch(ctx, repo); err == nil {
+		return b
+	}
+	b, _ := currentBranch(ctx, repo)
+	return b
+}
+
 // addWorktree creates a worktree at wtDir on branch (off base), so a coder can
 // work in isolation while its siblings run in parallel. It first clears any
 // leftover worktree/branch/dir at the same path — a quick stop→edit→begin (or an

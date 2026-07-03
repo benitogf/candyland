@@ -51,10 +51,19 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 	if deliver == "" {
 		deliver = run.DeliverPR
 	}
+	convergence := spec.Convergence
+	if convergence == "" {
+		convergence = run.ConvergeConverge // bounded quest by default
+	}
+	title := strings.TrimSpace(spec.Title)
+	if title == "" {
+		title = deriveTitle(spec.Objective)
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	q := run.Quest{
 		ID:                id,
+		Title:             title,
 		CampaignID:        spec.CampaignID,
 		OriginalObjective: spec.Objective,
 		Objective:         spec.Objective,
@@ -66,6 +75,7 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 		Status:            "running",
 		TokenBudget:       spec.TokenBudget,
 		Deliver:           deliver,
+		Convergence:       convergence,
 		TargetPR:          spec.TargetPR,
 		// Empty (non-nil) slices marshal to [] not null — the UI reads these as
 		// arrays (.map/.length), matching how runs keep Agents/Tasks non-nil.
@@ -175,19 +185,29 @@ func (c *Conductor) ListQuests() []run.Quest {
 	return quests
 }
 
-// QuestBranch derives a campaign-owned quest's campaign branch (campaign/<id> — the
-// same name in each impacted repo). A quest that delivers onto a campaign branch
-// (Deliver=="branch") commits all its child runs onto campaign/<campaignID> — a
-// settled decision: the branch is DERIVED from the parent campaign, never a scalar
-// branch name on the spec. A standalone quest
-// (Deliver=="pr") has no shared branch (each child run opens its own PR on its own
-// branch), so this returns "". Delivery itself is wired in a later phase; this is
-// the single definition of the format so that phase derives it identically.
+// QuestBranch derives the shared branch a quest's child runs accumulate their
+// commits on (the same name in each impacted repo — never a scalar branch on the
+// spec). It is the single definition of the format, mirroring CampaignBranch:
+//
+//   - A feedback/review quest (target PR) works that PR's HEAD branch, not an owned
+//     branch — convergence does not apply, so this returns "".
+//   - A campaign-child quest (CampaignID set) integrates onto the CAMPAIGN branch
+//     campaign/<campaignID> and opens no PR — regardless of its convergence policy.
+//   - A standalone CONVERGE quest accumulates its child runs onto quest/<id> and
+//     opens ONE PR per repo at terminal.
+//   - A standalone perFinding quest (adventure) has no shared branch — each child
+//     run opens its own PR — so this returns "".
 func QuestBranch(q run.Quest) string {
-	if q.Deliver != run.DeliverBranch || q.CampaignID == "" {
-		return ""
+	if isTargetedReviewQuest(q) {
+		return "" // feedback/review works the target PR's head branch
 	}
-	return "campaign/" + q.CampaignID
+	if q.CampaignID != "" {
+		return "campaign/" + q.CampaignID // campaign-child integrates onto the campaign branch
+	}
+	if q.Convergence == run.ConvergePerFinding {
+		return "" // adventure: a PR per finding, no shared branch
+	}
+	return "quest/" + q.ID // standalone bounded quest: accumulate on quest/<id>
 }
 
 // reconcileQuestSeq seeds the quest-id sequence past the highest persisted id, so a

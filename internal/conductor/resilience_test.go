@@ -34,7 +34,9 @@ func writeFakeGh(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	gh := filepath.Join(dir, "gh")
-	script := "#!/usr/bin/env bash\necho 'https://github.com/example/repo/pull/7'\n"
+	script := "#!/usr/bin/env bash\n" +
+		"if [[ \"$*\" == *defaultBranchRef* ]]; then echo 'main'; exit 0; fi\n" +
+		"echo 'https://github.com/example/repo/pull/7'\n"
 	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +390,6 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 		t.Errorf("the run error should surface claude's stderr, got %q", r.Error)
 	}
 }
-
 
 func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	c, _ := deliveryConductor(t, slowCoder)
