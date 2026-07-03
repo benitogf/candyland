@@ -195,6 +195,14 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		if attempt == replans {
 			// K=3 escalation cap reached: give up rather than thrash quota, and
 			// escalate the still-open task-graph nodes to blocked.
+			// E3: a quest/campaign child run's tech-lead escalates this DECISION one
+			// tier up (to the owning quest-lead) — decided autonomously and recorded on
+			// the run (audit), never sent to a human, before the run fails honestly.
+			if r.QuestID != "" || r.CampaignID != "" {
+				c.escalateRunDecision(ctx, r,
+					fmt.Sprintf("the tech-lead could not find a working task split after %d attempts (%s) — decide whether to accept a narrower split, re-scope the item, or block it", replans, feedback),
+					folders[0], extraDirsFor(folders[0], folders))
+			}
 			fail(ctx, c, id, "tl", fmt.Sprintf("Couldn't find a working task split after %d attempts. Last problem: %s", replans, feedback))
 			c.escalateOpenNodes(fmt.Sprintf("no working task split after %d attempts: %s", replans, feedback))
 			return
@@ -455,12 +463,13 @@ type attemptDeliveryResult struct {
 // brief so the tech lead produces a DIFFERENT breakdown.
 func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []string, prompt, branch, wtRoot, feedback string, attempt int) attemptDeliveryResult {
 	primary := folders[0]
+	tlModel, tlThinking := c.agentConfig(RoleTechLead)
 	// ── Tech lead: partition the work (in its own worktree in the primary repo). ──
 	c.Update(id, func(r *run.Run) {
 		r.Status = "running"
 		r.Phase = run.PhaseBuild
 		tl := run.Agent{ID: "tl", Role: "Tech lead", Emoji: "🧭", Task: "partition · integrate · deliver",
-			State: "working", Activity: "planning the partition", Budget: 800, Worktree: "wt/tl", Model: "opus-4-8",
+			State: "working", Activity: "planning the partition", Budget: 800, Worktree: "wt/tl", Model: tlModel, Thinking: tlThinking,
 			Events: []run.Event{{T: "system", Text: "tech-lead · claude -p --output-format stream-json"}}}
 		if attempt > 1 {
 			r.StatusLine = "Reassessing the task split and trying a different breakdown…"
@@ -482,7 +491,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 		return attemptDeliveryResult{}
 	}
 	c.putBrief("tl", bus.Brief{Role: "tech-lead", Prompt: prompt, Feedback: feedback, Attempt: attempt})
-	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extraDirsFor(primary, folders))
+	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extraDirsFor(primary, folders), spawnOpts{model: tlModel, thinking: tlThinking})
 	if ctx.Err() != nil {
 		return attemptDeliveryResult{} // stopped
 	}
@@ -494,6 +503,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 	}
 
 	// Write the partition DAG and the coder agents.
+	coderModel, coderThinking := c.agentConfig(RoleCoder)
 	c.Update(id, func(r *run.Run) {
 		r.HasDag = true
 		r.StatusLine = fmt.Sprintf("Coders are implementing %d %s…", len(tasks), plural(len(tasks), "task", "tasks"))
@@ -501,7 +511,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 		for _, t := range tasks {
 			r.Tasks = append(r.Tasks, run.Task{ID: t.ID, Title: t.Title, Files: t.Files, Test: t.Test, Owner: t.ID, State: "working", Deps: t.Deps})
 			r.Agents = append(r.Agents, run.Agent{ID: t.ID, Role: orDefault(t.Role, "Coder"), Emoji: orDefault(t.Emoji, "⚙️"), Task: t.Title,
-				State: "working", Activity: "implementing " + t.Title, Budget: 200, Worktree: "wt/" + t.ID, Model: "opus-4-8"})
+				State: "working", Activity: "implementing " + t.Title, Budget: 200, Worktree: "wt/" + t.ID, Model: coderModel, Thinking: coderThinking})
 		}
 		setAgentState(r, "tl", "integrating", "coordinating coders")
 	})
@@ -708,6 +718,7 @@ func prStatusLine(prs []run.PR) string {
 // A coder that fails (process error, or commit error) records the run error and
 // blocks its agent; the caller decides whether that warrants a re-plan.
 func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string, tasks []partitionTask, extra []string) {
+	coderModel, coderThinking := c.agentConfig(RoleCoder)
 	var wg sync.WaitGroup
 	for _, t := range tasks {
 		wg.Add(1)
@@ -719,7 +730,7 @@ func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string,
 				return
 			}
 			c.putBrief(t.ID, bus.Brief{Role: t.Role, Title: t.Title, Files: t.Files, Test: t.Test, Deps: t.Deps, Repo: repoBase(repo)})
-			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra)
+			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra, spawnOpts{model: coderModel, thinking: coderThinking})
 			// Don't commit or claim success for a coder that failed (r.Error) or was
 			// killed mid-flight by Stop/Restart (ctx cancelled).
 			cr, _ := c.Get(id)
@@ -898,6 +909,7 @@ const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read y
 func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t partitionTask, files, extra []string) error {
 	attempts := maxAttempts()
 	var lastErr error
+	tlModel, tlThinking := c.agentConfig(RoleTechLead)
 	c.putBrief("tl", bus.Brief{Role: "tech-lead", Title: "resolve merge conflict in " + t.Title, Files: files})
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if ctx.Err() != nil {
@@ -909,7 +921,7 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 				appendToAgent(r, "tl", run.Event{T: "system", Text: "merge conflict in " + strings.Join(files, ", ") + " — tech lead reconciling"}, 0)
 			}
 		})
-		out := streamOnce(ctx, c, id, "tl", reinforce(conflictBootstrap, attempt, false), integDir, extra)
+		out := streamOnce(ctx, c, id, "tl", reinforce(conflictBootstrap, attempt, false), integDir, extra, spawnOpts{model: tlModel, thinking: tlThinking})
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1012,15 +1024,22 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 // error and opening no PR) or the run was stopped.
 func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered map[string]string, branch string) bool {
 	rounds := maxReviewRounds()
+	reviewerModel, reviewerThinking := c.agentConfig(RoleReviewer)
+	fixModel, fixThinking := c.agentConfig(RoleFix)
 	c.Update(id, func(r *run.Run) {
 		r.Phase = run.PhaseReview
 		r.StatusLine = "Reviewing the integrated changes before opening a pull request…"
 		r.Agents = append(r.Agents, run.Agent{ID: reviewerID, Role: "Reviewer", Emoji: "🔎",
 			Task: "review the integrated diff", State: "working", Activity: "loading review doctrine",
-			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: "opus-4-8",
+			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: reviewerModel, Thinking: reviewerThinking,
 			Events: []run.Event{{T: "system", Text: "reviewer · kb_get core/review-rigor + truthseeker"}}})
 	})
 	folders := orderedDelivered(delivered)
+	// F3 doctrine-once: the reviewer loads the review doctrine ONCE per identity per
+	// run (round 1 across the first repo). Later rounds/repos reuse the same identity,
+	// so their bootstrap omits the kb_get reload (mirrors reviewFixBootstrap's no-reload).
+	doctrineLoaded := false
+	totalRounds := 0
 	for _, repo := range folders {
 		integDir := delivered[repo]
 		base, _ := currentBranch(ctx, repo)
@@ -1028,12 +1047,14 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 			if ctx.Err() != nil {
 				return false // stopped mid-review
 			}
+			totalRounds++
 			c.Update(id, func(r *run.Run) {
 				r.StatusLine = fmt.Sprintf("Reviewing %s (round %d/%d)…", repoBase(repo), round, rounds)
 				setAgentState(r, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
 			})
 			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch})
-			out := streamOnce(ctx, c, id, reviewerID, reviewBootstrap, integDir, extraDirsForDelivered(repo, folders), spawnOpts{maxTurns: reviewFixTurns()})
+			out := streamOnce(ctx, c, id, reviewerID, reviewPrompt(doctrineLoaded), integDir, extraDirsForDelivered(repo, folders), spawnOpts{maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking})
+			doctrineLoaded = true
 			if ctx.Err() != nil {
 				return false // stopped mid-review
 			}
@@ -1075,13 +1096,14 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 			// Blockers remain and rounds are left: re-engage a fix agent in this repo's
 			// integration worktree to address the cited findings, commit onto the run
 			// branch, then re-review.
-			if !c.fixReviewFindings(ctx, id, repo, integDir, branch, verdict.Blockers, extraDirsForDelivered(repo, folders), round) {
+			if !c.fixReviewFindings(ctx, id, repo, integDir, branch, verdict.Blockers, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking) {
 				return false // fix pass failed/stopped — error already recorded (or stopped)
 			}
 		}
 	}
 	c.Update(id, func(r *run.Run) {
 		r.StatusLine = "Review clean — opening pull requests…"
+		r.ReviewRounds = totalRounds // L2 telemetry: review-round count
 		setAgentState(r, reviewerID, "done", "review clean")
 	})
 	return true
@@ -1091,7 +1113,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 // the reviewer's cited blockers and commits the fixes onto the run branch. It
 // returns true when the fixes were made and committed, false when the agent failed
 // to act (error recorded) or the run was stopped.
-func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int) bool {
+func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking string) bool {
 	// C2 fail-fast: a fix pass with NO findings has nothing to act on. Never let it
 	// run and silently re-derive its own task list (a context-blind agent then
 	// explores the whole tree); record an explicit error and abort the pass.
@@ -1107,7 +1129,7 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	c.putBrief(reviewerID, bus.Brief{Role: "fix", Title: "address review findings in " + repoBase(repo), Findings: findingLines(blockers)})
 	// C2 belt-and-suspenders: also carry the cited findings in the prompt text
 	// itself, so they're impossible to miss even if the brief render drops them.
-	out := streamOnce(ctx, c, id, reviewerID, reviewFixPrompt(blockers), integDir, extra, spawnOpts{maxTurns: reviewFixTurns()})
+	out := streamOnce(ctx, c, id, reviewerID, reviewFixPrompt(blockers), integDir, extra, spawnOpts{maxTurns: reviewFixTurns(), model: fixModel, thinking: fixThinking})
 	if ctx.Err() != nil {
 		return false // stopped mid-fix
 	}
@@ -1186,6 +1208,28 @@ const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST 
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
 	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
+
+// reviewBootstrapNoReload is the round-2+ reviewer bootstrap: the SAME rigor as
+// reviewBootstrap but WITHOUT the kb_get doctrine load — the reviewer identity
+// already loaded core/review-rigor + truthseeker once this run (F3: load once per
+// reviewer identity per run, not every round). Mirrors reviewFixBootstrap's no-reload.
+const reviewBootstrapNoReload = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
+	"Apply the detritus review doctrine you ALREADY loaded this run (core/review-rigor + truthseeker) — do NOT reload it. " +
+	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
+	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
+	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
+	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
+	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
+	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
+
+// reviewPrompt picks the reviewer bootstrap: the full doctrine-loading one on the
+// first review of the run, the no-reload variant on every later round/repo (F3).
+func reviewPrompt(doctrineLoaded bool) string {
+	if doctrineLoaded {
+		return reviewBootstrapNoReload
+	}
+	return reviewBootstrap
+}
 
 const reviewFixBootstrap = "You are addressing review findings on an integrated branch before it opens as a pull request. " +
 	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
@@ -1278,6 +1322,7 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 				summary := truncate(in, 200)
 				c.updateAgentHost(id, func(agents *[]run.Agent) {
 					appendToAgentIn(agents, agentID, run.Event{T: "tool", Name: b.Name, Input: summary, InputFull: fullWhenTruncated(summary, in)}, 0)
+					ensureAgent(agents, agentID).ToolCalls++ // L2 telemetry: tool-call count
 				})
 			}
 		}

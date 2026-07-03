@@ -66,6 +66,19 @@ const (
 	techManagerID    = "tech-manager"    // decompose (QUESTS) + gate 2 technical-done confirmation
 )
 
+// campaignSpawn pre-seeds a coordinating agent's effective model+thinking on the
+// campaign record (L2 telemetry — the self-seeding recorder would leave them empty)
+// and returns the spawnOpts that thread the fresh per-role settings config into the
+// claude process. role is the settings level key (§9); agentID is the bus identity.
+func (c *Conductor) campaignSpawn(camID, agentID, role string) spawnOpts {
+	model, thinking := c.agentConfig(role)
+	c.updateAgentHost(camID, func(agents *[]run.Agent) {
+		a := ensureAgent(agents, agentID)
+		a.Model, a.Thinking, a.Role = model, thinking, role
+	})
+	return spawnOpts{model: model, thinking: thinking}
+}
+
 // maxPartitionAttempts bounds gate 1 (the partition-convergence gate): how many
 // times a disagreement between the tech manager's quest partition and the intent
 // manager's review routes back to the tech manager before the campaign blocks. It
@@ -402,7 +415,7 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 		Prompt:   intentLeadBriefPrompt(cam),
 		Feedback: feedback,
 	})
-	res := streamOnce(ctx, c, id, intentLeadID, intentLeadBootstrap, primary, extra)
+	res := streamOnce(ctx, c, id, intentLeadID, intentLeadBootstrap, primary, extra, c.campaignSpawn(id, intentLeadID, RoleIntentLead))
 	if ctx.Err() != nil {
 		return run.IntentBrief{}, res.tokens, ""
 	}
@@ -747,7 +760,7 @@ func (c *Conductor) emitQuests(ctx context.Context, id string, cam run.Campaign,
 		Prompt:   techManagerBriefPrompt(cam, brief),
 		Feedback: feedback,
 	})
-	res := streamOnce(ctx, c, id, techManagerID, techManagerBootstrap, primary, extra)
+	res := streamOnce(ctx, c, id, techManagerID, techManagerBootstrap, primary, extra, c.campaignSpawn(id, techManagerID, RoleTechManager))
 	if ctx.Err() != nil {
 		return nil, res.tokens, "", ""
 	}
@@ -781,7 +794,7 @@ func (c *Conductor) reviewPartition(ctx context.Context, id string, cam run.Camp
 		Role:   "intent-manager",
 		Prompt: partitionReviewBriefPrompt(cam, brief, quests),
 	})
-	res := streamOnce(ctx, c, id, intentManagerID, partitionReviewBootstrap, primary, extra)
+	res := streamOnce(ctx, c, id, intentManagerID, partitionReviewBootstrap, primary, extra, c.campaignSpawn(id, intentManagerID, RoleIntentManager))
 	if ctx.Err() != nil {
 		return partitionVerdict{}, false
 	}
@@ -815,7 +828,7 @@ func (c *Conductor) techManagerDone(ctx context.Context, id string, cam run.Camp
 		Role:   "tech-manager",
 		Prompt: techDoneBriefPrompt(cam, brief, review, orDefault(base, "main")),
 	})
-	res := streamOnce(ctx, c, id, techManagerID, techDoneBootstrap, primary, extra)
+	res := streamOnce(ctx, c, id, techManagerID, techDoneBootstrap, primary, extra, c.campaignSpawn(id, techManagerID, RoleTechManager))
 	c.addCampaignTokens(id, res.tokens)
 	if ctx.Err() != nil {
 		return techDoneVerdict{}, false
@@ -868,7 +881,7 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 		Role:   "intent-reviewer",
 		Prompt: intentReviewerBriefPrompt(cam, brief, orDefault(base, "main")),
 	})
-	res := streamOnce(ctx, c, id, intentReviewerID, intentReviewerBootstrap, primary, extra)
+	res := streamOnce(ctx, c, id, intentReviewerID, intentReviewerBootstrap, primary, extra, c.campaignSpawn(id, intentReviewerID, RoleIntentReviewer))
 	c.addCampaignTokens(id, res.tokens)
 	if ctx.Err() != nil {
 		return run.IntentReview{}, false

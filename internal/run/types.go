@@ -32,17 +32,53 @@ type Event struct {
 
 // Agent is one spawned worker (a headless claude process).
 type Agent struct {
-	ID       string  `json:"id"`
-	Role     string  `json:"role"`
-	Emoji    string  `json:"emoji"`
-	Task     string  `json:"task"`
-	State    string  `json:"state"` // idle|working|retrying|blocked|integrating|green|done
-	Activity string  `json:"activity"`
-	Tokens   int     `json:"tokens"`
-	Budget   int     `json:"budget"`
-	Worktree string  `json:"worktree"`
-	Model    string  `json:"model"`
-	Events   []Event `json:"events"`
+	ID       string `json:"id"`
+	Role     string `json:"role"`
+	Emoji    string `json:"emoji"`
+	Task     string `json:"task"`
+	State    string `json:"state"` // idle|working|retrying|blocked|integrating|green|done
+	Activity string `json:"activity"`
+	Tokens   int    `json:"tokens"`
+	Budget   int    `json:"budget"`
+	Worktree string `json:"worktree"`
+	// Model is the ACTUAL configured model the process was spawned with (the
+	// effective --model), and Thinking the effective --effort level — the L2
+	// telemetry fields /learn mines to correlate outcome with model/effort. Both
+	// are wired from the fresh per-spawn agentConfig(role), never a decoupled literal.
+	Model    string `json:"model"`
+	Thinking string `json:"thinking,omitempty"`
+	// ToolCalls counts the tool_use events this agent emitted (L2 telemetry:
+	// tool-call count), stamped as they stream in.
+	ToolCalls int     `json:"toolCalls,omitempty"`
+	Events    []Event `json:"events"`
+}
+
+// Postmortem is the schema a terminal `blocked` (a capability failure — the "last
+// breath" of §1/§3) MUST carry to be valid. A blocked write without ALL of these
+// fields is incomplete and is rejected/bounced back to the agent (see
+// conductor.validatePostmortem). It is persisted on the run/quest/campaign record
+// and rendered in the detail view so a blocker is fully explained, never a bare stop.
+type Postmortem struct {
+	Attempts           []string `json:"attempts"`           // each attempt made and its result
+	FailingCapability  string   `json:"failingCapability"`  // the exact capability that failed (one line)
+	Evidence           string   `json:"evidence"`           // verbatim commands + error output proving the failure
+	RootCauseSoFar     string   `json:"rootCauseSoFar"`     // root-cause analysis as far as it got
+	HumanUnblockAction string   `json:"humanUnblockAction"` // precisely what a human must provide to unblock
+	PartialWorkState   string   `json:"partialWorkState"`   // branch, commits, ledger refs for work already done
+}
+
+// Escalation is one recorded upward DECISION escalation (§2): a decision a lower
+// tier could not resolve alone travelled exactly one tier up, was decided at the
+// lowest tier with authority (never by a human), and both the question and its
+// resolution are recorded here — the audit trail the dashboard shows read-only and
+// the L2 telemetry ledger /learn mines for escalation/decision events.
+type Escalation struct {
+	From     string `json:"from"`         // the tier that escalated (e.g. run tech-lead)
+	To       string `json:"to"`           // the tier it escalated to (one tier up)
+	Question string `json:"question"`     // the decision that needed authority
+	Decider  string `json:"decider"`      // the tier that actually decided (lowest with authority)
+	Answer   string `json:"answer"`       // the decision made (+ recorded, never sent to a human)
+	At       string `json:"at,omitempty"` // RFC3339 when resolved
 }
 
 // Task is one fork-safe slice of the partition.
@@ -112,6 +148,13 @@ type Run struct {
 	Agents         []Agent  `json:"agents"`
 	Tasks          []Task   `json:"tasks"`
 	Executor       string   `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
+	// L2 telemetry (persisted, API-readable so /learn mines structure not logs):
+	// ReviewRounds is how many review→fix→re-review rounds the run ran; Escalations
+	// is the recorded upward decision-escalation audit trail; Postmortem is the
+	// schema-valid explanation attached when the run terminates blocked (§3).
+	ReviewRounds int          `json:"reviewRounds,omitempty"`
+	Escalations  []Escalation `json:"escalations,omitempty"`
+	Postmortem   *Postmortem  `json:"postmortem,omitempty"`
 }
 
 // Audit is the queryable record of a completed run, derived from its final
@@ -282,7 +325,7 @@ type Tick struct {
 // Quest is the full persisted state of a quest — the object stored at ooo key
 // quests/<id>. It mirrors Run (the stored run object) for a quest's iterative loop:
 // stable id + optional parent campaign link, the objective fields carried from the
-// spec, lifecycle status, autonomy/budget/delivery, the work items and ticks the
+// spec, lifecycle status, budget/delivery, the work items and ticks the
 // loop accumulates, rollup counters for the dashboard, and the schema version. The
 // tick loop that populates Ticks/WorkItems is a later phase — this is the model and
 // its persistence only.
@@ -351,6 +394,10 @@ type Quest struct {
 	LastProgress string  `json:"lastProgress,omitempty"` // RFC3339 of the last forward step
 	CreatedAt    string  `json:"createdAt"`              // RFC3339 set once at creation
 	UpdatedAt    string  `json:"updatedAt"`              // RFC3339 set on every persisted mutation
+	// L2 telemetry: the recorded upward decision-escalation audit trail, and the
+	// schema-valid postmortem attached when the quest terminates blocked (§3).
+	Escalations []Escalation `json:"escalations,omitempty"`
+	Postmortem  *Postmortem  `json:"postmortem,omitempty"`
 	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
 	// exported trace carries TraceVersion so a future store can detect/migrate.
 	TraceVersion int `json:"traceVersion"`
@@ -445,7 +492,7 @@ type CampaignSpec struct {
 // per repo after intent review — children commit to the campaign branch
 // (campaign/<id> — the same name in each impacted repo) and open no PR), the
 // suggested human review routing, the final intent review,
-// lifecycle status, autonomy/budget, timestamps, and the schema version. The
+// lifecycle status, budget, timestamps, and the schema version. The
 // supervisor/intent-lead flow, gate execution, and intent review that populate
 // these fields are later phases — this is the model and its persistence only.
 type Campaign struct {
@@ -517,6 +564,10 @@ type Campaign struct {
 	Agents    []Agent `json:"agents"`
 	CreatedAt string  `json:"createdAt"` // RFC3339 set once at creation
 	UpdatedAt string  `json:"updatedAt"` // RFC3339 set on every persisted mutation
+	// L2 telemetry: the recorded upward decision-escalation audit trail, and the
+	// schema-valid postmortem attached when the campaign terminates blocked (§3).
+	Escalations []Escalation `json:"escalations,omitempty"`
+	Postmortem  *Postmortem  `json:"postmortem,omitempty"`
 	// TraceVersion is the schema version of this Campaign record, mirroring how a
 	// Run's exported trace and a Quest carry TraceVersion for future migration.
 	TraceVersion int `json:"traceVersion"`
