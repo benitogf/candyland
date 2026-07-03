@@ -5,12 +5,14 @@
 package conductor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
@@ -71,6 +73,17 @@ type Conductor struct {
 	// nil when no bus is wired (e.g. serverless tests). Its filters are all
 	// registered once, globally, in StartBus — there is no per-agent registration.
 	bus *bus.Bus
+	// Babysit watch-phase seams (watch.go). All are set to real gh/run-backed
+	// implementations in New and overridden in tests so the watch loop is
+	// deterministic without touching GitHub or spawning claude:
+	//   prReview         reads a watched PR's review state,
+	//   mergePR          merges an approved PR,
+	//   dispatchFeedback launches a feedback fix run for a changes-requested PR,
+	//   watchInterval    is the poll cadence between watch ticks.
+	prReview         func(ctx context.Context, repo string, n int) (run.PRReview, error)
+	mergePR          func(ctx context.Context, repo string, n int) error
+	dispatchFeedback func(parentID, repo string, prNum int) string
+	watchInterval    time.Duration
 }
 
 // New builds a conductor bound to an ooo server. Every run is driven by the real
@@ -82,6 +95,10 @@ func New(server *ooo.Server) *Conductor {
 		runs:   map[string]*runtime{},
 	}
 	c.folders = runFolders
+	c.prReview = ghPRReview
+	c.mergePR = ghMergePR
+	c.dispatchFeedback = c.launchFeedbackRun
+	c.watchInterval = 60 * time.Second
 	return c
 }
 
