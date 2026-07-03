@@ -3,9 +3,73 @@ package conductor
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/benitogf/candyland/internal/run"
 )
+
+// allSkipQuestClaude: the quest lead surfaces items but triages EVERY one "skip"
+// (no accepted work), driving the F1 production skip path — no hand-set ItemsSkipped.
+var allSkipQuestClaude = stubClaude(
+	role("quest lead", emitText(`WORKITEMS [{\"title\":\"risky refactor\",\"evidence\":\"out of scope\",\"classification\":\"cleanup\",\"decision\":\"skip\"},{\"title\":\"noisy rename\",\"evidence\":\"not safe\",\"classification\":\"cleanup\",\"decision\":\"skip\"}]`)+emitResult("done", 1)),
+	coder(emitResult("noop", 0)),
+)
+
+// nothingFoundQuestClaude: the quest lead surfaces nothing at all (WORKITEMS_NONE).
+var nothingFoundQuestClaude = stubClaude(
+	role("quest lead", emitText("WORKITEMS_NONE")+emitResult("none", 1)),
+	coder(emitResult("noop", 0)),
+)
+
+// F1 (the 2026-07-03 scar): an all-skip quest must record its skip TRIAGE decisions
+// as "skipped" WorkItems (the ledger writer PR #30 removed) and terminate
+// surfaced-only with a no-op summary — NEVER plain "done". This drives the PRODUCTION
+// skip path (the quest-lead emits all-skip WORKITEMS), not a hand-set ItemsSkipped.
+func TestQuestAllSkipTerminatesSurfacedOnly(t *testing.T) {
+	c, repo := deliveryConductor(t, allSkipQuestClaude)
+	id := c.CreateQuest(run.QuestSpec{Objective: "keep it tidy", Folders: []string{repo}})
+	if !c.BeginQuest(id) {
+		t.Fatal("BeginQuest returned false")
+	}
+	q := waitForQuest(t, c, id, func(q run.Quest) bool {
+		return q.Status == "surfaced-only" || q.Status == "done"
+	}, 60*time.Second)
+	if q.Status != "surfaced-only" {
+		t.Fatalf("an all-skip quest must terminate surfaced-only, got %q (summary %q)", q.Status, q.Summary)
+	}
+	if q.ItemsSkipped != 2 {
+		t.Errorf("ItemsSkipped = %d, want 2 (both skip-triaged items entered the ledger)", q.ItemsSkipped)
+	}
+	skipped := 0
+	for _, w := range q.WorkItems {
+		if w.Disposition == "skipped" {
+			skipped++
+		}
+	}
+	if skipped != 2 {
+		t.Errorf("ledger skipped WorkItems = %d, want 2 (F1 restored writer)", skipped)
+	}
+	if !containsFold(q.Summary, "surfaced-only") || !containsFold(q.Summary, "0 executed") {
+		t.Errorf("terminal summary must account the no-op, got %q", q.Summary)
+	}
+}
+
+// F1: a genuinely-nothing-found quest terminates "done" but stamps an EXPLICIT
+// non-empty terminal Summary rather than an undifferentiated empty one.
+func TestQuestNothingFoundStampsSummary(t *testing.T) {
+	c, repo := deliveryConductor(t, nothingFoundQuestClaude)
+	id := c.CreateQuest(run.QuestSpec{Objective: "keep it tidy", Folders: []string{repo}})
+	if !c.BeginQuest(id) {
+		t.Fatal("BeginQuest returned false")
+	}
+	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "done" }, 60*time.Second)
+	if q.Status != "done" {
+		t.Fatalf("a nothing-found quest terminates done, got %q", q.Status)
+	}
+	if !containsFold(q.Summary, "nothing to do") {
+		t.Errorf("a nothing-found quest must stamp an explicit terminal summary, got %q", q.Summary)
+	}
+}
 
 // Q2 carve-out: a branch-delivered quest (campaign-owned, Deliver=branch) that
 // COMPLETED its items with prsOpened:0 is legitimately done — its delivery is the

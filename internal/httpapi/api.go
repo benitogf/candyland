@@ -28,6 +28,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 	server.OpenFilter("quests/*")    // quest state (quests/* list + quests/<id> item); endpoints come in a later phase
 	server.OpenFilter("campaigns/*") // campaign state (campaigns/* list + campaigns/<id> item); endpoints come in a later phase
 	server.OpenFilter("audits/*")    // per-run verification audits (audits/* list + audits/<id> item)
+	server.OpenFilter("settings")    // per-role model+thinking config (live read; POST /api/settings writes)
 	registerSystem(server)
 	registerHealth(server)
 	registerReference(server)
@@ -179,6 +180,39 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 
 	registerQuestEndpoints(server, c)
 	registerCampaignEndpoints(server, c)
+	registerSettingsEndpoints(server, c)
+}
+
+// registerSettingsEndpoints mounts the per-role model+thinking settings surface:
+// GET returns the effective config (persisted overlaid on defaults, so the UI has
+// a complete object even before any POST); POST validates and persists it. The
+// live read is also served by OpenFilter("settings"); the conductor reads settings
+// fresh per spawn via agentConfig.
+func registerSettingsEndpoints(server *ooo.Server, c *conductor.Conductor) {
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/settings",
+		Methods: ooo.Methods{"GET": ooo.MethodSpec{}, "POST": ooo.MethodSpec{}},
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(w, c.CurrentSettings())
+				return
+			}
+			var s conductor.Settings
+			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := conductor.ValidateSettings(s); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := c.SaveSettings(s); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, c.CurrentSettings())
+		},
+	})
 }
 
 // registerCampaignEndpoints mounts the campaign REST surface, mirroring the quest

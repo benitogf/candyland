@@ -129,14 +129,30 @@ type spawnOpts struct {
 	// the tech-lead/coder/conflict spawns. The review/fix identity passes a real
 	// ceiling here so a context-blind pass cannot run away (C3).
 	maxTurns int
+	// model / thinking are the effective per-role selection (settings §9), threaded
+	// from agentConfig(role) at each spawn site. Empty model falls back to the
+	// default; empty thinking omits the --effort flag. model → claude --model,
+	// thinking → claude --effort (the version-verified headless thinking control).
+	model    string
+	thinking string
 }
 
 // claudeArgs builds the argv for one claude spawn. It is a pure, separately
 // testable function (no process, no I/O) so a test can assert the review/fix
 // identity gets a real --max-turns cap on its argv. busCfg, when non-empty, wires
 // the coordination bus via --mcp-config. maxTurns>0 appends the hard turn cap.
-func claudeArgs(prompt string, extraDirs []string, busCfg string, maxTurns int) []string {
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--model", "claude-opus-4-8", "--dangerously-skip-permissions"}
+func claudeArgs(prompt string, extraDirs []string, busCfg string, maxTurns int, model, thinking string) []string {
+	// `-p <prompt>` MUST stay first (the stub reads $2); the configured --model is
+	// appended AFTER it, never before. An empty model falls back to the default.
+	if model == "" {
+		model = defaultModel
+	}
+	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model, "--dangerously-skip-permissions"}
+	// thinking maps to claude's --effort (verified against the installed CLI: it
+	// accepts low|medium|high). Empty leaves it to claude's own default.
+	if thinking != "" {
+		args = append(args, "--effort", thinking)
+	}
 	for _, d := range extraDirs {
 		args = append(args, "--add-dir", d)
 	}
@@ -179,7 +195,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	// brief_get rather than from argv — so a large plan can't overflow the
 	// command line. claudeArgs wires --mcp-config when busCfg is non-empty.
 	busCfg := c.busMCPConfig(id, agentID)
-	args := claudeArgs(prompt, extraDirs, busCfg, o.maxTurns)
+	args := claudeArgs(prompt, extraDirs, busCfg, o.maxTurns, o.model, o.thinking)
 	cmd := exec.Command(claudeBin(), args...)
 	cmd.Dir = workdir
 	cmd.Env = claudeEnv()
@@ -365,7 +381,7 @@ func reinforce(prompt string, attempt int, isTechLead bool) string {
 // blocked and records an actionable run error — it never reports false success.
 // workdir/extraDirs scope where the agent runs (see streamOnce). Returns the
 // parsed partition (tech lead) or nil.
-func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, basePrompt string, isTechLead bool, workdir string, extraDirs []string) []partitionTask {
+func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, basePrompt string, isTechLead bool, workdir string, extraDirs []string, opts ...spawnOpts) []partitionTask {
 	attempts := maxAttempts()
 	reason := ""
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -380,7 +396,7 @@ func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, bas
 				appendToAgent(r, agentID, run.Event{T: "system", Text: fmt.Sprintf("retry %d/%d after: %s", n, total, why)}, 0)
 			})
 		}
-		out := streamOnce(parentCtx, c, id, agentID, reinforce(basePrompt, attempt, isTechLead), workdir, extraDirs)
+		out := streamOnce(parentCtx, c, id, agentID, reinforce(basePrompt, attempt, isTechLead), workdir, extraDirs, opts...)
 		if parentCtx.Err() != nil {
 			return out.partition // stopped mid-attempt — not a failure
 		}
@@ -392,6 +408,11 @@ func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, bas
 				r.Error = msg
 				setAgentState(r, agentID, "blocked", "could not start")
 			})
+			// E2: a start failure is a genuine capability blocker (§1) — the terminal
+			// `blocked` must carry a schema-valid postmortem. The agent couldn't answer
+			// (its process never started), so the conductor synthesises one (§3).
+			c.attachRunPostmortem(id, c.blockerPostmortemFor(agentID, out.allText,
+				"claude process could not start for "+agentID, out.startErr.Error(), attempt, ""))
 			return nil
 		}
 		ok, why := compliant(out, isTechLead)
@@ -407,6 +428,12 @@ func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, bas
 				r.Error = msg
 				setAgentState(r, agentID, "blocked", why)
 			})
+			// E2: the agent is terminally blocked after exhausting its bounded retries.
+			// Attach a schema-valid postmortem — prefer the agent's own POSTMORTEM line
+			// (bounced back and re-synthesised if incomplete), else synthesise from the
+			// attempt data (§3). The bounded retry loop above IS the reject-and-loop-back.
+			c.attachRunPostmortem(id, c.blockerPostmortemFor(agentID, out.allText,
+				"agent "+agentID+" could not complete: "+why, orDefault(out.stderr, why), attempts, ""))
 			return out.partition // nil for a failed tech lead; fanOut treats empty as failure
 		}
 	}

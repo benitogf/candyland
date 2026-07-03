@@ -3,7 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import Box from '@mui/material/Box'
 import Card from '@mui/material/Card'
 import Chip from '@mui/material/Chip'
+import IconButton from '@mui/material/IconButton'
 import Link from '@mui/material/Link'
+import Tooltip from '@mui/material/Tooltip'
 import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
@@ -12,6 +14,7 @@ import TableRow from '@mui/material/TableRow'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
+import OpenInFullIcon from '@mui/icons-material/OpenInFull'
 
 import { PHASES, STATUS_COLOR } from '../meta/run'
 import { runLabel, questLabel, campaignLabel } from '../util'
@@ -31,6 +34,7 @@ import { CopyPrLink } from '../components/CopyPr'
 const LEVELS = [
     { key: 'runs', label: 'Runs / Tasks' },
     { key: 'quests', label: 'Quests' },
+    { key: 'adventures', label: 'Adventures' },
     { key: 'campaigns', label: 'Campaigns' },
 ]
 
@@ -45,6 +49,31 @@ const clamp2 = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'v
 
 const StatusChip = ({ status, text }) => (
     <Chip size="small" variant="outlined" color={STATUS_COLOR[status] || 'default'} label={text} sx={{ height: 22 }} />
+)
+
+// A per-row open-details button. Row clicks DRILL into children (pivot the
+// section); this button OPENS the item's detail view instead, so it stops
+// propagation to preserve the drill-on-row-click behaviour.
+const OpenDetailButton = ({ kind, id, onOpen }) => (
+    <Tooltip title="Open details">
+        <IconButton
+            size="small"
+            aria-label={`open ${kind} details`}
+            onClick={(e) => { e.stopPropagation(); onOpen(kind, id) }}
+        >
+            <OpenInFullIcon sx={{ fontSize: 15 }} />
+        </IconButton>
+    </Tooltip>
+)
+
+// The terminal Summary a quest/run stamps at a no-op terminal (e.g. a
+// surfaced-only "N surfaced, 0 executed, 0 PRs"). Shown next to the status chip
+// so a no-op terminal never reads as an undifferentiated "done". Mirrors how the
+// detail views surface pauseReason.
+const SummaryText = ({ summary }) => (
+    summary
+        ? <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, maxWidth: 240, whiteSpace: 'normal' }}>{summary}</Typography>
+        : null
 )
 
 // A small outlined chip used for the non-PR delivery shapes in the PR column.
@@ -126,9 +155,13 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                             <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{runLabel(r)}</Typography>
                             {r.archived && <Chip size="small" variant="outlined" label="cleared" sx={{ height: 18, fontSize: 10 }} />}
                             <CopyReference kind="run" id={r.id} />
+                            <OpenDetailButton kind="run" id={r.id} onOpen={onOpen} />
                         </Box>
                     </TableCell>
-                    <TableCell><StatusChip status={r.status} text={statusText(r)} /></TableCell>
+                    <TableCell>
+                        <StatusChip status={r.status} text={statusText(r)} />
+                        <SummaryText summary={r.summary} />
+                    </TableCell>
                     <TableCell>
                         {r.campaignId && <ParentLink id={r.campaignId} level="campaigns" onPivot={onPivot} />}
                         {r.campaignId && r.questId && ' · '}
@@ -146,7 +179,7 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
 // Clicking a quest row drills the section down to that quest's child runs
 // (parent-filtered), rather than opening the quest's overview modal. The
 // campaign parent link still pivots up via onPivot.
-const QuestsTable = ({ rows, onDrill, onPivot }) => (
+const QuestsTable = ({ rows, onDrill, onPivot, onOpen }) => (
     <>
         <TableHead>
             <TableRow>
@@ -164,10 +197,14 @@ const QuestsTable = ({ rows, onDrill, onPivot }) => (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{questLabel(q)}</Typography>
                             <CopyReference kind="quest" id={q.id} />
+                            <OpenDetailButton kind="quest" id={q.id} onOpen={onOpen} />
                         </Box>
                         <FolderText folder={folderOf(q)} />
                     </TableCell>
-                    <TableCell><StatusChip status={q.status} text={statusText(q)} /></TableCell>
+                    <TableCell>
+                        <StatusChip status={q.status} text={statusText(q)} />
+                        <SummaryText summary={q.summary} />
+                    </TableCell>
                     <TableCell>
                         {q.campaignId
                             ? <ParentLink id={q.campaignId} level="campaigns" onPivot={onPivot} />
@@ -185,7 +222,7 @@ const QuestsTable = ({ rows, onDrill, onPivot }) => (
 
 // Clicking a campaign row drills the section down to that campaign's child
 // quests (parent-filtered), rather than opening the campaign's overview modal.
-const CampaignsTable = ({ rows, onDrill }) => (
+const CampaignsTable = ({ rows, onDrill, onOpen }) => (
     <>
         <TableHead>
             <TableRow>
@@ -202,6 +239,7 @@ const CampaignsTable = ({ rows, onDrill }) => (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{campaignLabel(c)}</Typography>
                             <CopyReference kind="campaign" id={c.id} />
+                            <OpenDetailButton kind="campaign" id={c.id} onOpen={onOpen} />
                         </Box>
                     </TableCell>
                     <TableCell><StatusChip status={c.status} text={statusText(c)} /></TableCell>
@@ -215,12 +253,13 @@ const CampaignsTable = ({ rows, onDrill }) => (
     </>
 )
 
-const COLSPAN = { runs: 5, quests: 5, campaigns: 4 }
+const COLSPAN = { runs: 5, quests: 5, adventures: 5, campaigns: 4 }
 
-// Text fields each level is searched over.
+// Text fields each level is searched over. Adventures are perFinding quests, so
+// they share the quest text fields.
 const textFieldsFor = (item, level) => {
     if (level === 'runs') return [runLabel(item), item.status, folderOf(item), item.prompt, item.branch, item.id]
-    if (level === 'quests') return [item.objective, item.originalObjective, item.status, folderOf(item), item.id]
+    if (level === 'quests' || level === 'adventures') return [item.objective, item.originalObjective, item.status, folderOf(item), item.id]
     return [item.originalInput, item.intentBrief?.restatedGoal, item.status, item.id]
 }
 
@@ -233,7 +272,15 @@ const Tasks = () => {
     const runs = useRuns()
     const quests = useQuests()
     const campaigns = useCampaigns()
-    const items = level === 'runs' ? runs : level === 'quests' ? quests : campaigns
+    // Adventures are the perFinding quests; the Quests level shows ONLY the
+    // non-perFinding (converge) quests. This is a strict partition — a perFinding
+    // quest appears under Adventures and never under Quests.
+    const items = level === 'runs' ? runs
+        : level === 'campaigns' ? campaigns
+            : level === 'adventures' ? quests.filter((q) => q.convergence === 'perFinding')
+                : quests.filter((q) => q.convergence !== 'perFinding')
+    // Adventures reuse the quest data shape for filtering/text-search.
+    const dataLevel = level === 'adventures' ? 'quests' : level
 
     // Each run delivery SHAPE (branch / feedback / review) is its OWN PR state,
     // distinct from has-PR and from a PR-less/failed run. Handle them here on top of
@@ -247,12 +294,12 @@ const Tasks = () => {
             if (level === 'runs') {
                 const shape = deliverOf(it)
                 const shaped = shape !== 'pr'
-                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, level, textFieldsFor(it, level))
+                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, dataLevel, textFieldsFor(it, dataLevel))
                 if (prState === 'none' && shaped) return false
             }
-            return matchFilters(it, filters, level, textFieldsFor(it, level))
+            return matchFilters(it, filters, dataLevel, textFieldsFor(it, dataLevel))
         }),
-        [items, filters, level, prState],
+        [items, filters, level, dataLevel, prState],
     )
 
     // Pivot/filter mutations all go through the URL so links preserve filters.
@@ -347,8 +394,8 @@ const Tasks = () => {
                     {filtered.length === 0
                         ? <TableBody><TableRow><TableCell colSpan={COLSPAN[level]} sx={{ color: 'text.secondary' }}>{empty}</TableCell></TableRow></TableBody>
                         : level === 'runs' ? <RunsTable rows={filtered} onOpen={openDetail} onPivot={pivotToParent} />
-                            : level === 'quests' ? <QuestsTable rows={filtered} onDrill={pivotToChildren} onPivot={pivotToParent} />
-                                : <CampaignsTable rows={filtered} onDrill={pivotToChildren} />}
+                            : (level === 'quests' || level === 'adventures') ? <QuestsTable rows={filtered} onDrill={pivotToChildren} onPivot={pivotToParent} onOpen={openDetail} />
+                                : <CampaignsTable rows={filtered} onDrill={pivotToChildren} onOpen={openDetail} />}
                 </Table>
             </Card>
         </Box>

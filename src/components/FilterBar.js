@@ -20,7 +20,8 @@ import { noFilters, folderOf } from '../data/filters'
 // + planning; quests/campaigns add paused/stopped/blocked.
 const STATUS_OPTIONS = {
     runs: ['planning', 'running', 'paused', 'done', 'cancelled'],
-    quests: ['running', 'paused', 'stopped', 'blocked', 'done'],
+    quests: ['running', 'paused', 'stopped', 'blocked', 'done', 'surfaced-only'],
+    adventures: ['running', 'paused', 'stopped', 'blocked', 'done', 'surfaced-only'],
     campaigns: ['running', 'paused', 'stopped', 'blocked', 'done'],
 }
 
@@ -41,7 +42,7 @@ const FilterBar = ({ level, filters, runs, quests, campaigns, onChange, onClear 
     const showParent = level !== 'campaigns'
 
     // Distinct repos/folders across the active level, for the repo dropdown.
-    const source = level === 'runs' ? runs : level === 'quests' ? quests : campaigns
+    const source = level === 'runs' ? runs : (level === 'quests' || level === 'adventures') ? quests : campaigns
     const repos = [...new Set(source.map(folderOf).filter(Boolean))]
 
     return (

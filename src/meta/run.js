@@ -29,6 +29,10 @@ export const agentInRun = (run, id) => (run ? (run.agents || []).find((a) => a.i
 export const STATUS_COLOR = {
     done: 'success',
     completed: 'success',
+    // A no-op terminal — surfaced/skipped work but executed 0 and opened 0 PRs.
+    // Distinct from done (success) and from error/blocked (warning): rendered
+    // 'info' so it reads as an honest, informational terminal, not a success.
+    'surfaced-only': 'info',
     cancelled: 'default',
     stopped: 'default',
     paused: 'warning',

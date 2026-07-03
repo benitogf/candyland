@@ -17,7 +17,7 @@ import (
 // agent (the "quest lead") that surfaces work items, and for the accepted items
 // the loop LAUNCHES child runs through the EXISTING run executor (Create + the
 // ClaudeExecutor fanOut/attemptDelivery flow) — it does not fork a parallel run
-// engine. The loop logic stays in Go (bounded ticks, autonomy gating, budget
+// engine. The loop logic stays in Go (bounded ticks, budget
 // caps); the per-tick INTELLIGENCE (what to do, whether it's safe/in-scope)
 // lives in the quest-lead agent, which loads the detritus loop/audit/completion
 // doctrine via kb_get rather than an inlined rubric (the Composition Constraint).
@@ -159,7 +159,7 @@ func (c *Conductor) QuestChildRuns(id string) []run.Run {
 }
 
 // driveQuest is the bounded tick loop. Each tick discovers + triages work via the
-// quest lead, launches child runs for accepted items per the autonomy level, and
+// quest lead, launches child runs for the accepted items, and
 // records the tick. It stops when stopped/paused/blocked, when no safe work
 // remains, when the token budget is exceeded, or when the tick bound is reached.
 func (c *Conductor) driveQuest(ctx context.Context, id string) {
@@ -223,8 +223,36 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	rec.DiscoverySummary = summary
 	if perr != "" {
 		rec.Blockers = append(rec.Blockers, perr)
-		rec.NextAction = "blocked — discovery failed"
+		// E3: escalate this give-up exactly ONE tier up BEFORE any terminal block — a
+		// campaign-child quest → the campaign tech-manager; a standalone quest → the
+		// quest-lead itself (the top tier), decided autonomously and recorded, never a
+		// human. A RESOLVED decision that is not a block → finish honestly (the tier
+		// with authority chose to stop with what was surfaced) rather than hard-block.
+		// An UNRESOLVED escalation (the same wall at the decider — e.g. a real
+		// capability failure where the decider also can't start) → terminal blocked
+		// WITH a schema-valid postmortem (E2 invariant).
+		folders := append([]string(nil), q.Folders...)
+		for i := range folders {
+			folders[i] = expandHome(folders[i])
+		}
+		var workdir string
+		var extra []string
+		if len(folders) > 0 {
+			workdir, extra = folders[0], extraDirsFor(folders[0], folders)
+		}
+		esc, resolved := c.escalateQuestDecision(ctx, q, "quest discovery could not proceed: "+perr+" — decide whether to finish with what was surfaced or block it", workdir, extra)
+		if ctx.Err() != nil {
+			return false // paused/stopped during escalation — not a failure
+		}
+		if resolved && !decisionBlocks(esc.Answer) {
+			rec.NextAction = fmt.Sprintf("discovery failed but escalation resolved (%s: %s) — finishing", esc.Decider, esc.Answer)
+			c.recordTick(id, rec, tokens, nil)
+			c.finishQuest(ctx, id)
+			return false
+		}
+		rec.NextAction = "blocked — discovery failed; escalation reached no path forward"
 		c.recordTick(id, rec, tokens, nil)
+		c.attachQuestPostmortem(id, questLeadID, "quest discovery failed: "+perr, perr) // E2: no blocked write without a postmortem
 		c.UpdateQuest(id, func(q *run.Quest) {
 			if q.Status == "stopped" || q.Status == "done" {
 				return // a concurrent Stop/completion is authoritative — don't resurrect
@@ -240,13 +268,27 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	// terminate as "reviewed": if nothing surfaced and the PR was never reviewed,
 	// seed the review itself as the work item so a child run runs against the PR.
 	accepted := acceptedItems(items)
+	// F1: the skip/block TRIAGE decisions enter the ledger too — as WorkItems with
+	// Disposition "skipped" (the writer PR #30 removed). Without this an all-skip
+	// quest recorded nothing and terminated plain "done" (the 2026-07-03 scar: the
+	// exact "looks-done-but-isn't" class). They are recorded whether or not any item
+	// is also accepted, so triage is always durable.
+	skipLedger, skipDecisions := skippedWorkItems(items, tickID)
+	rec.TriageDecisions = append(rec.TriageDecisions, skipDecisions...)
+
 	if len(items) == 0 || len(accepted) == 0 {
 		if seed, ok := seedReviewItem(q); ok {
 			accepted = []questWorkItem{seed}
 			rec.DiscoverySummary = fmt.Sprintf("discovery surfaced nothing — seeding a review of target PR #%d (it was not yet reviewed)", q.TargetPR)
 		} else {
-			rec.NextAction = "no safe work remaining — stopping"
-			c.recordTick(id, rec, tokens, nil)
+			// Record the skip ledger BEFORE finishing so an all-skip quest's surfaced
+			// items are durable and questIsNoOp sees them → surfaced-only, not "done".
+			if len(skipLedger) > 0 {
+				rec.NextAction = "surfaced/skipped only — nothing in-scope to execute — stopping"
+			} else {
+				rec.NextAction = "no work surfaced — stopping"
+			}
+			c.recordTick(id, rec, tokens, skipLedger)
 			c.finishQuest(ctx, id)
 			return false
 		}
@@ -254,8 +296,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 
 	// ── Launch: every accepted item launches a child run via the existing run
 	//    executor. Each item gets a durable WorkItem with the real disposition (no
-	//    positional guessing — the disposition is the launch outcome). ──
-	var ledger []run.WorkItem
+	//    positional guessing — the disposition is the launch outcome). The skip/block
+	//    triage ledger is carried alongside the launched items. ──
+	ledger := skipLedger
 	for i, it := range accepted {
 		w := run.WorkItem{
 			ID:             fmt.Sprintf("%s-w%d", tickID, i),
@@ -362,7 +405,14 @@ func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string
 	// routes onto the quest's Agents slice (updateAgentHost), so the quest-lead is
 	// visible on the parent. We run a dedicated single-shot streamOnce against the
 	// quest id namespace and collect the agent's aggregated text.
-	res := streamOnce(ctx, c, questID, questLeadID, questLeadBootstrap, workdir, extra)
+	model, thinking := c.agentConfig(RoleQuestLead)
+	// Pre-seed the quest-lead's effective model+thinking on the quest record (L2
+	// telemetry) — the self-seeding recorder would otherwise leave them empty.
+	c.updateAgentHost(questID, func(agents *[]run.Agent) {
+		a := ensureAgent(agents, questLeadID)
+		a.Model, a.Thinking, a.Role = model, thinking, "quest-lead"
+	})
+	res := streamOnce(ctx, c, questID, questLeadID, questLeadBootstrap, workdir, extra, spawnOpts{model: model, thinking: thinking})
 	// allText joins every assistant/result block, so the WORKITEMS verdict is found
 	// wherever the quest lead emitted it (not only on the final block).
 	return questLeadOutcome{text: res.allText, tokens: res.tokens, startErr: res.startErr, stalled: res.stalled}
@@ -555,11 +605,17 @@ func questTerminalSummary(q *run.Quest) string {
 		}
 		return fmt.Sprintf("reviewed PR #%d — no actionable findings", q.TargetPR)
 	}
-	if !questIsNoOp(q) {
-		return ""
+	if questIsNoOp(q) {
+		surfaced := q.ItemsSkipped + q.ItemsBlocked + q.ItemsCompleted
+		return fmt.Sprintf("surfaced-only: %d surfaced, 0 executed, 0 PRs", surfaced)
 	}
-	surfaced := q.ItemsSkipped + q.ItemsBlocked + q.ItemsCompleted
-	return fmt.Sprintf("surfaced-only: %d surfaced, 0 executed, 0 PRs", surfaced)
+	// A genuinely-nothing-found quest (nothing surfaced, nothing delivered) stamps an
+	// explicit terminal Summary rather than an empty one — a no-op must never look
+	// like an undifferentiated "done" (Q2 / the 2026-07-03 scar).
+	if q.ItemsCompleted == 0 && q.PRsOpened == 0 && len(q.WorkItems) == 0 {
+		return "nothing to do: 0 surfaced"
+	}
+	return ""
 }
 
 // recomputeQuestRollups derives the dashboard counters from the work-item ledger,
@@ -659,6 +715,34 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 		out = append(out, it)
 	}
 	return out
+}
+
+// skippedWorkItems builds the durable ledger for the items triage decided NOT to
+// act on (decision "skip" or "block"). Each becomes a WorkItem with Disposition
+// "skipped" — the writer PR #30 removed (F1). It also returns the triage-decision
+// lines for the tick record. Accepted items ("do"/empty) are excluded (they launch
+// child runs and get their own ledger entries with the launch outcome).
+func skippedWorkItems(items []questWorkItem, tickID string) ([]run.WorkItem, []string) {
+	var ledger []run.WorkItem
+	var decisions []string
+	n := 0
+	for _, it := range items {
+		d := strings.ToLower(strings.TrimSpace(it.Decision))
+		if d != "skip" && d != "block" {
+			continue
+		}
+		ledger = append(ledger, run.WorkItem{
+			ID:             fmt.Sprintf("%s-s%d", tickID, n),
+			SourceTick:     tickID,
+			Evidence:       it.Evidence,
+			Classification: it.Classification,
+			Decision:       d,
+			Disposition:    "skipped",
+		})
+		decisions = append(decisions, it.Title+": "+d)
+		n++
+	}
+	return ledger, decisions
 }
 
 // ownArtifactTokens are the lowercased strings that identify a quest's OWN delivery
