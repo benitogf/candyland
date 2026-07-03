@@ -73,9 +73,8 @@ func TestCampaignDeliversWithPartialAnnotation(t *testing.T) {
 	t.Setenv("CANDYLAND_TEST_VERDICT", "partial") // c2 partial → annotate, do NOT block
 
 	id := c.CreateCampaign(run.CampaignSpec{
-		Input:         "add CSV export to the reports page",
-		Folders:       []string{repo},
-		AutonomyLevel: run.AutonomyUnattended,
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
 	})
 	if !c.BeginCampaign(id) {
 		t.Fatal("BeginCampaign returned false for a fresh campaign")
@@ -192,9 +191,8 @@ func TestCampaignMissedCommitmentBlocksPR(t *testing.T) {
 	t.Setenv("CANDYLAND_TEST_VERDICT", "missed") // c2 missed → BLOCK the PR
 
 	id := c.CreateCampaign(run.CampaignSpec{
-		Input:         "add CSV export to the reports page",
-		Folders:       []string{repo},
-		AutonomyLevel: run.AutonomyUnattended,
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
 	})
 	c.BeginCampaign(id)
 
@@ -313,9 +311,8 @@ func TestCampaignRemediatesMissedThenDelivers(t *testing.T) {
 	t.Setenv("CANDYLAND_REVIEW_FIXTURE", filepath.Join(t.TempDir(), "review-first"))
 
 	id := c.CreateCampaign(run.CampaignSpec{
-		Input:         "add CSV export to the reports page",
-		Folders:       []string{repo},
-		AutonomyLevel: run.AutonomyUnattended,
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
 	})
 	c.BeginCampaign(id)
 

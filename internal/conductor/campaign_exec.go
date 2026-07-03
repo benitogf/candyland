@@ -40,7 +40,7 @@ import (
 //	   annotates the PR but does NOT block. With no `missed`, open ONE PR PER REPO
 //	   from the campaign branch (reusing the run push+openPR machinery).
 //
-// The loop logic stays in Go (bounded stages, autonomy gating, a global token cap);
+// The loop logic stays in Go (bounded stages, a global token cap);
 // the INTELLIGENCE (the brief, the per-commitment judgment) lives in the agents,
 // which compose the detritus doctrine via kb_get rather than re-encoding it here.
 
@@ -970,7 +970,7 @@ func intentLeadBriefPrompt(cam run.Campaign) string {
 	if len(cam.Folders) > 0 {
 		fmt.Fprintf(&b, "TARGET FOLDERS/REPOS: %s\n", strings.Join(cam.Folders, ", "))
 	}
-	fmt.Fprintf(&b, "AUTONOMY: %s (a launched campaign — decide and escalate within the hierarchy; never ask the user).\n", cam.AutonomyLevel)
+	b.WriteString("AUTONOMY: a launched campaign — decide and escalate within the hierarchy; never ask the user.\n")
 	return b.String()
 }
 

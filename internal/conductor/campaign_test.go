@@ -28,16 +28,15 @@ func newCampaignServer(t *testing.T) (*Conductor, *ooo.Server) {
 }
 
 // CreateCampaign persists a campaign and GetCampaign round-trips it, including the
-// immutable OriginalInput, the L2 autonomy/budget, and that brief commitments
-// survive once written.
+// immutable OriginalInput, the budget, and that brief commitments survive once
+// written.
 func TestCreateCampaignRoundTrips(t *testing.T) {
 	c, _ := newCampaignServer(t)
 
 	id := c.CreateCampaign(run.CampaignSpec{
-		Input:         "ship the billing redesign across api and web",
-		Folders:       []string{"/repo"},
-		AutonomyLevel: run.AutonomyUnattended,
-		TokenBudget:   90000,
+		Input:       "ship the billing redesign across api and web",
+		Folders:     []string{"/repo"},
+		TokenBudget: 90000,
 	})
 	if id != "c1" {
 		t.Fatalf("first campaign id = %q, want c1", id)
@@ -49,9 +48,6 @@ func TestCreateCampaignRoundTrips(t *testing.T) {
 	}
 	if cam.OriginalInput != "ship the billing redesign across api and web" {
 		t.Errorf("originalInput not captured: %q", cam.OriginalInput)
-	}
-	if cam.AutonomyLevel != run.AutonomyUnattended {
-		t.Errorf("autonomyLevel = %q, want %q", cam.AutonomyLevel, run.AutonomyUnattended)
 	}
 	if cam.TokenBudget != 90000 {
 		t.Errorf("tokenBudget = %d, want 90000", cam.TokenBudget)
@@ -83,32 +79,6 @@ func TestCreateCampaignChildrenMarshalAsArrays(t *testing.T) {
 	body := string(obj.Data)
 	if !strings.Contains(body, `"questIds":[]`) || !strings.Contains(body, `"runIds":[]`) {
 		t.Errorf("children should marshal as [] not null: %s", body)
-	}
-}
-
-// CreateCampaign defaults AutonomyLevel to L2 — and is NEVER L1 — when the spec
-// leaves it empty or (defensively) passes the report-only floor.
-func TestCreateCampaignAutonomyDefaultL2NotL1(t *testing.T) {
-	c, _ := newCampaignServer(t)
-
-	empty, ok := c.GetCampaign(c.CreateCampaign(run.CampaignSpec{Input: "do the thing"}))
-	if !ok {
-		t.Fatal("campaign not found")
-	}
-	if empty.AutonomyLevel != run.AutonomyGatePR {
-		t.Errorf("empty autonomy default = %q, want %q (L2)", empty.AutonomyLevel, run.AutonomyGatePR)
-	}
-
-	// A report-only request must not strand a campaign with no PR: it is lifted to L2.
-	l1, ok := c.GetCampaign(c.CreateCampaign(run.CampaignSpec{Input: "do it", AutonomyLevel: run.AutonomyReportOnly}))
-	if !ok {
-		t.Fatal("campaign not found")
-	}
-	if l1.AutonomyLevel == run.AutonomyReportOnly {
-		t.Errorf("campaign autonomy = %q, must never be L1", l1.AutonomyLevel)
-	}
-	if l1.AutonomyLevel != run.AutonomyGatePR {
-		t.Errorf("L1 request lifted to %q, want %q (L2)", l1.AutonomyLevel, run.AutonomyGatePR)
 	}
 }
 

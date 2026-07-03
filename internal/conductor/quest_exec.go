@@ -198,7 +198,7 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 
 // runQuestTick performs one iteration and returns whether the loop should continue.
 // It spawns the quest lead, parses its work items, launches child runs for the
-// accepted ones (autonomy-gated), and records the Tick + updates rollups.
+// accepted ones, and records the Tick + updates rollups.
 func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemAttempts map[string]int) bool {
 	q, ok := c.GetQuest(id)
 	if !ok {
@@ -245,10 +245,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		}
 	}
 
-	// ── Launch: report-only (L1) records the items but launches nothing; L2/L3
-	//    launch a child run per accepted item via the existing run executor. Each
-	//    item gets a durable WorkItem with the real disposition (no positional
-	//    guessing — the disposition is the launch outcome). ──
+	// ── Launch: every accepted item launches a child run via the existing run
+	//    executor. Each item gets a durable WorkItem with the real disposition (no
+	//    positional guessing — the disposition is the launch outcome). ──
 	var ledger []run.WorkItem
 	for i, it := range accepted {
 		w := run.WorkItem{
@@ -258,21 +257,10 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 			Classification: it.Classification,
 			Decision:       orDefault(it.Decision, "do"),
 		}
-		if q.AutonomyLevel == run.AutonomyReportOnly && !isSeededReview(it) {
-			// L1: surface only — no child-run edits/PRs. Skipped disposition (reported,
-			// not acted on), which is the report-only contract. The one carve-out is the
-			// seeded PR review of a targeted review/feedback quest: reviewing the PR IS
-			// the quest's whole job (not discretionary execution work), so it launches
-			// even at L1 — otherwise the quest would report "reviewed" without reviewing.
-			rec.TriageDecisions = append(rec.TriageDecisions, it.Title+": report-only (L1) — surfaced, not launched")
-			w.Disposition = "skipped"
-			ledger = append(ledger, w)
-			continue
-		}
 		if ctx.Err() != nil {
 			return false
 		}
-		rec.TriageDecisions = append(rec.TriageDecisions, fmt.Sprintf("%s: do now (%s)", it.Title, q.AutonomyLevel))
+		rec.TriageDecisions = append(rec.TriageDecisions, it.Title+": do now")
 		if itemAttempts[it.Title] >= maxItemAttempts() {
 			rec.Blockers = append(rec.Blockers, fmt.Sprintf("giving up on %q after %d attempts", it.Title, maxItemAttempts()))
 			w.Disposition = "blocked"
@@ -297,22 +285,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		}
 		ledger = append(ledger, w)
 	}
-	switch {
-	case len(rec.LaunchedRunIDs) > 0 && q.AutonomyLevel == run.AutonomyReportOnly:
-		rec.NextAction = "report-only — reviewed the target PR, stopping"
-	case q.AutonomyLevel == run.AutonomyReportOnly:
-		rec.NextAction = "report-only — surfaced findings, launched nothing"
-	default:
-		rec.NextAction = "launched child runs — continue next tick"
-	}
+	rec.NextAction = "launched child runs — continue next tick"
 
 	c.recordTick(id, rec, tokens, ledger)
-	// Report-only quests have nothing to build — one discovery pass per drive is the
-	// whole job, so stop after surfacing rather than re-discovering the same findings.
-	if q.AutonomyLevel == run.AutonomyReportOnly {
-		c.finishQuest(id)
-		return false
-	}
 	return true
 }
 
@@ -483,9 +458,8 @@ func (c *Conductor) recordTick(id string, rec run.Tick, addTokens int, items []r
 
 // finishQuest moves a quest to its terminal state, choosing between plain "done"
 // (it shipped, or its delivery is the branch commit by design) and the distinct
-// "surfaced-only" no-op state (Q2) — and annotating an intent↔autonomy mismatch
-// (Q4) when an execute-intent objective produced a report-only no-op. A concurrent
-// Stop is authoritative and left alone.
+// "surfaced-only" no-op state (Q2). A concurrent Stop is authoritative and left
+// alone.
 func (c *Conductor) finishQuest(id string) {
 	c.UpdateQuest(id, func(q *run.Quest) {
 		if q.Status == "stopped" {
@@ -532,8 +506,7 @@ func questTerminalStatus(q *run.Quest) string {
 
 // questTerminalSummary names a terminal quest's outcome so a no-op is reported as
 // such instead of an undifferentiated "done". For a no-op it accounts the
-// surfaced/executed/PR counts, and — when the objective IMPLIED execution but the
-// quest ran report-only (L1) — WARNS about the intent↔autonomy mismatch (Q4).
+// surfaced/executed/PR counts.
 func questTerminalSummary(q *run.Quest) string {
 	if q.Deliver == run.DeliverReview {
 		if q.ItemsCompleted > 0 {
@@ -545,24 +518,7 @@ func questTerminalSummary(q *run.Quest) string {
 		return ""
 	}
 	surfaced := q.ItemsSkipped + q.ItemsBlocked + q.ItemsCompleted
-	summary := fmt.Sprintf("surfaced-only: %d surfaced, 0 executed, 0 PRs", surfaced)
-	if q.AutonomyLevel == run.AutonomyReportOnly && objectiveImpliesExecution(q.Objective) {
-		summary += " — WARNING: intent↔autonomy mismatch (objective implies execution but autonomy is report-only L1; raise autonomy to L2/L3 to execute)"
-	}
-	return summary
-}
-
-// objectiveImpliesExecution reports whether an objective asks for work to be DONE
-// (implement/add/fix/refactor…) rather than merely surfaced (review/audit/report).
-// It is the Q4 misconfig signal, kept separate from the terminal-state computation.
-func objectiveImpliesExecution(objective string) bool {
-	o := strings.ToLower(objective)
-	for _, verb := range []string{"implement", "add ", "fix", "build", "create", "refactor", "write", "migrate", "rename", "delete", "remove", "update", "wire", "integrate"} {
-		if strings.Contains(o, verb) {
-			return true
-		}
-	}
-	return false
+	return fmt.Sprintf("surfaced-only: %d surfaced, 0 executed, 0 PRs", surfaced)
 }
 
 // recomputeQuestRollups derives the dashboard counters from the work-item ledger,
@@ -618,8 +574,7 @@ type questWorkItem struct {
 	Decision       string `json:"decision"` // do | skip | block
 	// seeded marks the internally-generated PR-review item (seedReviewItem). It is
 	// unexported and json:"-", so a quest-lead agent's parsed output can never set
-	// it — only the conductor can, which is what lets the L1 launch carve-out apply
-	// strictly to the one seeded review and never to an agent-authored item.
+	// it — only the conductor can.
 	seeded bool `json:"-"`
 }
 
@@ -659,9 +614,7 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 }
 
 // reviewClassification is the classification tag on the seeded PR-review work item
-// (surfaced in the tick ledger/UI). The signal that lets it launch even under L1 is
-// the unexported questWorkItem.seeded flag, NOT this string — so an agent-authored
-// item can never impersonate the seeded review by reusing this classification.
+// (surfaced in the tick ledger/UI).
 const reviewClassification = "pr-review"
 
 // isTargetedReviewQuest reports whether a quest's whole job is to examine one
@@ -703,13 +656,6 @@ func seedReviewItem(q run.Quest) (questWorkItem, bool) {
 		Decision:       "do",
 		seeded:         true,
 	}, true
-}
-
-// isSeededReview reports whether an item is the conductor-seeded PR review — the one
-// item that must launch even under L1. It keys on the unexported `seeded` flag (not
-// the agent-authored classification), so a quest-lead item can never impersonate it.
-func isSeededReview(it questWorkItem) bool {
-	return it.seeded
 }
 
 // --- prompts (composition, not inlined rubrics) ---

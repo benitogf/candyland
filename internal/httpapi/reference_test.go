@@ -18,7 +18,7 @@ func TestReferenceResolvesEachKind(t *testing.T) {
 	base := "http://" + srv.Address
 
 	runID := c.Create(run.Spec{Prompt: "do the thing", Folders: []string{"/repo"}})
-	questID := c.CreateQuest(run.QuestSpec{Objective: "tidy up", Folders: []string{"/repo"}, AutonomyLevel: run.AutonomyReportOnly})
+	questID := c.CreateQuest(run.QuestSpec{Objective: "tidy up", Folders: []string{"/repo"}})
 	campaignID := c.CreateCampaign(run.CampaignSpec{Input: "ship it", Folders: []string{"/repo"}})
 
 	// Each kind's handle resolves to a JSON snapshot carrying the item's own id —

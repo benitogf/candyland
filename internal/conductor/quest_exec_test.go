@@ -55,9 +55,8 @@ func TestQuestTickLaunchesChildRunToPR(t *testing.T) {
 	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "keep it tidy",
-		Folders:       []string{repo}, // the quest lead runs here; child runs use the conductor's folders override
-		AutonomyLevel: run.AutonomyUnattended,
+		Objective: "keep it tidy",
+		Folders:   []string{repo}, // the quest lead runs here; child runs use the conductor's folders override
 	})
 	if !c.BeginQuest(id) {
 		t.Fatal("BeginQuest returned false for a fresh quest")
@@ -169,9 +168,8 @@ func TestQuestStopHaltsTicking(t *testing.T) {
 	t.Setenv("CANDYLAND_QUEST_ITEM_ATTEMPTS", "100") // don't let the thrash cap stop it first
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "loops forever until stopped",
-		Folders:       []string{repo},
-		AutonomyLevel: run.AutonomyUnattended,
+		Objective: "loops forever until stopped",
+		Folders:   []string{repo},
 	})
 	c.BeginQuest(id)
 

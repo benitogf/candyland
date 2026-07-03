@@ -37,8 +37,8 @@ func (c *Conductor) publishQuest(q run.Quest) {
 // CreateQuest registers a new quest (status: running) and persists it, returning
 // the minted id. It mirrors Create: it mints a sequential id, captures the launch
 // objective once onto OriginalObjective (never rewritten — the quest analogue of
-// Run.OriginalIntent), stamps TraceVersion + timestamps, defaults AutonomyLevel to
-// L1 (report-only is the safe floor) and Deliver to "pr", and carries the parent
+// Run.OriginalIntent), stamps TraceVersion + timestamps, defaults Deliver to "pr",
+// and carries the parent
 // CampaignID from the spec. The tick loop that drives the quest is a later phase;
 // CreateQuest only seeds and persists the initial state.
 func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
@@ -47,10 +47,6 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 	id := fmt.Sprintf("q%d", c.questSeq)
 	c.mu.Unlock()
 
-	autonomy := spec.AutonomyLevel
-	if autonomy == "" {
-		autonomy = run.AutonomyReportOnly
-	}
 	deliver := spec.Deliver
 	if deliver == "" {
 		deliver = run.DeliverPR
@@ -68,7 +64,6 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 		Verify:            spec.Verify,
 		Stop:              spec.Stop,
 		Status:            "running",
-		AutonomyLevel:     autonomy,
 		TokenBudget:       spec.TokenBudget,
 		Deliver:           deliver,
 		TargetPR:          spec.TargetPR,
@@ -82,7 +77,7 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 		TraceVersion: run.TraceVersion,
 	}
 	c.publishQuest(q)
-	log.Printf("candyland: quest %s created (campaign %q, autonomy %s, deliver %s)", id, q.CampaignID, autonomy, deliver)
+	log.Printf("candyland: quest %s created (campaign %q, deliver %s)", id, q.CampaignID, deliver)
 	return id
 }
 

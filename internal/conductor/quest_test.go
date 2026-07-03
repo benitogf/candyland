@@ -26,21 +26,20 @@ func newQuestServer(t *testing.T) (*Conductor, *ooo.Server) {
 }
 
 // CreateQuest persists a quest and GetQuest round-trips it, including the settled
-// launch fields (AutonomyLevel, Deliver, CampaignID, TokenBudget, objective).
+// launch fields (Deliver, CampaignID, TokenBudget, objective).
 func TestCreateQuestRoundTrips(t *testing.T) {
 	c, _ := newQuestServer(t)
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "keep the lint clean",
-		Folders:       []string{"/repo"},
-		Scope:         "internal/ only",
-		Safety:        "do not touch vendor/",
-		Verify:        []string{"go build ./...", "go vet ./..."},
-		Stop:          "no items two ticks running",
-		AutonomyLevel: run.AutonomyUnattended,
-		TokenBudget:   5000,
-		Deliver:       run.DeliverBranch,
-		CampaignID:    "c7",
+		Objective:   "keep the lint clean",
+		Folders:     []string{"/repo"},
+		Scope:       "internal/ only",
+		Safety:      "do not touch vendor/",
+		Verify:      []string{"go build ./...", "go vet ./..."},
+		Stop:        "no items two ticks running",
+		TokenBudget: 5000,
+		Deliver:     run.DeliverBranch,
+		CampaignID:  "c7",
 	})
 	if id != "q1" {
 		t.Fatalf("first quest id = %q, want q1", id)
@@ -52,9 +51,6 @@ func TestCreateQuestRoundTrips(t *testing.T) {
 	}
 	if q.OriginalObjective != "keep the lint clean" || q.Objective != "keep the lint clean" {
 		t.Errorf("objective not captured: original=%q working=%q", q.OriginalObjective, q.Objective)
-	}
-	if q.AutonomyLevel != run.AutonomyUnattended {
-		t.Errorf("autonomyLevel = %q, want %q", q.AutonomyLevel, run.AutonomyUnattended)
 	}
 	if q.Deliver != run.DeliverBranch {
 		t.Errorf("deliver = %q, want %q", q.Deliver, run.DeliverBranch)
@@ -76,16 +72,13 @@ func TestCreateQuestRoundTrips(t *testing.T) {
 	}
 }
 
-// CreateQuest applies the safe defaults (L1 report-only, deliver pr) when the spec
-// leaves AutonomyLevel/Deliver empty.
+// CreateQuest applies the safe defaults (deliver pr) when the spec leaves
+// Deliver empty.
 func TestCreateQuestDefaults(t *testing.T) {
 	c, _ := newQuestServer(t)
 	q, ok := c.GetQuest(c.CreateQuest(run.QuestSpec{Objective: "audit"}))
 	if !ok {
 		t.Fatal("quest not found")
-	}
-	if q.AutonomyLevel != run.AutonomyReportOnly {
-		t.Errorf("default autonomyLevel = %q, want %q", q.AutonomyLevel, run.AutonomyReportOnly)
 	}
 	if q.Deliver != run.DeliverPR {
 		t.Errorf("default deliver = %q, want %q", q.Deliver, run.DeliverPR)

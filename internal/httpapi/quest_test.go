@@ -80,7 +80,7 @@ func TestQuestEndpointsLifecycle(t *testing.T) {
 	base := "http://" + srv.Address
 
 	// Create.
-	resp := post(t, base+"/api/quests", run.QuestSpec{Objective: "tidy up", Folders: []string{"/repo"}, AutonomyLevel: run.AutonomyReportOnly})
+	resp := post(t, base+"/api/quests", run.QuestSpec{Objective: "tidy up", Folders: []string{"/repo"}})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create status = %d, want 200", resp.StatusCode)
 	}
