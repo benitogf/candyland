@@ -339,6 +339,71 @@ func TestCampaignGate1LoopsBackThenProceeds(t *testing.T) {
 	}
 }
 
+// campaignGate1MalformedClaude makes the tech manager emit an INVALID QUESTS line
+// (two quests sharing the id "q1") on EVERY attempt, logging each spawn to
+// CANDYLAND_TECHMGR_LOG. parseQuests rejects the colliding ids with a reason, so
+// emitQuests routes it back as retryFeedback — never reaching the intent manager
+// (gate 1's reviewer). Because the partition is malformed on every attempt, the
+// convergence loop exhausts maxPartitionAttempts and blocks HONESTLY rather than
+// looping forever or proceeding with zero quests.
+var campaignGate1MalformedClaude = stubClaude(
+	campIntentLead,
+	role("intent manager", emitPartitionReview(true, "should never be consulted on a malformed partition")),
+	campIntentReviewer,
+	campTechDone,
+	role("tech manager", `echo "spawn" >> "$CANDYLAND_TECHMGR_LOG"
+`+emitQuestsLine(`[{"id":"q1","title":"a","objective":"do a","folders":[],"deps":[]},{"id":"q1","title":"b","objective":"do b","folders":[],"deps":[]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// GATE 1 malformed-partition exhaustion: a tech manager that emits a colliding-id
+// (invalid) QUESTS partition on EVERY attempt must cause partitionUntilGated to
+// exhaust maxPartitionAttempts and block the campaign honestly — a "failed gate 1"
+// block, NOT an infinite loop and NOT silently proceeding with zero quests.
+func TestCampaignGate1MalformedPartitionExhaustsAndBlocks(t *testing.T) {
+	c, repo := deliveryConductor(t, campaignGate1MalformedClaude)
+	setCampaignFixtures(t, "partial")
+	t.Setenv("CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS", "2") // pin the bound for determinism
+	techLog := filepath.Join(t.TempDir(), "techmgr.log")
+	t.Setenv("CANDYLAND_TECHMGR_LOG", techLog)
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
+	})
+	c.BeginCampaign(id)
+
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 120*time.Second)
+
+	if cam.Status != "blocked" {
+		t.Fatalf("a partition malformed on every attempt must block the campaign, got status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	reason := strings.ToLower(cam.PauseReason)
+	if !strings.Contains(reason, "gate 1") || !strings.Contains(reason, "partition") {
+		t.Errorf("block reason must name the failed gate-1 partition convergence, got %q", cam.PauseReason)
+	}
+	if cam.PlanGate.Passed {
+		t.Errorf("gate 1 must not be recorded as passed on an exhausted partition, got %+v", cam.PlanGate)
+	}
+	// No child quests may launch when gate 1 never converges.
+	if len(cam.QuestIDs) != 0 {
+		t.Errorf("no child quests may launch on a failed gate 1, got %v", cam.QuestIDs)
+	}
+	// The loop is BOUNDED: the tech manager is spawned exactly maxPartitionAttempts
+	// times for the partition (no infinite retry). The malformed partition is
+	// rejected before the intent manager is ever consulted, so every spawn is a
+	// tech-manager re-emission attempt.
+	spawns := strings.Count(gitReadFile(t, techLog), "spawn")
+	if spawns != maxPartitionAttempts() {
+		t.Errorf("gate 1 must bound the tech-manager to exactly %d partition attempts, got %d", maxPartitionAttempts(), spawns)
+	}
+}
+
 // campaignConcurrencyClaude has the tech manager emit TWO INDEPENDENT quests, each
 // scoped to its own repo (folders), so they run CONCURRENTLY.
 var campaignConcurrencyClaude = stubClaude(
