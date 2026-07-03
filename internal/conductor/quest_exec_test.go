@@ -45,20 +45,22 @@ var questTickClaude = stubClaude(
 	coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
 )
 
-// The ORACLE for the quest execution layer: a scripted-stub tick asserting the full
-// discover → triage → run → review → PR transition for ONE work item. An L3
-// (unattended) quest discovers one item, launches a child run via the EXISTING run
-// executor (QuestID set, deliver=pr → its own PR), records the tick + work item, and
-// finishes once the quest lead reports no more work.
-func TestQuestTickLaunchesChildRunToPR(t *testing.T) {
+// The ORACLE for the CONVERGE policy (the default, a bounded quest): the child run
+// accumulates its commits onto the quest's own branch (quest/<id>) with NO per-child
+// PR, and the quest opens ONE PR per impacted repo at terminal (the campaign delivery
+// shape). Discover → triage → run → review → branch, then one terminal PR.
+func TestQuestConvergeOpensOnePRAtTerminal(t *testing.T) {
 	c, repo := deliveryConductor(t, questTickClaude)
 	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "keep it tidy",
-		Folders:       []string{repo}, // the quest lead runs here; child runs use the conductor's folders override
-		AutonomyLevel: run.AutonomyUnattended,
+		Objective: "keep it tidy",
+		Folders:   []string{repo}, // the quest lead runs here; child runs use the conductor's folders override
 	})
+	// Default convergence is "converge".
+	if q, _ := c.GetQuest(id); q.Convergence != run.ConvergeConverge {
+		t.Fatalf("default convergence = %q, want converge", q.Convergence)
+	}
 	if !c.BeginQuest(id) {
 		t.Fatal("BeginQuest returned false for a fresh quest")
 	}
@@ -68,55 +70,86 @@ func TestQuestTickLaunchesChildRunToPR(t *testing.T) {
 		t.Fatalf("quest did not finish: status=%q reason=%q ticks=%d", q.Status, q.PauseReason, len(q.Ticks))
 	}
 
-	// A tick was recorded with the discovery + triage + launch trace.
-	if len(q.Ticks) == 0 {
-		t.Fatal("no ticks recorded")
-	}
 	first := q.Ticks[0]
 	if len(first.LaunchedRunIDs) != 1 {
 		t.Fatalf("first tick must launch exactly one child run, got %d (%+v)", len(first.LaunchedRunIDs), first.LaunchedRunIDs)
 	}
-	if len(first.TriageDecisions) == 0 {
-		t.Error("the tick must record a triage decision for the surfaced item")
-	}
-	if first.DiscoverySummary == "" {
-		t.Error("the tick must record a discovery summary")
+	// A converge child run delivers to the branch — it records NO PR on the tick.
+	if len(first.PRs) != 0 {
+		t.Errorf("a converge child run must not open a per-child PR, got tick PRs %+v", first.PRs)
 	}
 
-	// The work item ledger linked the item to its child run and marked it completed.
-	if len(q.WorkItems) != 1 {
-		t.Fatalf("expected one work item, got %d: %+v", len(q.WorkItems), q.WorkItems)
-	}
 	wi := q.WorkItems[0]
-	if wi.ChildRunID == "" {
-		t.Error("the work item must link the child run it launched")
-	}
-	if wi.Disposition != "completed" {
-		t.Errorf("work item disposition = %q, want completed", wi.Disposition)
-	}
-	if q.ItemsCompleted != 1 {
-		t.Errorf("ItemsCompleted rollup = %d, want 1", q.ItemsCompleted)
+	if wi.Disposition != "completed" || q.ItemsCompleted != 1 {
+		t.Errorf("item disposition=%q ItemsCompleted=%d, want completed/1", wi.Disposition, q.ItemsCompleted)
 	}
 
-	// The child run is the real run executor's output: QuestID set, reached PR.
+	// The child run committed onto quest/<id> and opened NO PR of its own.
 	child, ok := c.Get(wi.ChildRunID)
 	if !ok {
 		t.Fatalf("child run %q not tracked", wi.ChildRunID)
 	}
-	if child.QuestID != id {
-		t.Errorf("child run QuestID = %q, want %q", child.QuestID, id)
-	}
 	if child.Status != "done" || child.Error != "" {
 		t.Fatalf("child run did not finish cleanly: status=%q error=%q", child.Status, child.Error)
 	}
-	if child.PrURL == "" {
-		t.Error("a standalone (deliver=pr) child run must open its own PR")
+	if child.Deliver != run.DeliverBranch {
+		t.Errorf("converge child deliver = %q, want branch", child.Deliver)
+	}
+	if child.Branch != "quest/"+id {
+		t.Errorf("converge child branch = %q, want quest/%s", child.Branch, id)
+	}
+	if child.PrURL != "" {
+		t.Errorf("a converge child run must open NO PR, got %q", child.PrURL)
+	}
+
+	// The quest opened exactly ONE terminal PR per impacted repo (one repo here).
+	if len(q.PRs) != 1 || q.PRs[0].URL == "" {
+		t.Fatalf("converge quest must open one terminal PR, got %+v", q.PRs)
 	}
 	if q.PRsOpened != 1 {
 		t.Errorf("PRsOpened rollup = %d, want 1", q.PRsOpened)
 	}
+}
 
-	// QuestChildRuns surfaces it by parent link.
+// The ORACLE for the perFinding policy (an adventure): each accepted finding is its
+// own child run with deliver=pr and opens its OWN PR — the pre-convergence behavior,
+// now explicit via Convergence: perFinding.
+func TestAdventurePerFindingOpensPRPerFinding(t *testing.T) {
+	c, repo := deliveryConductor(t, questTickClaude)
+	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
+
+	id := c.CreateQuest(run.QuestSpec{
+		Objective:   "keep it tidy",
+		Folders:     []string{repo},
+		Convergence: run.ConvergePerFinding,
+	})
+	if !c.BeginQuest(id) {
+		t.Fatal("BeginQuest returned false for a fresh quest")
+	}
+
+	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "done" }, 60*time.Second)
+	if q.Status != "done" {
+		t.Fatalf("quest did not finish: status=%q reason=%q", q.Status, q.PauseReason)
+	}
+	wi := q.WorkItems[0]
+	child, ok := c.Get(wi.ChildRunID)
+	if !ok {
+		t.Fatalf("child run %q not tracked", wi.ChildRunID)
+	}
+	if child.Deliver != run.DeliverPR {
+		t.Errorf("perFinding child deliver = %q, want pr", child.Deliver)
+	}
+	if child.PrURL == "" {
+		t.Error("a perFinding (adventure) child run must open its own PR")
+	}
+	// No terminal per-repo PR — the finding's own PR is the delivery.
+	if len(q.PRs) != 0 {
+		t.Errorf("perFinding quest must not open a terminal PR, got %+v", q.PRs)
+	}
+	if q.PRsOpened != 1 {
+		t.Errorf("PRsOpened rollup = %d, want 1 (the child's own PR)", q.PRsOpened)
+	}
+
 	kids := c.QuestChildRuns(id)
 	if len(kids) != 1 || kids[0].ID != wi.ChildRunID {
 		t.Errorf("QuestChildRuns = %+v, want one run %q", kids, wi.ChildRunID)
@@ -169,9 +202,8 @@ func TestQuestStopHaltsTicking(t *testing.T) {
 	t.Setenv("CANDYLAND_QUEST_ITEM_ATTEMPTS", "100") // don't let the thrash cap stop it first
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "loops forever until stopped",
-		Folders:       []string{repo},
-		AutonomyLevel: run.AutonomyUnattended,
+		Objective: "loops forever until stopped",
+		Folders:   []string{repo},
 	})
 	c.BeginQuest(id)
 

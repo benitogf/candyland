@@ -39,9 +39,6 @@ func TestCampaignEndpointsLifecycle(t *testing.T) {
 	if cam.ID != created.ID || cam.OriginalInput != "build the thing" || cam.Status != "running" {
 		t.Fatalf("snapshot wrong: %+v", cam)
 	}
-	if cam.AutonomyLevel != run.AutonomyGatePR {
-		t.Errorf("campaign autonomy = %q, want L2 (never L1)", cam.AutonomyLevel)
-	}
 
 	// Stop is terminal, with a reason (idle campaign — no supervisor running yet).
 	if r := post(t, base+"/api/campaigns/"+created.ID+"/stop", map[string]string{"reason": "fin"}); r.StatusCode != http.StatusNoContent {

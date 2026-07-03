@@ -128,6 +128,30 @@ func emitPartition(tasksJSON string) string {
 	return emitText("PARTITION "+escapeJSON(tasksJSON)) + emitResult("ok", 1)
 }
 
+// emitQuestsLine emits the tech-manager QUESTS verdict (the JSON array of child
+// quests) followed by a terminal result line — the campaign-altitude analogue of
+// emitPartition.
+func emitQuestsLine(questsJSON string) string {
+	return emitText("QUESTS "+escapeJSON(questsJSON)) + emitResult("quests", 2)
+}
+
+// emitPartitionReview emits the intent-manager gate-1 verdict {agree,reason}.
+func emitPartitionReview(agree bool, reason string) string {
+	return emitText(`PARTITION_REVIEW {\"agree\":`+boolStr(agree)+`,\"reason\":\"`+reason+`\"}`) + emitResult("gate1", 1)
+}
+
+// emitTechDone emits the tech-manager gate-2 technical sign-off {done,reason}.
+func emitTechDone(done bool, reason string) string {
+	return emitText(`TECH_DONE {\"done\":`+boolStr(done)+`,\"reason\":\"`+reason+`\"}`) + emitResult("gate2", 1)
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 // emitTest emits a coder's TEST verdict with the given pass/fail counts.
 func emitTest(pass, fail int) string {
 	return emitText(`TEST {\"pass\":`+itoa(pass)+`,\"fail\":`+itoa(fail)+`}`) + emitResult("green", 2)

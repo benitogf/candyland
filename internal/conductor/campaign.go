@@ -38,9 +38,8 @@ func (c *Conductor) publishCampaign(cam run.Campaign) {
 // CreateCampaign registers a new campaign (status: running) and persists it,
 // returning the minted id. It mirrors CreateQuest: it mints a sequential id,
 // captures the launch input once onto OriginalInput (never rewritten — the campaign
-// analogue of Run.OriginalIntent), stamps TraceVersion + timestamps, and defaults
-// AutonomyLevel to L2 when empty — NEVER L1: a report-only campaign would strand
-// with no PR (settled decision). The supervisor/intent-lead flow that drives the
+// analogue of Run.OriginalIntent), and stamps TraceVersion + timestamps.
+// The supervisor/intent-lead flow that drives the
 // campaign is a later phase; CreateCampaign only seeds and persists initial state.
 func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 	c.mu.Lock()
@@ -48,24 +47,22 @@ func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 	id := fmt.Sprintf("c%d", c.campaignSeq)
 	c.mu.Unlock()
 
-	autonomy := spec.AutonomyLevel
-	if autonomy == "" || autonomy == run.AutonomyReportOnly {
-		// Campaigns default to L2 and are never L1 (a report-only campaign would
-		// strand with no PR) — settled decision.
-		autonomy = run.AutonomyGatePR
-	}
 	deliver := spec.Deliver
 	if deliver == "" {
 		deliver = run.DeliverPR
+	}
+	title := strings.TrimSpace(spec.Title)
+	if title == "" {
+		title = deriveTitle(spec.Input)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	cam := run.Campaign{
 		ID:            id,
+		Title:         title,
 		OriginalInput: spec.Input,
 		Folders:       spec.Folders,
 		Status:        "running",
-		AutonomyLevel: autonomy,
 		TokenBudget:   spec.TokenBudget,
 		Deliver:       deliver,
 		TargetPR:      spec.TargetPR,
@@ -79,7 +76,7 @@ func (c *Conductor) CreateCampaign(spec run.CampaignSpec) string {
 		TraceVersion: run.TraceVersion,
 	}
 	c.publishCampaign(cam)
-	log.Printf("candyland: campaign %s created (autonomy %s, budget %d)", id, autonomy, spec.TokenBudget)
+	log.Printf("candyland: campaign %s created (budget %d)", id, spec.TokenBudget)
 	return id
 }
 

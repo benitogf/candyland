@@ -1,7 +1,7 @@
 # 🍬 Candyland
 
 An **observe-only sidecar** for [detritus](https://github.com/benitogf/detritus)'s
-autonomous build flows. You launch a run, quest, or campaign from your detritus
+autonomous build flows. You launch a run, quest, adventure, or campaign from your detritus
 session; candyland drives the agents out of process and shows every agent's live
 state, output, and trace — so you watch (and stop) the work in a dashboard instead
 of juggling sessions by hand, and review one finished PR.
@@ -47,29 +47,39 @@ detritus session ──REST (/api/runs|quests|campaigns)──▶  candyland app
 
 ## The work hierarchy
 
-Everything candyland tracks is one of three first-class records; the single
+Everything candyland tracks is one of four first-class records; the single
 **Work** UI section pivots between them (Runs/Tasks · Quests · Campaigns) with
 filters.
 
 - **Run** — one bounded build. A tech lead partitions the work; one coder per
   fork-safe task runs in its own git worktree; the diffs integrate; a reviewer
-  passes; one PR per impacted repo opens.
-- **Quest** — a long-running objective that launches **many runs**. Its quest
-  lead discovers and triages work items, launches a child run per accepted item,
-  and finishes when no safe work is left (with token-budget and pause/stop gates).
-- **Campaign** — a program-level intent. Its supervisor produces an **intent
-  brief** (restated goal + commitments), passes a **brief gate** and a **plan
-  gate**, decomposes into quests/runs that deliver onto a shared branch, then
-  runs a **final intent review** (a per-commitment `satisfied|partial|missed`
-  verdict). A `missed` commitment **blocks** that repo's PR; otherwise it opens
-  **one PR per repo**.
+  passes; one PR per impacted repo opens (or a commit onto a shared branch).
+- **Quest** — a **bounded** iterative objective. Its quest lead ticks
+  discover → triage → launch (a child run per accepted item runs onto the
+  `quest/<id>` branch), and when the objective is met it opens **one PR per
+  impacted repo** and terminates.
+- **Adventure** — an **open-ended freeseeking** loop. Same machinery as a
+  quest, different delivery policy: it opens a **PR per accepted finding** and
+  runs perpetually until it is stopped or discovery goes dry. It is the sidecar
+  homologue of the in-session janitor loop.
+- **Campaign** — a program-level intent, run by two agents. The **intent
+  manager** produces the **intent brief** (restated goal + commitments) and runs
+  the **final per-commitment intent review**; the **tech manager** decomposes
+  the brief into **child quests** (concurrent by default), owns integration, and
+  targets remediation. Two **convergence gates** sit between them — gate 1
+  (partition-vs-brief, before any work launches) and gate 2 (dual sign-off:
+  technical-done + intent-review, before delivery). Child quests commit onto the
+  shared `campaign/<id>` branch and open no PR; the campaign opens **one PR per
+  repo** at the delivery gate. A `missed` commitment feeds a bounded
+  **remediation quest**; a `partial` annotates without blocking.
 
 Launched from the detritus session over REST:
 
 ```bash
-detritus --candyland-run <prompt-file> [folder ...]    # a build run
-detritus --quest-run     <objective-file> [folder ...] # an iterative quest
-detritus --campaign-run  <input-file> [folder ...]     # a program campaign
+detritus --candyland-run <prompt-file>     [folder ...] # one bounded build run
+detritus --quest-run     <objective-file>  [folder ...] # a bounded iterative quest
+detritus --adventure-run <objective-file>  [folder ...] # an open-ended freeseeking loop
+detritus --campaign-run  <input-file>      [folder ...] # a program campaign
 ```
 
 ## The review loop

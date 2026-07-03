@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/benitogf/candyland/internal/bus"
@@ -24,32 +25,59 @@ import (
 //	2. BRIEF GATE    — a deterministic consistency check that the brief reflects the
 //	   OriginalInput before planning proceeds. A failed gate routes back to the
 //	   intent lead (bounded) — it never asks the user.
-//	3. DECOMPOSE     — the brief's draft tasks become direct child RUNS, each
-//	   launched via the EXISTING run executor with CampaignID set and Deliver=branch
-//	   so it COMMITS onto the campaign branch (campaign/<id> — the same name in each
-//	   impacted repo) and opens NO PR.
-//	4. PLAN GATE     — a deterministic check that the proposed children would
-//	   plausibly deliver the brief before executing.
-//	5. EXECUTE       — run the children sequentially (so their work accumulates on
-//	   the shared campaign branch); the campaign ctx halts them on pause/stop.
-//	6. INTENT REVIEW — an intent-reviewer agent emits a per-commitment verdict
-//	   {satisfied|partial|missed} with cited evidence (it loads core/intent-review
-//	   via kb_get and APPLIES it — composition, not an inlined rubric).
-//	7. DELIVERY GATE — a `missed` verdict BLOCKS that repo's PR (the campaign stays
-//	   blocked with a visible reason; the branch persists for resume). A `partial`
-//	   annotates the PR but does NOT block. With no `missed`, open ONE PR PER REPO
+//	3. DECOMPOSE     — the TECH MANAGER partitions the brief into concurrent child
+//	   QUESTS, emitting one machine-readable QUESTS line. Each becomes a child quest
+//	   with CampaignID set, so its runs COMMIT onto the campaign branch (campaign/<id>
+//	   — the same name in each impacted repo) and open NO PR.
+//	4. GATE 1        — the INTENT MANAGER reviews the quest partition against the brief
+//	   ("would these quests plausibly deliver the commitments?"); disagreement routes
+//	   back to the tech manager, bounded by maxPartitionAttempts. Both-agree required.
+//	5. EXECUTE       — run the child quests CONCURRENTLY (deps sequence dependents);
+//	   their work accumulates on the shared campaign branch; ctx halts them on stop.
+//	6. GATE 2        — dual sign-off: the INTENT MANAGER emits a per-commitment verdict
+//	   {satisfied|partial|missed} (core/intent-review), and the TECH MANAGER confirms
+//	   technical done. Both load their doctrine via kb_get (composition, not a rubric).
+//	7. DELIVERY GATE — a `missed` verdict (or withheld technical sign-off) feeds a
+//	   remediation QUEST via the tech manager, bounded by maxRemediationRounds; a
+//	   `partial` annotates but does NOT block. Only both-clean opens ONE PR PER REPO
 //	   from the campaign branch (reusing the run push+openPR machinery).
 //
-// The loop logic stays in Go (bounded stages, autonomy gating, a global token cap);
+// The loop logic stays in Go (bounded stages, a global token cap);
 // the INTELLIGENCE (the brief, the per-commitment judgment) lives in the agents,
 // which compose the detritus doctrine via kb_get rather than re-encoding it here.
 
-// intentLeadID / intentReviewerID are the single agent identities for the brief and
-// review stages. They key each agent's brief on the bus the same way tl/coder ids do.
+// The campaign runs exactly TWO high-level roles, each instantiated as fresh
+// claude -p processes per stage (fresh instantiation = maker≠checker):
+//
+//   - the INTENT MANAGER owns intent gating end-to-end — it produces the Intent
+//     Brief (intentLeadID), reviews the tech manager's quest partition against the
+//     brief at gate 1 (intentManagerID), and runs the final per-commitment intent
+//     review at gate 2 (intentReviewerID). It composes core/planning + core/dream
+//     (brief) and core/intent-review (review) via kb_get.
+//   - the TECH MANAGER owns everything technical — it partitions the brief into
+//     concurrent child QUESTS (techManagerID, the QUESTS line), and confirms
+//     technical done at gate 2. It composes roles/tech-lead via kb_get.
+//
+// Each id keys its agent's brief on the bus the same way tl/coder ids do.
 const (
-	intentLeadID     = "intent-lead"
-	intentReviewerID = "intent-reviewer"
+	intentLeadID     = "intent-lead"     // stage 1: the Intent Brief
+	intentManagerID  = "intent-manager"  // gate 1: the intent manager reviewing the quest partition
+	intentReviewerID = "intent-reviewer" // gate 2: the final per-commitment intent review
+	techManagerID    = "tech-manager"    // decompose (QUESTS) + gate 2 technical-done confirmation
 )
+
+// maxPartitionAttempts bounds gate 1 (the partition-convergence gate): how many
+// times a disagreement between the tech manager's quest partition and the intent
+// manager's review routes back to the tech manager before the campaign blocks. It
+// is the partition-phase sibling of maxBriefAttempts. Tunable via
+// CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS.
+func maxPartitionAttempts() int { return envInt("CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS", 2) }
+
+// campaignConcurrency caps how many independent child quests execute at once (the
+// dep DAG still sequences dependents behind their dependencies). Tunable via
+// CANDYLAND_CONCURRENCY; the default keeps a program from spawning an unbounded
+// number of quest process trees simultaneously.
+func campaignConcurrency() int { return envInt("CANDYLAND_CONCURRENCY", 4) }
 
 // maxBriefAttempts bounds how many times a failed BRIEF GATE routes back to the
 // intent lead before the campaign blocks — the brief-phase analogue of maxReplans.
@@ -119,11 +147,13 @@ func (c *Conductor) BeginCampaign(id string) bool {
 func (c *Conductor) StopCampaign(id, reason string) bool {
 	c.haltCampaignDrive(id)
 	c.stopCampaignChildren(id)
+	if reason == "" {
+		reason = "manual stop" // q4 fix: a stop always records a reason (q4 recorded none)
+	}
 	return c.UpdateCampaign(id, func(cam *run.Campaign) {
 		cam.Status = "stopped"
-		if reason != "" {
-			cam.PauseReason = reason
-		}
+		cam.StopReason = reason
+		cam.PauseReason = reason
 	})
 }
 
@@ -210,7 +240,9 @@ func (c *Conductor) CampaignChildQuests(id string) []run.Quest {
 func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 	defer c.haltCampaignDrive(id)
 	defer c.cleanupBusConfigs(intentLeadID)
+	defer c.cleanupBusConfigs(intentManagerID)
 	defer c.cleanupBusConfigs(intentReviewerID)
+	defer c.cleanupBusConfigs(techManagerID)
 
 	cam, ok := c.GetCampaign(id)
 	if !ok {
@@ -231,34 +263,33 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		return // blocked (gate failed past the bound, or the lead produced no brief) — recorded
 	}
 
-	// ── Stage 3: DECOMPOSE the settled brief into direct child RUNS (branch delivery). ──
-	childPrompts := decomposeChildren(cam, brief)
-	if len(childPrompts) == 0 {
-		c.blockCampaign(id, "the intent brief produced no draft tasks to decompose into child runs")
-		return
+	// ── Stage 3+4: DECOMPOSE into child QUESTS (the tech manager) + GATE 1 (the intent
+	//    manager reviews the partition against the brief), a bounded convergence loop. ──
+	quests, ok := c.partitionUntilGated(ctx, id, cam, brief, folders)
+	if ctx.Err() != nil {
+		return // paused/stopped mid-gate — not a failure
+	}
+	if !ok {
+		return // blocked (no partition, or gate 1 never converged) — recorded
 	}
 
-	// ── Stage 4: PLAN GATE — would the proposed children plausibly deliver the brief? ──
-	if reason, passed := planGate(brief, childPrompts); !c.recordPlanGate(id, passed, reason) || !passed {
-		return // blocked — recorded
-	}
-
-	// ── Stage 5: EXECUTE the children sequentially on the shared campaign branch. ──
-	if !c.executeChildren(ctx, id, cam, folders, childPrompts) {
-		return // stopped, or every child failed and there is nothing to review — recorded
+	// ── Stage 5: EXECUTE the child quests concurrently on the shared campaign branch
+	//    (deps sequence dependents; independent quests run in parallel). ──
+	if !c.executeChildQuests(ctx, id, cam, folders, quests) {
+		return // stopped, or every quest failed and there is nothing to review — recorded
 	}
 	if ctx.Err() != nil {
 		return
 	}
 
-	// ── Stage 6+7: REVIEW → REMEDIATE unmet commitments → DELIVER. ──
-	// A campaign never parks in "blocked" on the first failing review while it still
-	// has the authority to finish the work. Each round reviews, and if the review
-	// finds `missed` commitments it spawns remediation child runs targeting exactly
-	// those (plus any `partial`) and re-reviews — bounded by maxRemediationRounds so a
-	// genuinely un-closeable gap eventually blocks (a real hard blocker) rather than
-	// parking undone on the first look. Only when no `missed` remain does it deliver
-	// (a lingering `partial` annotates the PR, as before — it does not block).
+	// ── Stage 6+7: GATE 2 (dual sign-off) → REMEDIATE → DELIVER. ──
+	// Both managers must sign off before delivery: the intent manager runs the
+	// per-commitment intent review, and the tech manager confirms technical done. A
+	// `missed` verdict (or a not-done technical verdict) does NOT park the campaign
+	// in "blocked" on the first look — the tech manager spawns a remediation QUEST
+	// targeting exactly the gap, the loop re-reviews, and only both-clean delivers.
+	// Bounded by maxRemediationRounds so a genuinely un-closeable gap eventually
+	// blocks (a real hard blocker). A lingering `partial` annotates the PR, never blocks.
 	rounds := maxRemediationRounds()
 	var review run.IntentReview
 	for round := 0; ; round++ {
@@ -270,31 +301,38 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		if !ok {
 			return // the reviewer produced no verdict (blocked) — recorded
 		}
+		techDone, ok := c.techManagerDone(ctx, id, cam, brief, review, folders)
+		if ctx.Err() != nil {
+			return
+		}
+		if !ok {
+			return // the tech manager produced no verdict (blocked) — recorded
+		}
 
 		missed := missedCommitments(brief, review)
-		if len(missed) == 0 {
-			break // no blocking gap — deliver (partials annotate the PR)
+		if len(missed) == 0 && techDone.Done {
+			break // dual sign-off clean — deliver (partials annotate the PR)
 		}
+		gaps := gapSummary(missed, techDone)
 		if round >= rounds {
-			c.blockCampaign(id, fmt.Sprintf("intent review still finds %d commitment(s) missed after %d remediation round(s) — %s. The campaign branch persists; resume to retry.", len(missed), rounds, strings.Join(missed, "; ")))
+			c.blockCampaign(id, fmt.Sprintf("gate 2 still finds gaps after %d remediation round(s) — %s. The campaign branch persists; resume to retry.", rounds, gaps))
 			return
 		}
 
-		remediation := remediationPrompts(cam, brief, review)
+		remediation := remediationQuests(cam, brief, review, techDone)
 		if len(remediation) == 0 {
-			// Defensive: missed with no addressable commitment text — block rather
-			// than loop with nothing to spawn.
-			c.blockCampaign(id, fmt.Sprintf("intent review found %d missed commitment(s) with no remediable task text — %s. The campaign branch persists; resume to retry.", len(missed), strings.Join(missed, "; ")))
+			// Defensive: a gap with no addressable target — block rather than loop
+			// with nothing to spawn.
+			c.blockCampaign(id, fmt.Sprintf("gate 2 found gaps with no remediable target — %s. The campaign branch persists; resume to retry.", gaps))
 			return
 		}
-		c.appendCampaignNote(id, fmt.Sprintf("remediation round %d/%d: spawning %d child task(s) to close %d missed commitment(s)", round+1, rounds, len(remediation), len(missed)))
-		if !c.executeChildren(ctx, id, cam, folders, remediation) {
-			// executeChildren blocked with a generic "no child delivered work" reason
-			// (or ctx was cancelled). When it's the former, replace it with the
-			// actionable missed-commitment context so the operator sees WHICH
-			// commitments are stuck, not just that nothing landed.
+		c.appendCampaignNote(id, fmt.Sprintf("remediation round %d/%d: the tech manager spawns %d quest(s) to close %s", round+1, rounds, len(remediation), gaps))
+		if !c.executeChildQuests(ctx, id, cam, folders, remediation) {
+			// executeChildQuests blocked with a generic "no quest delivered work"
+			// reason (or ctx was cancelled). When it's the former, replace it with the
+			// actionable gap context so the operator sees WHICH commitments are stuck.
 			if ctx.Err() == nil {
-				c.blockCampaign(id, fmt.Sprintf("remediation for %d missed commitment(s) delivered no work — %s. The campaign branch persists; resume to retry.", len(missed), strings.Join(missed, "; ")))
+				c.blockCampaign(id, fmt.Sprintf("remediation delivered no work for %s. The campaign branch persists; resume to retry.", gaps))
 			}
 			return
 		}
@@ -381,45 +419,165 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 	return brief, res.tokens, ""
 }
 
-// executeChildren launches the campaign's child runs SEQUENTIALLY (so their commits
-// accumulate on the shared campaign branch), each via the EXISTING run executor with
-// CampaignID set and Deliver=branch (commit onto CampaignBranch, open no PR). The
-// campaign ctx halts an in-flight child on pause/stop. A global token cap, once
-// exceeded, degrades-to-serial-then-deliver-partial: it skips the remaining children
-// and proceeds to review (never a pre-PR pause that strands with no PR). It returns
-// false only when stopped, or when nothing landed at all (blocked).
-func (c *Conductor) executeChildren(ctx context.Context, id string, cam run.Campaign, folders []string, prompts []childPrompt) bool {
+// executeChildQuests launches the campaign's child QUESTS respecting the tech
+// manager's dependency DAG: quests with no unmet dependency run CONCURRENTLY (capped
+// by campaignConcurrency), and a quest whose deps are declared waits until every
+// dependency quest reaches a terminal state. Each child quest carries CampaignID, so
+// its child runs commit onto the shared campaign branch and open no PR (QuestBranch →
+// campaign/<id>). The campaign ctx halts in-flight quests on pause/stop. A global
+// token cap, once exceeded, skips the remaining quests (deliver-partial, never a
+// pre-PR pause that strands with no PR). It returns false only when stopped, or when
+// nothing landed at all (blocked).
+func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem) bool {
+	quests = sanitizeDeps(c, id, quests)
 	tokenCap := effectiveTokenCap(cam)
-	launched, completed := 0, 0
-	for _, cp := range prompts {
-		if ctx.Err() != nil {
-			return false
+	// One done-channel per quest id, closed when that quest reaches terminal — a
+	// dependent selects on its deps' channels before it launches. parseQuests already
+	// guarantees non-empty, unique ids; this is a belt-and-suspenders guard so a
+	// caller that ever bypasses that validation can't key two goroutines onto the same
+	// channel and panic with "close of closed channel" (which would kill the sidecar).
+	// The dedup keeps exactly one owner (and one close) per channel.
+	doneCh := make(map[string]chan struct{}, len(quests))
+	unique := make([]questPartitionItem, 0, len(quests))
+	for _, q := range quests {
+		if _, exists := doneCh[q.ID]; exists {
+			c.appendCampaignNote(id, fmt.Sprintf("duplicate quest id %q in partition — skipping the duplicate to protect the sidecar from a double channel-close", q.ID))
+			continue
 		}
-		if tokenCap > 0 {
-			if used := c.campaignTokensUsed(id); used >= tokenCap {
-				log.Printf("candyland: campaign %s token cap reached (%d/%d) — delivering partial", id, used, tokenCap)
-				c.appendCampaignNote(id, fmt.Sprintf("token cap reached (%d/%d) — skipped %d remaining child run(s), delivering partial", used, tokenCap, len(prompts)-launched))
-				break
+		doneCh[q.ID] = make(chan struct{})
+		unique = append(unique, q)
+	}
+	quests = unique
+	sem := make(chan struct{}, campaignConcurrency())
+	var mu sync.Mutex
+	completed := 0
+	var wg sync.WaitGroup
+	for _, q := range quests {
+		wg.Add(1)
+		go func(q questPartitionItem) {
+			defer wg.Done()
+			defer close(doneCh[q.ID])
+			// Wait for every declared dependency to reach terminal (or the campaign
+			// to stop). Unknown dep ids were dropped by sanitizeDeps.
+			for _, d := range q.Deps {
+				if ch, ok := doneCh[d]; ok {
+					select {
+					case <-ch:
+					case <-ctx.Done():
+						return
+					}
+				}
 			}
-		}
-		childID := c.launchCampaignChild(ctx, id, cam, folders, cp)
-		launched++
-		if ctx.Err() != nil {
-			return false
-		}
-		child, ok := c.Get(childID)
-		if ok {
-			c.addCampaignTokens(id, child.TokensUsed)
-			if child.Status == "done" && child.Error == "" {
-				completed++
+			if ctx.Err() != nil {
+				return
 			}
-		}
+			if tokenCap > 0 {
+				if used := c.campaignTokensUsed(id); used >= tokenCap {
+					log.Printf("candyland: campaign %s token cap reached (%d/%d) — skipping quest %q", id, used, tokenCap, q.Title)
+					c.appendCampaignNote(id, fmt.Sprintf("token cap reached (%d/%d) — skipped child quest %q, delivering partial", used, tokenCap, q.Title))
+					return
+				}
+			}
+			// Concurrency gate: hold a slot for the quest's lifetime.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+
+			questID := c.launchCampaignChildQuest(ctx, id, cam, folders, q)
+			if cq, ok := c.GetQuest(questID); ok {
+				c.addCampaignTokens(id, cq.TokensUsed)
+				if questDelivered(cq) {
+					mu.Lock()
+					completed++
+					mu.Unlock()
+				}
+			}
+		}(q)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return false
 	}
 	if completed == 0 {
-		c.blockCampaign(id, "no child run delivered work onto the campaign branch — nothing to review or deliver")
+		c.blockCampaign(id, "no child quest delivered work onto the campaign branch — nothing to review or deliver")
 		return false
 	}
 	return true
+}
+
+// questDelivered reports whether a terminal child quest actually delivered work (so
+// the campaign has something to review/deliver). A "surfaced-only" no-op or a quest
+// that blocked without completing an item does not count.
+func questDelivered(q run.Quest) bool {
+	return q.ItemsCompleted > 0
+}
+
+// sanitizeDeps drops dependency ids that reference no quest in the partition and, if
+// the declared deps form a cycle, clears ALL deps (running everything concurrently)
+// with a durable note — a cyclic DAG would otherwise deadlock the dependency waits.
+func sanitizeDeps(c *Conductor, id string, quests []questPartitionItem) []questPartitionItem {
+	known := make(map[string]bool, len(quests))
+	for _, q := range quests {
+		known[q.ID] = true
+	}
+	out := make([]questPartitionItem, len(quests))
+	for i, q := range quests {
+		var deps []string
+		for _, d := range q.Deps {
+			if known[d] && d != q.ID {
+				deps = append(deps, d)
+			}
+		}
+		q.Deps = deps
+		out[i] = q
+	}
+	if hasCycle(out) {
+		if c != nil && id != "" {
+			c.appendCampaignNote(id, "the tech manager's quest deps form a cycle — running all quests concurrently")
+		}
+		for i := range out {
+			out[i].Deps = nil
+		}
+	}
+	return out
+}
+
+// hasCycle reports whether the quests' dependency edges contain a cycle (Kahn's
+// algorithm: if not every node can be topologically removed, a cycle remains).
+func hasCycle(quests []questPartitionItem) bool {
+	indeg := map[string]int{}
+	adj := map[string][]string{}
+	for _, q := range quests {
+		if _, ok := indeg[q.ID]; !ok {
+			indeg[q.ID] = 0
+		}
+		for _, d := range q.Deps {
+			adj[d] = append(adj[d], q.ID)
+			indeg[q.ID]++
+		}
+	}
+	var queue []string
+	for id, n := range indeg {
+		if n == 0 {
+			queue = append(queue, id)
+		}
+	}
+	removed := 0
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		removed++
+		for _, m := range adj[n] {
+			indeg[m]--
+			if indeg[m] == 0 {
+				queue = append(queue, m)
+			}
+		}
+	}
+	return removed < len(indeg)
 }
 
 // linkCampaignChild creates a child run and links it BOTH WAYS at launch (O3): the
@@ -454,29 +612,240 @@ func campaignTargetsPR(cam run.Campaign) bool {
 	return cam.Deliver == run.DeliverFeedback || cam.Deliver == run.DeliverReview
 }
 
-// launchCampaignChild creates and drives ONE child run via the existing run executor,
-// stamping CampaignID, the campaign branch (campaign/<id> — the same name in each
-// impacted repo), and Deliver=branch (so it commits onto the branch and opens NO PR —
-// children never open PRs). It blocks until
-// the child reaches a terminal state or the campaign is paused/stopped.
-func (c *Conductor) launchCampaignChild(ctx context.Context, id string, cam run.Campaign, folders []string, cp childPrompt) string {
-	childID := c.linkCampaignChild(id, run.Spec{Folders: folders, Prompt: cp.prompt, Title: cp.title})
-	c.Begin(childID)
+// launchCampaignChildQuest creates and drives ONE child QUEST via the existing quest
+// machinery (CreateQuest → BeginQuest → the tick loop), stamping CampaignID so the
+// quest integrates onto the campaign branch (campaign/<id>) and opens NO PR — the
+// campaign opens the per-repo PRs at its delivery gate. A feedback/review campaign
+// instead hands the child quest the campaign's Deliver + TargetPR so it works the
+// existing PR. Its Title comes from the tech manager's QUESTS emission. It blocks
+// until the quest reaches a terminal (non-running) state or the campaign is stopped.
+func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem) string {
+	spec := run.QuestSpec{
+		CampaignID: id,
+		Objective:  campaignChildQuestObjective(cam, item),
+		Title:      strings.TrimSpace(item.Title),
+		Folders:    resolveQuestFolders(item.Folders, folders),
+	}
+	if campaignTargetsPR(cam) {
+		// feedback/review campaign: the child quest works the EXISTING PR (feedback
+		// updates it in place, review reports) instead of the campaign branch.
+		spec.Deliver = cam.Deliver
+		spec.TargetPR = cam.TargetPR
+	}
+	questID := c.CreateQuest(spec)
+	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.QuestIDs = append(cam.QuestIDs, questID) })
+	c.BeginQuest(questID)
 	for {
 		select {
 		case <-ctx.Done():
-			c.Command(childID, "stop")
-			return childID
+			c.StopQuest(questID, "campaign stopped")
+			return questID
 		case <-time.After(50 * time.Millisecond):
 		}
-		r, ok := c.Get(childID)
+		q, ok := c.GetQuest(questID)
 		if !ok {
-			return childID
+			return questID
 		}
-		if r.Status == "done" || r.Status == "cancelled" {
-			return childID
+		if q.Status != "running" {
+			return questID // terminal (done/surfaced-only/reviewed) or paused/blocked/stopped
 		}
 	}
+}
+
+// resolveQuestFolders maps the tech manager's per-quest folder tokens onto the
+// campaign's actual folders: a token matches a campaign folder when it equals the
+// folder path or its basename (so the tech manager can name "web" for
+// /path/to/web). With no token (or no match) the quest inherits ALL campaign folders.
+func resolveQuestFolders(tokens, campaignFolders []string) []string {
+	if len(tokens) == 0 {
+		return campaignFolders
+	}
+	var out []string
+	for _, f := range campaignFolders {
+		base := f
+		if i := strings.LastIndexAny(f, "/\\"); i >= 0 {
+			base = f[i+1:]
+		}
+		for _, t := range tokens {
+			t = strings.TrimSpace(t)
+			if t != "" && (t == f || t == base) {
+				out = append(out, f)
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return campaignFolders
+	}
+	return out
+}
+
+// partitionUntilGated runs the DECOMPOSE stage (the tech manager emits a QUESTS
+// partition) and GATE 1 (the intent manager reviews that partition against the
+// brief) in a bounded convergence loop: a disagreement weaves the intent manager's
+// reason into the next tech-manager spawn (route-back, never a user prompt). It
+// returns the agreed partition, or false having blocked the campaign when the bound
+// is exhausted or a stage produced nothing.
+func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, folders []string) ([]questPartitionItem, bool) {
+	attempts := maxPartitionAttempts()
+	feedback := ""
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		c.setCampaignRunning(id)
+		quests, tokens, errMsg, retryFeedback := c.emitQuests(ctx, id, cam, brief, folders, feedback)
+		c.addCampaignTokens(id, tokens)
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		if errMsg != "" {
+			c.blockCampaign(id, "tech manager: "+errMsg)
+			return nil, false
+		}
+		if retryFeedback != "" {
+			feedback = retryFeedback
+			continue
+		}
+		if len(quests) == 0 {
+			feedback = "you emitted no child quests — a campaign must decompose into at least one quest that delivers the brief's commitments"
+			continue
+		}
+		verdict, ok := c.reviewPartition(ctx, id, cam, brief, quests, folders)
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		if !ok {
+			return nil, false // the intent manager produced no verdict (blocked) — recorded
+		}
+		reason := orDefault(strings.TrimSpace(verdict.Reason), fmt.Sprintf("%d quest(s) reviewed against %d commitment(s)", len(quests), len(brief.Commitments)))
+		c.recordPartitionGate(id, verdict.Agree, reason)
+		if verdict.Agree {
+			return quests, true
+		}
+		feedback = reason
+	}
+	c.blockCampaign(id, fmt.Sprintf("the quest partition failed gate 1 (intent-manager convergence) after %d attempts", attempts))
+	return nil, false
+}
+
+// emitQuests spawns the tech manager for one attempt and parses its QUESTS line. The
+// tech manager runs in the campaign's primary folder with the rest as --add-dir
+// context; its PROMPT tells it to load roles/tech-lead via kb_get and APPLY it (no
+// inlined rubric). feedback (non-empty on a gate-1 route-back) rides the bus brief so
+// the tech manager corrects the prior partition — never on argv.
+//
+// A parsed-but-invalid partition (empty or duplicate quest id) is not a hard error: it
+// is surfaced as retryFeedback so partitionUntilGated routes it back to the tech
+// manager for a clean re-emission, bounded by maxPartitionAttempts.
+func (c *Conductor) emitQuests(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, folders []string, feedback string) (quests []questPartitionItem, tokens int, errMsg, retryFeedback string) {
+	primary := folders[0]
+	extra := extraDirsFor(primary, folders)
+	c.putBrief(techManagerID, bus.Brief{
+		To:       techManagerID,
+		Role:     "tech-manager",
+		Prompt:   techManagerBriefPrompt(cam, brief),
+		Feedback: feedback,
+	})
+	res := streamOnce(ctx, c, id, techManagerID, techManagerBootstrap, primary, extra)
+	if ctx.Err() != nil {
+		return nil, res.tokens, "", ""
+	}
+	if res.startErr != nil {
+		return nil, res.tokens, startFailurePrefix + res.startErr.Error(), ""
+	}
+	if res.stalled {
+		return nil, res.tokens, "the tech manager stalled before producing a quest partition", ""
+	}
+	parsed, ok, reason := parseQuests(res.allText)
+	if !ok {
+		if reason != "" {
+			// A QUESTS line was present but its ids violate the uniqueness invariant —
+			// recoverable: route back to the tech manager for a clean re-emission.
+			return nil, res.tokens, "", "your quest partition is unusable: " + reason
+		}
+		return nil, res.tokens, "the tech manager produced no QUESTS partition", ""
+	}
+	return parsed, res.tokens, "", ""
+}
+
+// reviewPartition spawns the intent manager (gate 1) and parses its PARTITION_REVIEW
+// verdict. The intent manager runs in the campaign's primary folder; its PROMPT names
+// the brief's commitments and the tech manager's proposed quests, and asks whether
+// they would plausibly deliver the intent — {agree, reason}. A missing verdict blocks.
+func (c *Conductor) reviewPartition(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, quests []questPartitionItem, folders []string) (partitionVerdict, bool) {
+	primary := folders[0]
+	extra := extraDirsFor(primary, folders)
+	c.putBrief(intentManagerID, bus.Brief{
+		To:     intentManagerID,
+		Role:   "intent-manager",
+		Prompt: partitionReviewBriefPrompt(cam, brief, quests),
+	})
+	res := streamOnce(ctx, c, id, intentManagerID, partitionReviewBootstrap, primary, extra)
+	if ctx.Err() != nil {
+		return partitionVerdict{}, false
+	}
+	if res.startErr != nil {
+		c.blockCampaign(id, "gate 1 partition review: "+startFailurePrefix+res.startErr.Error())
+		return partitionVerdict{}, false
+	}
+	if res.stalled {
+		c.blockCampaign(id, "the intent manager stalled before reviewing the quest partition")
+		return partitionVerdict{}, false
+	}
+	verdict, ok := parsePartitionVerdict(res.allText)
+	if !ok {
+		c.blockCampaign(id, "the intent manager produced no PARTITION_REVIEW verdict — refusing to launch un-reviewed work")
+		return partitionVerdict{}, false
+	}
+	return verdict, true
+}
+
+// techManagerDone spawns the tech manager at gate 2 to confirm technical done (all
+// child quests integrated green on the campaign branch, review-loop clean). Its
+// PROMPT names the branch diff command and the intent review's verdicts so it judges
+// the integrated state — {done, reason}. A missing verdict blocks (never a silent pass).
+func (c *Conductor) techManagerDone(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, review run.IntentReview, folders []string) (techDoneVerdict, bool) {
+	primary := folders[0]
+	extra := extraDirsFor(primary, folders)
+	c.setCampaignRunning(id)
+	base, _ := currentBranch(ctx, primary)
+	c.putBrief(techManagerID, bus.Brief{
+		To:     techManagerID,
+		Role:   "tech-manager",
+		Prompt: techDoneBriefPrompt(cam, brief, review, orDefault(base, "main")),
+	})
+	res := streamOnce(ctx, c, id, techManagerID, techDoneBootstrap, primary, extra)
+	c.addCampaignTokens(id, res.tokens)
+	if ctx.Err() != nil {
+		return techDoneVerdict{}, false
+	}
+	if res.startErr != nil {
+		c.blockCampaign(id, "gate 2 technical sign-off: "+startFailurePrefix+res.startErr.Error())
+		return techDoneVerdict{}, false
+	}
+	if res.stalled {
+		c.blockCampaign(id, "the tech manager stalled before confirming technical done")
+		return techDoneVerdict{}, false
+	}
+	verdict, ok := parseTechDone(res.allText)
+	if !ok {
+		c.blockCampaign(id, "the tech manager produced no TECH_DONE verdict — refusing to deliver un-confirmed work")
+		return techDoneVerdict{}, false
+	}
+	return verdict, true
+}
+
+// setCampaignRunning flips a campaign back to running (clearing a transient pause
+// reason) unless a concurrent Stop/completion already made it terminal.
+func (c *Conductor) setCampaignRunning(id string) {
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		if cam.Status == "stopped" || cam.Status == "done" {
+			return
+		}
+		cam.Status = "running"
+		cam.PauseReason = ""
+	})
 }
 
 // intentReview spawns the intent reviewer (Stage 6) and parses its per-commitment
@@ -544,27 +913,7 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 	title := campaignPRTitle(cam)
 	body := campaignPRBody(cam, brief, annotations)
 
-	prs := make([]run.PR, 0, len(folders))
-	for _, repo := range folders {
-		repo = expandHome(repo)
-		if !isGitRepo(ctx, repo) {
-			continue // only impacted git repos get a PR
-		}
-		base, _ := currentBranch(ctx, repo)
-		pr := run.PR{Repo: repoBase(repo)}
-		// Only repos the campaign branch actually exists on have work to deliver.
-		if sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err != nil || sha == "" {
-			continue
-		}
-		if err := pushBranch(ctx, repo, branch); err != nil {
-			pr.Err = "push failed: " + err.Error()
-		} else if url, err := openPR(ctx, repo, base, branch, title, body); err != nil {
-			pr.Err = "PR failed: " + err.Error()
-		} else {
-			pr.URL = url
-		}
-		prs = append(prs, pr)
-	}
+	prs := openBranchPRs(ctx, folders, branch, title, body)
 
 	opened := 0
 	for _, pr := range prs {
@@ -612,20 +961,6 @@ func briefGate(originalInput string, brief run.IntentBrief) (string, bool) {
 		return "the restated goal does not reflect the original input (no shared terms)", false
 	}
 	return "the brief restates the original input with checkable commitments", true
-}
-
-// planGate is the PLAN GATE: a deterministic check that the proposed children would
-// plausibly deliver the brief before executing — there must be at least one child,
-// and at least as many children as is reasonable to cover the commitments is NOT
-// required (one child can satisfy several), but zero children can deliver nothing.
-func planGate(brief run.IntentBrief, children []childPrompt) (string, bool) {
-	if len(children) == 0 {
-		return "no child work was decomposed from the brief — nothing would be delivered", false
-	}
-	if len(brief.Commitments) == 0 {
-		return "the brief has no commitments for the children to deliver against", false
-	}
-	return fmt.Sprintf("%d child run(s) decomposed to deliver %d commitment(s)", len(children), len(brief.Commitments)), true
 }
 
 // sharesTerms reports whether two strings share at least one meaningful term (a
@@ -681,16 +1016,35 @@ func partialAnnotations(brief run.IntentBrief, review run.IntentReview) []string
 	return out
 }
 
-// remediationPrompts builds one targeted child run per commitment the intent
+// gapSummary is the human-readable description of what gate 2 still finds unmet: the
+// missed commitments plus a not-done technical verdict (if any). It drives the
+// remediation note and the eventual hard-block reason.
+func gapSummary(missed []string, techDone techDoneVerdict) string {
+	var parts []string
+	if len(missed) > 0 {
+		parts = append(parts, fmt.Sprintf("%d missed commitment(s): %s", len(missed), strings.Join(missed, "; ")))
+	}
+	if !techDone.Done {
+		parts = append(parts, "technical sign-off withheld: "+orDefault(strings.TrimSpace(techDone.Reason), "the tech manager reports the campaign branch is not integrated/clean"))
+	}
+	if len(parts) == 0 {
+		return "no specific gap"
+	}
+	return strings.Join(parts, " — ")
+}
+
+// remediationQuests builds one targeted remediation QUEST per commitment the intent
 // review judged `missed` or `partial` — the work the campaign must still finish
-// before it can deliver. Each prompt names the specific commitment and quotes the
-// reviewer's evidence for what is missing, so the child's tech-lead/coders close
-// that exact gap on the campaign branch (Deliver=branch, set at launch) rather
-// than re-running the whole decomposition. Missed commitments come first (they
-// block); partials follow (deliver-blocking only if they regress to missed).
-func remediationPrompts(cam run.Campaign, brief run.IntentBrief, review run.IntentReview) []childPrompt {
+// before it can deliver. Each quest names the specific commitment and quotes the
+// reviewer's evidence, so the quest's runs close that exact gap on the campaign
+// branch (Deliver=branch, campaign-child) rather than re-running the whole
+// decomposition. When the tech manager withheld technical sign-off with a reason,
+// one more remediation quest targets that technical gap. Missed commitments come
+// first (they block); partials follow (deliver-blocking only if they regress to missed).
+func remediationQuests(cam run.Campaign, brief run.IntentBrief, review run.IntentReview, techDone techDoneVerdict) []questPartitionItem {
 	byID := commitmentByID(brief)
-	var missed, partial []childPrompt
+	var missed, partial []questPartitionItem
+	n := 0
 	for _, v := range review.Verdicts {
 		verdict := strings.ToLower(strings.TrimSpace(v.Verdict))
 		if verdict != "missed" && verdict != "partial" {
@@ -700,17 +1054,44 @@ func remediationPrompts(cam run.Campaign, brief run.IntentBrief, review run.Inte
 		if stmt == "" {
 			continue
 		}
-		cp := childPrompt{
-			title:  truncate("remediate: "+stmt, 72),
-			prompt: remediationChildPrompt(cam, brief, stmt, verdict, v.Evidence),
+		n++
+		q := questPartitionItem{
+			ID:        fmt.Sprintf("r%d", n),
+			Title:     truncate("remediate: "+stmt, 72),
+			Objective: remediationChildPrompt(cam, brief, stmt, verdict, v.Evidence),
 		}
 		if verdict == "missed" {
-			missed = append(missed, cp)
+			missed = append(missed, q)
 		} else {
-			partial = append(partial, cp)
+			partial = append(partial, q)
 		}
 	}
-	return append(missed, partial...)
+	out := append(missed, partial...)
+	if !techDone.Done {
+		n++
+		out = append(out, questPartitionItem{
+			ID:        fmt.Sprintf("r%d", n),
+			Title:     truncate("remediate: technical sign-off", 72),
+			Objective: techRemediationObjective(cam, brief, techDone),
+		})
+	}
+	return out
+}
+
+// techRemediationObjective frames the tech manager's withheld sign-off as a
+// remediation quest objective (integrate/clean the campaign branch to green).
+func techRemediationObjective(cam run.Campaign, brief run.IntentBrief, techDone techDoneVerdict) string {
+	var b strings.Builder
+	b.WriteString("REMEDIATE the campaign's technical integration so the tech manager can sign off.\n\n")
+	if r := strings.TrimSpace(techDone.Reason); r != "" {
+		fmt.Fprintf(&b, "WHAT IS STILL WRONG (tech manager): %s\n", r)
+	}
+	fmt.Fprintf(&b, "\nThis is remediation work for the campaign goal: %s\n", brief.RestatedGoal)
+	if len(brief.ScopeByDomain) > 0 {
+		fmt.Fprintf(&b, "Stay in scope: %s\n", strings.Join(brief.ScopeByDomain, "; "))
+	}
+	b.WriteString("Deliver only the work needed to make the campaign branch integrate green with the review-loop clean.\n")
+	return b.String()
 }
 
 // remediationChildPrompt frames a single unmet commitment as a child run: it states
@@ -740,39 +1121,134 @@ func commitmentByID(brief run.IntentBrief) map[string]string {
 	return m
 }
 
-// --- decomposition ---
+// --- decomposition: the tech manager's QUESTS partition ---
 
-// childPrompt is one decomposed child run: a title + the prompt the run executor
-// drives. It is an internal value (not stored), the campaign analogue of a quest's
-// per-item child-run prompt.
-type childPrompt struct {
-	title  string
-	prompt string
+// questPartitionItem is one child quest the tech manager emits on a `QUESTS <json>`
+// line (the campaign-altitude analogue of the run tech lead's PARTITION task). It is
+// a parsed-from-stdout convention, not a stored type: {id,title,objective,folders,
+// deps}. deps names the ids this quest must wait for (empty → concurrent).
+type questPartitionItem struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Objective string   `json:"objective"`
+	Folders   []string `json:"folders"`
+	Deps      []string `json:"deps"`
 }
 
-// decomposeChildren turns the settled brief into direct child RUNS — one per draft
-// task (v1: direct runs are sufficient; child quests are allowed but optional). Each
-// child prompt frames the task against the campaign goal, scope-by-domain, and the
-// commitments so the child's tech-lead/coders inherit the campaign's bounds and
-// commit onto the campaign branch.
-func decomposeChildren(cam run.Campaign, brief run.IntentBrief) []childPrompt {
-	out := make([]childPrompt, 0, len(brief.DraftTasks))
-	for _, task := range brief.DraftTasks {
-		if strings.TrimSpace(task) == "" {
+// partitionVerdict is the intent manager's gate-1 verdict on the QUESTS partition,
+// emitted on a `PARTITION_REVIEW <json>` line: {agree, reason}. agree=false routes
+// back to the tech manager (bounded by maxPartitionAttempts).
+type partitionVerdict struct {
+	Agree  bool   `json:"agree"`
+	Reason string `json:"reason"`
+}
+
+// techDoneVerdict is the tech manager's gate-2 technical sign-off, emitted on a
+// `TECH_DONE <json>` line: {done, reason}. done=false feeds a remediation quest
+// (bounded by maxRemediationRounds).
+type techDoneVerdict struct {
+	Done   bool   `json:"done"`
+	Reason string `json:"reason"`
+}
+
+// parseQuests extracts the tech manager's child-quest partition from a `QUESTS <json>`
+// line (mirroring parsePartition). ok is false when no such line is present (no
+// verdict — a failure, never a silent pass). The last QUESTS line wins.
+//
+// A parsed partition is only returned with ok=true once its ids satisfy the
+// doneCh-keying invariant: every quest id is non-empty and unique (see
+// validateQuestIDs). When a QUESTS line is present but violates that invariant, ok is
+// false and reason is a non-empty explanation — the caller routes it back to the tech
+// manager (the gate-1 loop) to re-request a clean partition rather than launching work
+// that would panic the sidecar on a double channel-close.
+func parseQuests(text string) (quests []questPartitionItem, ok bool, reason string) {
+	found := false
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "QUESTS ") {
 			continue
 		}
-		out = append(out, childPrompt{title: truncate(task, 72), prompt: childCampaignPrompt(cam, brief, task)})
+		var parsed []questPartitionItem
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "QUESTS ")), &parsed) == nil {
+			quests, found = parsed, true
+		}
 	}
-	return out
+	if !found {
+		return nil, false, ""
+	}
+	if bad := validateQuestIDs(quests); bad != "" {
+		return nil, false, bad
+	}
+	return quests, true, ""
 }
 
-// childCampaignPrompt frames one draft task as a child run, inheriting the campaign
-// goal / scope / commitments so the child stays in-bounds. The child commits onto the
-// campaign branch and opens no PR (Deliver=branch, set at launch).
-func childCampaignPrompt(cam run.Campaign, brief run.IntentBrief, task string) string {
+// validateQuestIDs enforces the invariant executeChildQuests relies on to build its
+// per-quest done-channels: every quest carries a non-empty, unique id. Two quests with
+// the same id (or two with an empty id) would key two goroutines onto the same
+// doneCh[q.ID] channel, and each closes it on exit — a `close of closed channel` panic
+// in a bare goroutine with no recover, which would tear down the whole conductor
+// sidecar and every other campaign/quest/run in it. Returns "" when valid, otherwise a
+// human-readable reason (routed back to the tech manager as gate-1 feedback).
+func validateQuestIDs(quests []questPartitionItem) string {
+	seen := make(map[string]bool, len(quests))
+	for i, q := range quests {
+		if strings.TrimSpace(q.ID) == "" {
+			return fmt.Sprintf("quest #%d (%q) has an empty id — every quest must carry a unique, non-empty id", i+1, q.Title)
+		}
+		if seen[q.ID] {
+			return fmt.Sprintf("quest id %q is used by more than one quest — every quest must carry a unique id", q.ID)
+		}
+		seen[q.ID] = true
+	}
+	return ""
+}
+
+// parsePartitionVerdict extracts the intent manager's gate-1 verdict from a
+// `PARTITION_REVIEW <json>` line. ok is false when no such line is present. Last wins.
+func parsePartitionVerdict(text string) (partitionVerdict, bool) {
+	var v partitionVerdict
+	ok := false
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "PARTITION_REVIEW ") {
+			continue
+		}
+		var parsed partitionVerdict
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "PARTITION_REVIEW ")), &parsed) == nil {
+			v, ok = parsed, true
+		}
+	}
+	return v, ok
+}
+
+// parseTechDone extracts the tech manager's gate-2 technical sign-off from a
+// `TECH_DONE <json>` line. ok is false when no such line is present. Last wins.
+func parseTechDone(text string) (techDoneVerdict, bool) {
+	var v techDoneVerdict
+	ok := false
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "TECH_DONE ") {
+			continue
+		}
+		var parsed techDoneVerdict
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "TECH_DONE ")), &parsed) == nil {
+			v, ok = parsed, true
+		}
+	}
+	return v, ok
+}
+
+// campaignChildQuestObjective frames one QUESTS item as a child-quest objective,
+// inheriting the campaign goal / scope / commitments so the quest stays in-bounds.
+// The quest's runs commit onto the campaign branch and open no PR.
+func campaignChildQuestObjective(cam run.Campaign, item questPartitionItem) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", task)
-	fmt.Fprintf(&b, "This is one task of the campaign goal: %s\n", brief.RestatedGoal)
+	brief := cam.IntentBrief
+	fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(orDefault(item.Objective, item.Title)))
+	if g := strings.TrimSpace(brief.RestatedGoal); g != "" {
+		fmt.Fprintf(&b, "This is one quest of the campaign goal: %s\n", g)
+	}
 	if len(brief.ScopeByDomain) > 0 {
 		fmt.Fprintf(&b, "Stay in scope: %s\n", strings.Join(brief.ScopeByDomain, "; "))
 	}
@@ -794,17 +1270,13 @@ func (c *Conductor) recordBriefGate(id string, passed bool, reason string) {
 	})
 }
 
-// recordPlanGate records the plan gate and blocks the campaign on a failure. It
-// returns whether the campaign is still alive (false when the UpdateCampaign failed,
-// i.e. an unknown campaign).
-func (c *Conductor) recordPlanGate(id string, passed bool, reason string) bool {
-	ok := c.UpdateCampaign(id, func(cam *run.Campaign) {
+// recordPartitionGate records gate 1 (the intent-manager partition-convergence gate)
+// on the campaign's PlanGate field — the agentic gate 1 replaces the former
+// deterministic plan gate but keeps the same durable slot the UI renders.
+func (c *Conductor) recordPartitionGate(id string, passed bool, reason string) bool {
+	return c.UpdateCampaign(id, func(cam *run.Campaign) {
 		cam.PlanGate = run.GateResult{Passed: passed, Reason: reason, DecidedAt: time.Now().UTC().Format(time.RFC3339)}
 	})
-	if ok && !passed {
-		c.blockCampaign(id, "plan gate: "+reason)
-	}
-	return ok
 }
 
 // blockCampaign records a hard blocker with a visible reason. A blocked campaign is
@@ -970,7 +1442,7 @@ func intentLeadBriefPrompt(cam run.Campaign) string {
 	if len(cam.Folders) > 0 {
 		fmt.Fprintf(&b, "TARGET FOLDERS/REPOS: %s\n", strings.Join(cam.Folders, ", "))
 	}
-	fmt.Fprintf(&b, "AUTONOMY: %s (a launched campaign — decide and escalate within the hierarchy; never ask the user).\n", cam.AutonomyLevel)
+	b.WriteString("AUTONOMY: a launched campaign — decide and escalate within the hierarchy; never ask the user.\n")
 	return b.String()
 }
 
@@ -997,5 +1469,105 @@ func intentReviewerBriefPrompt(cam run.Campaign, brief run.IntentBrief, base str
 	}
 	branch := CampaignBranch(cam)
 	fmt.Fprintf(&b, "\nThe delivered work is on the campaign branch %q. Review it with: git diff %s..%s\n", branch, base, branch)
+	return b.String()
+}
+
+// --- tech manager + intent manager prompts (composition, not inlined rubrics) ---
+
+// techManagerBootstrap is the CONSTANT decompose prompt for the tech manager. Like
+// the intent-lead/tech-lead bootstraps it carries NO campaign context on argv (that
+// rides the brief via brief_get); it tells the tech manager to load roles/tech-lead
+// via kb_get and APPLY its program-altitude partition rules, then emit ONE machine-
+// readable QUESTS line. It must NOT inline a rubric — the doctrine is the rubric.
+const techManagerBootstrap = "You are the tech manager opening a campaign: you own everything technical — how the Intent Brief is partitioned into concurrent child QUESTS, integration across the shared branch, and remediation targeting. " +
+	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line. " +
+	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (its program-altitude partition rules for a campaign). Do NOT improvise your own rubric — use the doctrine you loaded, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
+	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
+	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
+	`[{"id":"q1","title":"short label","objective":"what this quest delivers","folders":["optional repo subset"],"deps":["ids this quest waits for"]}]` +
+	". The supervisor stamps branch delivery — you only decide the partition. Do not ask questions and do not defer."
+
+// techManagerBriefPrompt is the per-campaign context the tech manager reads via
+// brief_get for the decompose stage: the settled brief to partition into quests.
+func techManagerBriefPrompt(cam run.Campaign, brief run.IntentBrief) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CAMPAIGN GOAL (settled Intent Brief): %s\n", brief.RestatedGoal)
+	if len(brief.ScopeByDomain) > 0 {
+		fmt.Fprintf(&b, "SCOPE BY DOMAIN: %s\n", strings.Join(brief.ScopeByDomain, "; "))
+	}
+	if len(brief.Commitments) > 0 {
+		b.WriteString("COMMITMENTS the quests must together deliver:\n")
+		for _, cm := range brief.Commitments {
+			fmt.Fprintf(&b, "- [%s] %s\n", cm.ID, cm.Statement)
+		}
+	}
+	if len(brief.DraftTasks) > 0 {
+		fmt.Fprintf(&b, "DRAFT TASKS (the brief's first cut — regroup into quests as you see fit): %s\n", strings.Join(brief.DraftTasks, "; "))
+	}
+	if len(cam.Folders) > 0 {
+		fmt.Fprintf(&b, "TARGET FOLDERS/REPOS (name a subset per quest via its folders, or leave empty for all): %s\n", strings.Join(cam.Folders, ", "))
+	}
+	b.WriteString("Partition into concurrent child quests; add deps only for real ordering. Emit one QUESTS line.\n")
+	return b.String()
+}
+
+// partitionReviewBootstrap is the CONSTANT gate-1 prompt for the intent manager: it
+// judges whether the tech manager's quest partition would plausibly deliver the
+// brief's commitments, and emits a single PARTITION_REVIEW verdict. It composes the
+// intent method via kb_get — never an inlined rubric.
+const partitionReviewBootstrap = "You are the intent manager at gate 1 of a campaign: judge whether the tech manager's proposed child-quest partition would plausibly deliver the Intent Brief's commitments BEFORE any work launches. This is a partition-convergence gate between two managers, not the final review. " +
+	"Call the brief_get tool FIRST to read the brief's commitments and the tech manager's proposed quests. " +
+	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"core/planning\" (what a settled plan must cover). Do NOT improvise your own rubric. " +
+	"Judge coverage: does every commitment map to at least one quest, is the scope right, are the dependencies sane? " +
+	"Then emit EXACTLY ONE line and stop: `PARTITION_REVIEW ` followed by JSON " +
+	`{"agree":true|false,"reason":"why the partition does or does not cover the brief"}` +
+	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer."
+
+// partitionReviewBriefPrompt is the per-campaign context the intent manager reads via
+// brief_get at gate 1: the commitments to cover and the tech manager's proposed quests.
+func partitionReviewBriefPrompt(cam run.Campaign, brief run.IntentBrief, quests []questPartitionItem) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CAMPAIGN GOAL: %s\n\n", brief.RestatedGoal)
+	b.WriteString("COMMITMENTS the partition must cover:\n")
+	for _, cm := range brief.Commitments {
+		fmt.Fprintf(&b, "- [%s] %s\n", cm.ID, cm.Statement)
+	}
+	b.WriteString("\nTHE TECH MANAGER'S PROPOSED QUESTS:\n")
+	for _, q := range quests {
+		deps := ""
+		if len(q.Deps) > 0 {
+			deps = " (deps: " + strings.Join(q.Deps, ", ") + ")"
+		}
+		fmt.Fprintf(&b, "- [%s] %s — %s%s\n", q.ID, q.Title, q.Objective, deps)
+	}
+	b.WriteString("\nWould these quests plausibly deliver every commitment? Emit one PARTITION_REVIEW verdict.\n")
+	return b.String()
+}
+
+// techDoneBootstrap is the CONSTANT gate-2 prompt for the tech manager: it confirms
+// the campaign branch is technically done (all child quests integrated, review-loop
+// clean) and emits a single TECH_DONE verdict. Composition via kb_get, no inlined rubric.
+const techDoneBootstrap = "You are the tech manager at gate 2 of a campaign confirming technical sign-off: judge whether the child quests are integrated GREEN on the campaign branch with the review loop clean, before the campaign opens its PRs. " +
+	"Call the brief_get tool FIRST to read the campaign goal, the intent review's per-commitment verdicts, and the branch diff command. " +
+	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (integration/definition-of-done). Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
+	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
+	`{"done":true|false,"reason":"integration/review-loop status"}` +
+	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer."
+
+// techDoneBriefPrompt is the per-campaign context the tech manager reads via brief_get
+// at gate 2: the goal, the intent review's verdicts, and the campaign-branch diff command.
+func techDoneBriefPrompt(cam run.Campaign, brief run.IntentBrief, review run.IntentReview, base string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CAMPAIGN GOAL: %s\n\n", brief.RestatedGoal)
+	if len(review.Verdicts) > 0 {
+		b.WriteString("THE INTENT REVIEW'S PER-COMMITMENT VERDICTS (for context):\n")
+		for _, v := range review.Verdicts {
+			fmt.Fprintf(&b, "- [%s] %s\n", v.CommitmentID, v.Verdict)
+		}
+		b.WriteString("\n")
+	}
+	branch := CampaignBranch(cam)
+	fmt.Fprintf(&b, "The child quests integrated onto the campaign branch %q. Inspect it with: git diff %s..%s\n", branch, base, branch)
+	b.WriteString("Confirm whether the branch is integrated green with the review loop clean. Emit one TECH_DONE verdict.\n")
 	return b.String()
 }

@@ -249,7 +249,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	prs := make([]run.PR, 0, len(delivered))
 	for _, repo := range orderedRepos(folders, delivered) {
 		integDir := delivered[repo]
-		base, _ := currentBranch(ctx, repo)
+		base := prBase(ctx, repo) // the repo's DEFAULT branch, never the checkout (q4 fix)
 		pr := run.PR{Repo: repoBase(repo)}
 		if err := pushBranch(ctx, integDir, r.Branch); err != nil {
 			pr.Err = "push failed: " + err.Error()
@@ -818,6 +818,37 @@ func fail(ctx context.Context, c *Conductor, id, agentID, msg string) {
 		r.Error = msg
 		setAgentState(r, agentID, "blocked", "blocked")
 	})
+}
+
+// openBranchPRs pushes `branch` and opens ONE PR per impacted repo the branch
+// exists on, in folder order — the shared TERMINAL-delivery shape a campaign
+// (deliverCampaign) and a converge quest (deliverQuest) both use. The PR base is
+// each repo's DEFAULT branch (q4 fix), never the checkout. Partial-failure
+// isolation: one repo's push/PR failure is recorded on that repo's PR record and
+// never aborts the rest. A repo the branch does not exist on carries no work and is
+// skipped.
+func openBranchPRs(ctx context.Context, folders []string, branch, title, body string) []run.PR {
+	prs := make([]run.PR, 0, len(folders))
+	for _, repo := range folders {
+		repo = expandHome(repo)
+		if !isGitRepo(ctx, repo) {
+			continue
+		}
+		if sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err != nil || sha == "" {
+			continue
+		}
+		pr := run.PR{Repo: repoBase(repo)}
+		base := prBase(ctx, repo) // the repo's DEFAULT branch, never the checkout (q4 fix)
+		if err := pushBranch(ctx, repo, branch); err != nil {
+			pr.Err = "push failed: " + err.Error()
+		} else if url, err := openPR(ctx, repo, base, branch, title, body); err != nil {
+			pr.Err = "PR failed: " + err.Error()
+		} else {
+			pr.URL = url
+		}
+		prs = append(prs, pr)
+	}
+	return prs
 }
 
 func prTitle(r run.Run) string {
@@ -1396,6 +1427,24 @@ func fullWhenTruncated(summary, full string) string {
 		return ""
 	}
 	return full
+}
+
+// deriveTitle produces a short display label from a multi-paragraph objective/input:
+// the first non-empty line with a leading markdown heading marker or an
+// "Objective:"/"Goal:" prefix stripped, truncated to 72 chars — the same primitive
+// PR titles use (prTitle/campaignPRTitle). Used to stamp Quest/Campaign.Title when
+// the launcher supplied none, so the UI never renders the whole objective in a
+// title slot.
+func deriveTitle(text string) string {
+	line := strings.TrimSpace(firstLine(text))
+	line = strings.TrimSpace(strings.TrimLeft(line, "#")) // drop a leading markdown heading marker
+	for _, p := range []string{"Objective:", "objective:", "Goal:", "goal:", "OBJECTIVE:", "GOAL:"} {
+		if rest, ok := strings.CutPrefix(line, p); ok {
+			line = strings.TrimSpace(rest)
+			break
+		}
+	}
+	return truncate(line, 72)
 }
 
 func truncate(s string, n int) string {

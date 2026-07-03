@@ -189,7 +189,7 @@ func registerCampaignEndpoints(server *ooo.Server, c *conductor.Conductor) {
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}
 
-	// Create a campaign (input/folders/autonomy/budget).
+	// Create a campaign (input/folders/budget).
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/campaigns",
 		Methods: post,
@@ -295,7 +295,7 @@ func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
 	post := ooo.Methods{"POST": ooo.MethodSpec{}}
 	get := ooo.Methods{"GET": ooo.MethodSpec{}}
 
-	// Create a quest (objective/folders/scope/safety/verify/autonomy/deliver/…).
+	// Create a quest (objective/folders/scope/safety/verify/deliver/…).
 	server.Endpoint(ooo.EndpointConfig{
 		Path:    "/api/quests",
 		Methods: post,

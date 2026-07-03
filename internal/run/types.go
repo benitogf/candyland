@@ -169,21 +169,6 @@ const (
 	PhasePR        = 3
 )
 
-// AutonomyLevel is how much human gating a quest's child runs carry. The value
-// rides on the QuestSpec at launch and is persisted on the Quest; the tick loop
-// (a later phase) reads it to decide whether to report only, gate the PR, or run
-// unattended. The three settled levels:
-//   - L1 (report-only): discover and triage, but launch nothing — surface findings.
-//   - L2 (assisted-gate-PR): launch child runs, but hold each PR for human gate.
-//   - L3 (unattended): launch and deliver without a per-PR human gate.
-type AutonomyLevel string
-
-const (
-	AutonomyReportOnly AutonomyLevel = "L1" // discover/triage only, launch nothing
-	AutonomyGatePR     AutonomyLevel = "L2" // launch runs, gate each PR for a human
-	AutonomyUnattended AutonomyLevel = "L3" // launch and deliver without a per-PR gate
-)
-
 // Delivery is how a quest's child runs ship their work. A standalone quest opens
 // a PR per child run ("pr"); a campaign-owned quest commits onto the campaign branch
 // ("branch") derived as campaign/<campaignID> — the same name in each impacted repo
@@ -205,6 +190,26 @@ const (
 	DeliverReview Delivery = "review"
 )
 
+// Convergence is a quest's delivery policy — orthogonal to Delivery. It decides
+// how a quest's accepted findings become PRs:
+//   - "converge" (the default, a BOUNDED quest): child runs commit onto a shared
+//     per-quest branch quest/<id> (deliver: branch, no child PRs); when the quest
+//     meets its objective (terminal) it opens ONE PR per impacted repo from that
+//     branch — the same terminal shape a campaign uses.
+//   - "perFinding" (an ADVENTURE, open-ended freeseeking): each accepted finding
+//     is its own child run with deliver: pr — its own PR — and the loop is perpetual.
+//
+// EXCEPTIONS (convergence does not apply): a quest with a target PR
+// (feedback/review) works that PR's head branch and opens no new PR; a
+// campaign-child quest (CampaignID set) integrates onto the campaign branch and
+// opens no PR regardless of policy.
+type Convergence string
+
+const (
+	ConvergeConverge   Convergence = "converge"   // bounded: accumulate on quest/<id>, one PR per repo at terminal
+	ConvergePerFinding Convergence = "perFinding" // adventure: a PR per accepted finding, perpetual
+)
+
 // QuestSpec is the launch input for a quest — a Candyland-native iterative loop
 // (the generalized homologue of /janitor) that repeatedly discovers/triages work
 // items and launches child runs, producing many PRs over time. It mirrors run.Spec
@@ -215,18 +220,25 @@ type QuestSpec struct {
 	// Objective is the refined intent that drives discovery/triage each tick. Set
 	// once at creation onto Quest.OriginalObjective and never rewritten, mirroring
 	// how Run.OriginalIntent is captured once (see Quest.OriginalObjective).
-	Objective string   `json:"objective"`
-	Folders   []string `json:"folders,omitempty"` // target folders/repos (folders[0] = the git repo child runs branch/PR in)
-	Scope     string   `json:"scope,omitempty"`   // human-readable bound on what work is in-scope
+	Objective string `json:"objective"`
+	// Title is an optional short display label. Empty at launch → CreateQuest
+	// derives one from the objective (mirrors run.Spec.Title). The UI renders this
+	// in title slots instead of the full multi-paragraph objective.
+	Title   string   `json:"title,omitempty"`
+	Folders []string `json:"folders,omitempty"` // target folders/repos (folders[0] = the git repo child runs branch/PR in)
+	Scope   string   `json:"scope,omitempty"`   // human-readable bound on what work is in-scope
+	// Convergence is the delivery policy: "converge" (bounded — the default; child
+	// runs accumulate on quest/<id>, one PR per repo at terminal) or "perFinding"
+	// (adventure — a PR per accepted finding, perpetual). Empty defaults to
+	// "converge" at creation. It does not apply to feedback/review or campaign-child
+	// quests (see the exceptions on Convergence).
+	Convergence Convergence `json:"convergence,omitempty"`
 	// Safety is the safety boundary: the files/areas a quest's child runs must not
 	// touch (the quest-level analogue of a coder's fork-safe boundary).
-	Safety string   `json:"safety,omitempty"`
-	Verify []string `json:"verify,omitempty"` // verification command(s) every child run must pass green
-	Stop   string   `json:"stop,omitempty"`   // stop/pause criteria (when to halt the loop)
-	// AutonomyLevel gates the child runs (L1 report-only | L2 assisted-gate-PR |
-	// L3 unattended). Empty defaults to L1 at creation (report-only is the safe floor).
-	AutonomyLevel AutonomyLevel `json:"autonomyLevel,omitempty"`
-	TokenBudget   int           `json:"tokenBudget,omitempty"` // cap on total tokens across all ticks/child runs
+	Safety      string   `json:"safety,omitempty"`
+	Verify      []string `json:"verify,omitempty"`      // verification command(s) every child run must pass green
+	Stop        string   `json:"stop,omitempty"`        // stop/pause criteria (when to halt the loop)
+	TokenBudget int      `json:"tokenBudget,omitempty"` // cap on total tokens across all ticks/child runs
 	// Deliver is "pr" (standalone) or "branch" (campaign-owned). Empty defaults to
 	// "pr" at creation. When "branch", the branch is campaign/<campaignID> — the same
 	// name in each impacted repo.
@@ -275,7 +287,10 @@ type Tick struct {
 // tick loop that populates Ticks/WorkItems is a later phase — this is the model and
 // its persistence only.
 type Quest struct {
-	ID         string `json:"id"`
+	ID string `json:"id"`
+	// Title is a short display label the UI renders instead of the full objective.
+	// Stamped at creation (spec.Title, else derived from the objective).
+	Title      string `json:"title,omitempty"`
 	CampaignID string `json:"campaignId,omitempty"` // parent campaign link; empty for a standalone quest
 	// OriginalObjective is the launch objective, set ONCE at creation and never
 	// rewritten — the quest analogue of Run.OriginalIntent. Final review compares
@@ -295,21 +310,33 @@ type Quest struct {
 	// PauseReason carries the human-readable reason when paused/blocked.
 	Status string `json:"status"`
 	// Summary is a human-readable description of a terminal outcome (e.g. the
-	// report-only no-op accounting, or the intent↔autonomy mismatch warning). It is
-	// stamped when the quest reaches a terminal/blocked state so the dashboard and
-	// CLI can name a no-op as such rather than show an undifferentiated "done".
-	Summary       string        `json:"summary,omitempty"`
-	PauseReason   string        `json:"pauseReason,omitempty"`
-	Archived      bool          `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
-	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
-	TokenBudget   int           `json:"tokenBudget,omitempty"`
-	TokensUsed    int           `json:"tokensUsed"`
-	Deliver       Delivery      `json:"deliver"`
+	// surfaced-only no-op accounting). It is stamped when the quest reaches a
+	// terminal/blocked state so the dashboard and CLI can name a no-op as such
+	// rather than show an undifferentiated "done".
+	Summary     string   `json:"summary,omitempty"`
+	PauseReason string   `json:"pauseReason,omitempty"`
+	Archived    bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
+	TokenBudget int      `json:"tokenBudget,omitempty"`
+	TokensUsed  int      `json:"tokensUsed"`
+	Deliver     Delivery `json:"deliver"`
+	// Convergence is the quest's delivery policy: "converge" (bounded — child runs
+	// accumulate on quest/<id>, one PR per repo opens at terminal) or "perFinding"
+	// (adventure — a PR per accepted finding, perpetual). Stamped from the spec at
+	// creation (defaulted to "converge"). Always serialized so the UI can key on it.
+	Convergence Convergence `json:"convergence"`
 	// TargetPR is the existing PR number "feedback"/"review" child runs update in
 	// place (0 for "pr"/"branch"). Stamped from the spec at creation.
-	TargetPR  int        `json:"targetPr,omitempty"`
-	WorkItems []WorkItem `json:"workItems"`
-	Ticks     []Tick     `json:"ticks"`
+	TargetPR int `json:"targetPr,omitempty"`
+	// StopReason records why/who stopped the quest (e.g. "manual stop from
+	// dashboard"), persisted by StopQuest so a terminal quest names its stop cause
+	// (q4 fix: q4 recorded none). Empty until the quest is stopped.
+	StopReason string     `json:"stopReason,omitempty"`
+	WorkItems  []WorkItem `json:"workItems"`
+	Ticks      []Tick     `json:"ticks"`
+	// PRs is a converge quest's TERMINAL delivery: one PR per impacted repo, opened
+	// from quest/<id> when the quest meets its objective (mirrors Campaign.PRs). A
+	// perFinding quest opens PRs per child run (recorded on ticks), not here.
+	PRs []PR `json:"prs,omitempty"`
 	// Rollup fields for the dashboard, recomputed from WorkItems/Ticks by the loop.
 	PRsOpened      int `json:"prsOpened"`
 	ItemsCompleted int `json:"itemsCompleted"`
@@ -395,12 +422,12 @@ type CampaignSpec struct {
 	// Input is the original instruction. It is captured ONCE onto
 	// Campaign.OriginalInput at creation and never rewritten (final intent review
 	// compares delivered work against this).
-	Input   string   `json:"input"`
-	Folders []string `json:"folders,omitempty"` // target folders/repos (optional; folders[0] = the git repo children branch in)
-	// AutonomyLevel gates the campaign's children. Campaigns default to L2 and are
-	// NEVER L1: a report-only campaign would strand with no PR (settled decision).
-	AutonomyLevel AutonomyLevel `json:"autonomyLevel,omitempty"`
-	TokenBudget   int           `json:"tokenBudget,omitempty"` // cap on total tokens across the whole campaign
+	Input string `json:"input"`
+	// Title is an optional short display label. Empty at launch → CreateCampaign
+	// derives one from the input (mirrors QuestSpec.Title).
+	Title       string   `json:"title,omitempty"`
+	Folders     []string `json:"folders,omitempty"`     // target folders/repos (optional; folders[0] = the git repo children branch in)
+	TokenBudget int      `json:"tokenBudget,omitempty"` // cap on total tokens across the whole campaign
 	// Deliver is how the campaign's child runs ship their work. Empty defaults to
 	// "pr" (the campaign opens one PR per impacted repo at the end; children commit
 	// onto the campaign branch). "feedback"/"review" land on an EXISTING PR
@@ -423,6 +450,9 @@ type CampaignSpec struct {
 // these fields are later phases — this is the model and its persistence only.
 type Campaign struct {
 	ID string `json:"id"`
+	// Title is a short display label the UI renders instead of the full input.
+	// Stamped at creation (spec.Title, else derived from the input).
+	Title string `json:"title,omitempty"`
 	// OriginalInput is the launch input, set ONCE at creation and never rewritten —
 	// the campaign analogue of Run.OriginalIntent. Final intent review compares the
 	// campaign's delivered work against this, not a mutated input.
@@ -434,8 +464,9 @@ type Campaign struct {
 	// IntentBrief is the intent-lead's structured restatement of OriginalInput.
 	// Empty until the brief phase (a later task) populates it.
 	IntentBrief IntentBrief `json:"intentBrief"`
-	// BriefGate (post-brief) and PlanGate (post-plan) are the campaign gates. The
-	// gate execution is a later phase; these hold the results.
+	// BriefGate (the deterministic post-brief consistency check) and PlanGate (gate 1:
+	// the intent manager's agentic review of the tech manager's quest partition) are
+	// the pre-launch campaign gates; these hold the results.
 	BriefGate GateResult `json:"briefGate"`
 	PlanGate  GateResult `json:"planGate"`
 	// QuestIDs/RunIDs are the campaign's children, linked as they are launched (a
@@ -459,17 +490,19 @@ type Campaign struct {
 	// (delivery/block overwrite or clear it). Notes carries DURABLE non-blocking
 	// notes (e.g. a token-cap degrade-to-partial) that delivery/block never clear,
 	// so an operator still learns the campaign delivered partial after a clean PR.
-	Status        string        `json:"status"`
-	PauseReason   string        `json:"pauseReason,omitempty"`
-	Archived      bool          `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
-	Notes         []string      `json:"notes,omitempty"`
-	AutonomyLevel AutonomyLevel `json:"autonomyLevel"`
-	TokenBudget   int           `json:"tokenBudget,omitempty"`
-	TokensUsed    int           `json:"tokensUsed"`
+	Status      string `json:"status"`
+	PauseReason string `json:"pauseReason,omitempty"`
+	// StopReason records why/who stopped the campaign (e.g. "manual stop from
+	// dashboard"), persisted by StopCampaign (q4 fix). Empty until stopped.
+	StopReason  string   `json:"stopReason,omitempty"`
+	Archived    bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
+	Notes       []string `json:"notes,omitempty"`
+	TokenBudget int      `json:"tokenBudget,omitempty"`
+	TokensUsed  int      `json:"tokensUsed"`
 	// Deliver is how the campaign's child runs ship their work: "pr" (the default —
 	// children commit onto the campaign branch, the campaign opens one PR per impacted
 	// repo at the end) or "feedback"/"review" (children land on the EXISTING TargetPR
-	// instead of the campaign branch — see launchCampaignChild's propagation). Set at
+	// instead of the campaign branch — see the campaign child-quest launch). Set at
 	// creation, defaulted to "pr" when empty. Always serialized (no omitempty) so the
 	// frontend can key UI on cam.deliver even for a default "pr" campaign.
 	Deliver Delivery `json:"deliver"`

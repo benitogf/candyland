@@ -17,7 +17,8 @@ import Typography from '@mui/material/Typography'
 import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
 
-import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
+import { STATUS_COLOR } from '../meta/run'
+import { questLabel } from '../util'
 import { runLabel } from '../util'
 import { useQuest, useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
@@ -118,10 +119,9 @@ const QuestWorkspace = ({ id, onClose }) => {
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                             <Chip size="small" color="secondary" variant="outlined" label={`quest · ${quest.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[quest.status] || 'default'} variant="outlined" label={quest.status} />
-                            {quest.autonomyLevel && <Chip size="small" variant="outlined" label={AUTONOMY_LABEL[quest.autonomyLevel] || quest.autonomyLevel} />}
                             {quest.campaignId && <Link component="button" type="button" onClick={() => navigate(`/campaign/${quest.campaignId}`)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>↑ {quest.campaignId}</Link>}
                         </Box>
-                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{quest.objective || quest.originalObjective || quest.id}</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{questLabel(quest)}</Typography>
                     </Box>
                     <QuestControls
                         quest={quest} reachable={reachable} childRunCount={childRuns.length}

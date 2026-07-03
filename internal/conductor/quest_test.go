@@ -26,21 +26,20 @@ func newQuestServer(t *testing.T) (*Conductor, *ooo.Server) {
 }
 
 // CreateQuest persists a quest and GetQuest round-trips it, including the settled
-// launch fields (AutonomyLevel, Deliver, CampaignID, TokenBudget, objective).
+// launch fields (Deliver, CampaignID, TokenBudget, objective).
 func TestCreateQuestRoundTrips(t *testing.T) {
 	c, _ := newQuestServer(t)
 
 	id := c.CreateQuest(run.QuestSpec{
-		Objective:     "keep the lint clean",
-		Folders:       []string{"/repo"},
-		Scope:         "internal/ only",
-		Safety:        "do not touch vendor/",
-		Verify:        []string{"go build ./...", "go vet ./..."},
-		Stop:          "no items two ticks running",
-		AutonomyLevel: run.AutonomyUnattended,
-		TokenBudget:   5000,
-		Deliver:       run.DeliverBranch,
-		CampaignID:    "c7",
+		Objective:   "keep the lint clean",
+		Folders:     []string{"/repo"},
+		Scope:       "internal/ only",
+		Safety:      "do not touch vendor/",
+		Verify:      []string{"go build ./...", "go vet ./..."},
+		Stop:        "no items two ticks running",
+		TokenBudget: 5000,
+		Deliver:     run.DeliverBranch,
+		CampaignID:  "c7",
 	})
 	if id != "q1" {
 		t.Fatalf("first quest id = %q, want q1", id)
@@ -52,9 +51,6 @@ func TestCreateQuestRoundTrips(t *testing.T) {
 	}
 	if q.OriginalObjective != "keep the lint clean" || q.Objective != "keep the lint clean" {
 		t.Errorf("objective not captured: original=%q working=%q", q.OriginalObjective, q.Objective)
-	}
-	if q.AutonomyLevel != run.AutonomyUnattended {
-		t.Errorf("autonomyLevel = %q, want %q", q.AutonomyLevel, run.AutonomyUnattended)
 	}
 	if q.Deliver != run.DeliverBranch {
 		t.Errorf("deliver = %q, want %q", q.Deliver, run.DeliverBranch)
@@ -76,16 +72,13 @@ func TestCreateQuestRoundTrips(t *testing.T) {
 	}
 }
 
-// CreateQuest applies the safe defaults (L1 report-only, deliver pr) when the spec
-// leaves AutonomyLevel/Deliver empty.
+// CreateQuest applies the safe defaults (deliver pr) when the spec leaves
+// Deliver empty.
 func TestCreateQuestDefaults(t *testing.T) {
 	c, _ := newQuestServer(t)
 	q, ok := c.GetQuest(c.CreateQuest(run.QuestSpec{Objective: "audit"}))
 	if !ok {
 		t.Fatal("quest not found")
-	}
-	if q.AutonomyLevel != run.AutonomyReportOnly {
-		t.Errorf("default autonomyLevel = %q, want %q", q.AutonomyLevel, run.AutonomyReportOnly)
 	}
 	if q.Deliver != run.DeliverPR {
 		t.Errorf("default deliver = %q, want %q", q.Deliver, run.DeliverPR)
@@ -135,18 +128,27 @@ func TestUpdateQuestDurable(t *testing.T) {
 	}
 }
 
-// QuestBranch derives campaign/<id> only for a campaign-owned (branch-delivered)
-// quest, and "" for a standalone (pr-delivered) quest.
+// QuestBranch derives the shared branch a quest's child runs accumulate on:
+// campaign/<id> for a campaign-child quest (any policy), quest/<id> for a standalone
+// converge quest, and "" for a perFinding (adventure) or feedback/review quest.
 func TestQuestBranchDerivation(t *testing.T) {
-	branch := QuestBranch(run.Quest{CampaignID: "c42", Deliver: run.DeliverBranch})
-	if branch != "campaign/c42" {
-		t.Errorf("branch-delivered quest branch = %q, want campaign/c42", branch)
+	// Campaign-child quest → the campaign branch, regardless of convergence policy.
+	if b := QuestBranch(run.Quest{ID: "q1", CampaignID: "c42", Deliver: run.DeliverBranch}); b != "campaign/c42" {
+		t.Errorf("campaign-child quest branch = %q, want campaign/c42", b)
 	}
-	if b := QuestBranch(run.Quest{CampaignID: "c42", Deliver: run.DeliverPR}); b != "" {
-		t.Errorf("pr-delivered quest branch = %q, want empty", b)
+	if b := QuestBranch(run.Quest{ID: "q1", CampaignID: "c42", Convergence: run.ConvergePerFinding}); b != "campaign/c42" {
+		t.Errorf("campaign-child quest (perFinding) branch = %q, want campaign/c42", b)
 	}
-	// branch delivery with no campaign link has no shared branch to derive.
-	if b := QuestBranch(run.Quest{Deliver: run.DeliverBranch}); b != "" {
-		t.Errorf("orphan branch quest = %q, want empty", b)
+	// Standalone converge quest → its own quest/<id> branch.
+	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergeConverge}); b != "quest/q7" {
+		t.Errorf("standalone converge quest branch = %q, want quest/q7", b)
+	}
+	// Standalone perFinding (adventure) quest → no shared branch (a PR per finding).
+	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergePerFinding}); b != "" {
+		t.Errorf("perFinding quest branch = %q, want empty", b)
+	}
+	// Feedback/review quest works the target PR's head branch — no owned branch.
+	if b := QuestBranch(run.Quest{ID: "q7", Deliver: run.DeliverReview, TargetPR: 9}); b != "" {
+		t.Errorf("feedback/review quest branch = %q, want empty", b)
 	}
 }
