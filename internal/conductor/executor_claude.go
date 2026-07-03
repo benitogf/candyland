@@ -195,15 +195,17 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		if attempt == replans {
 			// K=3 escalation cap reached: give up rather than thrash quota, and
 			// escalate the still-open task-graph nodes to blocked.
-			// E3: a quest/campaign child run's tech-lead escalates this DECISION one
-			// tier up (to the owning quest-lead) — decided autonomously and recorded on
-			// the run (audit), never sent to a human, before the run fails honestly.
-			if r.QuestID != "" || r.CampaignID != "" {
-				c.escalateRunDecision(ctx, r,
-					fmt.Sprintf("the tech-lead could not find a working task split after %d attempts (%s) — decide whether to accept a narrower split, re-scope the item, or block it", replans, feedback),
-					folders[0], extraDirsFor(folders[0], folders))
-			}
-			fail(ctx, c, id, "tl", fmt.Sprintf("Couldn't find a working task split after %d attempts. Last problem: %s", replans, feedback))
+			// E3: the run's tech-lead escalates this DECISION one tier up (a quest child
+			// → its quest-lead; a standalone run → the tech-lead itself, the top tier),
+			// decided autonomously and recorded on the run (audit), never a human. A run
+			// is atomic delivery with no sub-unit to drop-and-continue, so a resolved
+			// decision is folded into the failure reason (you cannot fabricate a PR from
+			// nothing) — the recorded escalation is the audit trail and fail() attaches
+			// the postmortem. Unresolved hits the same wall at the decider → genuine block.
+			esc, _ := c.escalateRunDecision(ctx, r,
+				fmt.Sprintf("the tech-lead could not find a working task split after %d attempts (%s) — decide whether to accept a narrower split, re-scope the item, or block it", replans, feedback),
+				folders[0], extraDirsFor(folders[0], folders))
+			fail(ctx, c, id, "tl", fmt.Sprintf("Couldn't find a working task split after %d attempts. Last problem: %s. Escalated to %s, decided: %s", replans, feedback, esc.Decider, esc.Answer))
 			c.escalateOpenNodes(fmt.Sprintf("no working task split after %d attempts: %s", replans, feedback))
 			return
 		}
@@ -294,6 +296,12 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		r.StatusLine = prStatusLine(prs)
 		setAgentState(r, "tl", "done", prStatusLine(prs))
 	})
+	// E2: a delivery-stage block (no PR could be opened) is a capability/delivery
+	// failure — it must carry a schema-valid postmortem too (not only the resilience
+	// capability paths).
+	if opened == 0 {
+		c.attachRunPostmortem(id, c.blockerPostmortemFor("tl", "", "delivery: no pull request could be opened", firstPRErr(prs), 1, "branch "+r.Branch))
+	}
 }
 
 // deliverToBranch is the delivery step for a campaign/quest-owned child run: it
@@ -399,6 +407,10 @@ func (c *Conductor) deliverToFeedback(ctx context.Context, id string, folders []
 		r.StatusLine = fmt.Sprintf("Updated PR #%d in place (no new PR).", targetPR)
 		setAgentState(r, "tl", "done", fmt.Sprintf("updated PR #%d", targetPR))
 	})
+	// E2: a feedback delivery block (no PR could be updated) carries a postmortem too.
+	if opened == 0 {
+		c.attachRunPostmortem(id, c.blockerPostmortemFor("tl", "", fmt.Sprintf("delivery: could not update PR #%d", targetPR), firstPRErr(prs), 1, "branch "+branch))
+	}
 }
 
 // deliverToReview is the review-delivery terminal step (D2): a review run opens NO
@@ -829,6 +841,14 @@ func fail(ctx context.Context, c *Conductor, id, agentID, msg string) {
 		r.Error = msg
 		setAgentState(r, agentID, "blocked", "blocked")
 	})
+	// E2 invariant: no terminal `blocked` run without a schema-valid postmortem. This
+	// is the single choke point for every run block (folders/worktree/integration/
+	// delivery/reviewer failures) — a failed step IS a capability/delivery failure.
+	// Synthesise one from the reason unless a richer one (the resilience capability
+	// path) is already attached.
+	if cur, ok := c.Get(id); ok && cur.Postmortem == nil {
+		c.attachRunPostmortem(id, c.blockerPostmortemFor(agentID, "", msg, msg, 1, "branch "+cur.Branch))
+	}
 }
 
 // openBranchPRs pushes `branch` and opens ONE PR per impacted repo the branch

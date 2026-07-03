@@ -223,8 +223,36 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	rec.DiscoverySummary = summary
 	if perr != "" {
 		rec.Blockers = append(rec.Blockers, perr)
-		rec.NextAction = "blocked — discovery failed"
+		// E3: escalate this give-up exactly ONE tier up BEFORE any terminal block — a
+		// campaign-child quest → the campaign tech-manager; a standalone quest → the
+		// quest-lead itself (the top tier), decided autonomously and recorded, never a
+		// human. A RESOLVED decision that is not a block → finish honestly (the tier
+		// with authority chose to stop with what was surfaced) rather than hard-block.
+		// An UNRESOLVED escalation (the same wall at the decider — e.g. a real
+		// capability failure where the decider also can't start) → terminal blocked
+		// WITH a schema-valid postmortem (E2 invariant).
+		folders := append([]string(nil), q.Folders...)
+		for i := range folders {
+			folders[i] = expandHome(folders[i])
+		}
+		var workdir string
+		var extra []string
+		if len(folders) > 0 {
+			workdir, extra = folders[0], extraDirsFor(folders[0], folders)
+		}
+		esc, resolved := c.escalateQuestDecision(ctx, q, "quest discovery could not proceed: "+perr+" — decide whether to finish with what was surfaced or block it", workdir, extra)
+		if ctx.Err() != nil {
+			return false // paused/stopped during escalation — not a failure
+		}
+		if resolved && !decisionBlocks(esc.Answer) {
+			rec.NextAction = fmt.Sprintf("discovery failed but escalation resolved (%s: %s) — finishing", esc.Decider, esc.Answer)
+			c.recordTick(id, rec, tokens, nil)
+			c.finishQuest(ctx, id)
+			return false
+		}
+		rec.NextAction = "blocked — discovery failed; escalation reached no path forward"
 		c.recordTick(id, rec, tokens, nil)
+		c.attachQuestPostmortem(id, questLeadID, "quest discovery failed: "+perr, perr) // E2: no blocked write without a postmortem
 		c.UpdateQuest(id, func(q *run.Quest) {
 			if q.Status == "stopped" || q.Status == "done" {
 				return // a concurrent Stop/completion is authoritative — don't resurrect

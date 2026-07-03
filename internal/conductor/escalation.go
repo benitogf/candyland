@@ -52,34 +52,53 @@ func parseDecision(text string) (string, bool) {
 	return answer, ok
 }
 
-// escalateDecision escalates one decision one tier up to `decider` (also the settings
-// role key and bus identity), spawns that tier to decide it, records the resolution
-// on the host record (run/quest/campaign, by id-kind), and returns the Escalation.
-// It NEVER pauses for a human: a decider that emits no DECISION verdict still yields
-// a recorded autonomous fallback (the smith rule), so the flow always proceeds.
-func (c *Conductor) escalateDecision(ctx context.Context, hostID, from, decider, question, workdir string, extra []string) run.Escalation {
-	model, thinking := c.agentConfig(decider)
-	c.putBrief(decider, bus.Brief{
-		To:     decider,
-		Role:   decider,
+// escalateDecision escalates one decision one tier up: it spawns `deciderRole` (the
+// settings role key + brief Role, also the recorded tier name) under the bus identity
+// `deciderID` (distinct so the standalone-run top tier reuses the real "tl" agent
+// rather than showing a phantom second agent), records the resolution on the host
+// record (run/quest/campaign, by id-kind), and returns the Escalation plus whether it
+// RESOLVED (the decider emitted an actual DECISION verdict). It NEVER pauses for a
+// human: a decider that emits no verdict yields a recorded fallback with
+// resolved=false, so the caller decides the terminal disposition — a real capability
+// failure hits the same wall at the decider and comes back unresolved (→ terminal
+// blocked); a genuine decision comes back resolved (→ the caller acts on it).
+func (c *Conductor) escalateDecision(ctx context.Context, hostID, from, deciderID, deciderRole, question, workdir string, extra []string) (run.Escalation, bool) {
+	model, thinking := c.agentConfig(deciderRole)
+	c.putBrief(deciderID, bus.Brief{
+		To:     deciderID,
+		Role:   deciderRole,
 		Prompt: "ESCALATED DECISION (decide autonomously; never ask a human, never stop the flow):\n" + question,
 	})
-	out := streamOnce(ctx, c, hostID, decider, decisionBootstrap, workdir, extra, spawnOpts{model: model, thinking: thinking})
-	answer, ok := parseDecision(out.allText)
-	if !ok {
-		// Top-tier smith fallback: decide autonomously and record it (never a human).
-		answer = "decided autonomously: proceed with the safest in-scope option and record the assumption"
+	out := streamOnce(ctx, c, hostID, deciderID, decisionBootstrap, workdir, extra, spawnOpts{model: model, thinking: thinking})
+	answer, resolved := parseDecision(out.allText)
+	if !resolved {
+		answer = "no resolution reached at this tier (decider produced no DECISION verdict)"
 	}
 	esc := run.Escalation{
 		From:     from,
-		To:       decider,
+		To:       deciderRole,
 		Question: question,
-		Decider:  decider,
+		Decider:  deciderRole,
 		Answer:   answer,
 		At:       time.Now().UTC().Format(time.RFC3339),
 	}
 	c.recordEscalation(hostID, esc)
-	return esc
+	return esc, resolved
+}
+
+// decisionBlocks reports whether a decider's answer indicates the flow must NOT
+// proceed (a genuine block) rather than a path forward. Best-effort keyword signal:
+// absent an explicit block signal, a resolved decision is treated as "proceed" (the
+// decider had authority and chose to move on). Advisory — the hard bound is
+// `resolved` (whether a DECISION was emitted at all).
+func decisionBlocks(answer string) bool {
+	a := strings.ToLower(answer)
+	for _, kw := range []string{"block", "cannot proceed", "can't proceed", "do not proceed", "don't proceed", "hard blocker", "needs a human", "no path forward"} {
+		if strings.Contains(a, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // recordEscalation persists an Escalation on the record that OWNS hostID, detected
@@ -99,25 +118,27 @@ func (c *Conductor) recordEscalation(hostID string, esc run.Escalation) {
 // escalateRunDecision escalates a run tech-lead's decision ONE tier up: to the owning
 // quest-lead when the run is a quest child, else the tech-lead is the top tier and
 // decides+records itself (the smith rule). Recorded on the run record.
-func (c *Conductor) escalateRunDecision(ctx context.Context, r run.Run, question, workdir string, extra []string) run.Escalation {
+func (c *Conductor) escalateRunDecision(ctx context.Context, r run.Run, question, workdir string, extra []string) (run.Escalation, bool) {
 	if r.QuestID != "" {
-		return c.escalateDecision(ctx, r.ID, "tech-lead", RoleQuestLead, question, workdir, extra)
+		return c.escalateDecision(ctx, r.ID, "tech-lead", questLeadID, RoleQuestLead, question, workdir, extra)
 	}
-	return c.escalateDecision(ctx, r.ID, "tech-lead", RoleTechLead, question, workdir, extra)
+	// Standalone-run top tier: the tech-lead decides itself — reuse the real "tl"
+	// agent identity so it doesn't appear as a phantom second agent on the run.
+	return c.escalateDecision(ctx, r.ID, "tech-lead", "tl", RoleTechLead, question, workdir, extra)
 }
 
 // escalateQuestDecision escalates a quest-lead's decision ONE tier up: to the
 // campaign tech-manager when the quest is a campaign child, else the quest-lead is
 // the top tier and decides+records itself. Recorded on the quest record.
-func (c *Conductor) escalateQuestDecision(ctx context.Context, q run.Quest, question, workdir string, extra []string) run.Escalation {
+func (c *Conductor) escalateQuestDecision(ctx context.Context, q run.Quest, question, workdir string, extra []string) (run.Escalation, bool) {
 	if q.CampaignID != "" {
-		return c.escalateDecision(ctx, q.ID, "quest-lead", RoleTechManager, question, workdir, extra)
+		return c.escalateDecision(ctx, q.ID, "quest-lead", techManagerID, RoleTechManager, question, workdir, extra)
 	}
-	return c.escalateDecision(ctx, q.ID, "quest-lead", RoleQuestLead, question, workdir, extra)
+	return c.escalateDecision(ctx, q.ID, "quest-lead", questLeadID, RoleQuestLead, question, workdir, extra)
 }
 
 // escalateCampaignDecision escalates a tech-manager's decision ONE tier up to the
 // intent-manager — the campaign top tier, which decides+records. On the campaign record.
-func (c *Conductor) escalateCampaignDecision(ctx context.Context, cam run.Campaign, question, workdir string, extra []string) run.Escalation {
-	return c.escalateDecision(ctx, cam.ID, "tech-manager", RoleIntentManager, question, workdir, extra)
+func (c *Conductor) escalateCampaignDecision(ctx context.Context, cam run.Campaign, question, workdir string, extra []string) (run.Escalation, bool) {
+	return c.escalateDecision(ctx, cam.ID, "tech-manager", intentManagerID, RoleIntentManager, question, workdir, extra)
 }

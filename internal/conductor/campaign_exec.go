@@ -328,7 +328,23 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		}
 		gaps := gapSummary(missed, techDone)
 		if round >= rounds {
-			c.blockCampaign(id, fmt.Sprintf("gate 2 still finds gaps after %d remediation round(s) — %s. The campaign branch persists; resume to retry.", rounds, gaps))
+			// E3: the remediation budget is exhausted — a genuine campaign DECISION.
+			// The tech manager escalates it ONE tier up to the intent-manager (the
+			// campaign top tier), decided autonomously and recorded, never a human. A
+			// RESOLVED go-ahead (the top authority accepts the remaining gaps as
+			// partial) → deliver partial rather than hard-block; otherwise → terminal
+			// blocked WITH a schema-valid postmortem (E2, via blockCampaign).
+			primary := folders[0]
+			esc, resolved := c.escalateCampaignDecision(ctx, cam, fmt.Sprintf("gate 2 still finds gaps after %d remediation round(s): %s — decide whether to accept the gaps as partial and deliver, or block", rounds, gaps), primary, extraDirsFor(primary, folders))
+			if ctx.Err() != nil {
+				return
+			}
+			if resolved && !decisionBlocks(esc.Answer) {
+				c.appendCampaignNote(id, fmt.Sprintf("gate 2 exhausted; the intent-manager (top tier) authorized partial delivery despite gaps (%s): %s", gaps, esc.Answer))
+				c.deliverCampaign(ctx, id, folders, brief, review, true)
+				return
+			}
+			c.blockCampaign(id, fmt.Sprintf("gate 2 still finds gaps after %d remediation round(s) — %s. Escalated to %s, no path forward: %s. The campaign branch persists; resume to retry.", rounds, gaps, esc.Decider, esc.Answer))
 			return
 		}
 
@@ -355,7 +371,7 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		cam, _ = c.GetCampaign(id) // refresh so the next review sees remediation state
 	}
 
-	c.deliverCampaign(ctx, id, folders, brief, review)
+	c.deliverCampaign(ctx, id, folders, brief, review, false)
 }
 
 // briefUntilGated runs the INTENT BRIEF stage (Stage 1) and the BRIEF GATE (Stage 2)
@@ -909,9 +925,13 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 // persists for resume; no PR opens. A `partial` annotates the PR body but does NOT
 // block. With no `missed`, it opens ONE PR PER IMPACTED REPO from the campaign
 // branch (reusing the run push+openPR machinery, partial-failure isolation per repo).
-func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []string, brief run.IntentBrief, review run.IntentReview) {
+// authorizedPartial (E3): when the campaign's top tier (the intent-manager) has
+// explicitly authorized shipping despite unmet commitments (gate-2 escalation), the
+// `missed` verdicts are folded into the PR body as partial annotations instead of
+// blocking — the top authority accepted the gap. Otherwise a `missed` verdict blocks.
+func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []string, brief run.IntentBrief, review run.IntentReview, authorizedPartial bool) {
 	missed := missedCommitments(brief, review)
-	if len(missed) > 0 {
+	if len(missed) > 0 && !authorizedPartial {
 		reason := fmt.Sprintf("intent review BLOCKS delivery: %d commitment(s) missed — %s. The campaign branch persists; resolve and resume.", len(missed), strings.Join(missed, "; "))
 		c.blockCampaign(id, reason)
 		return
@@ -922,6 +942,10 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 		return
 	}
 	annotations := partialAnnotations(brief, review)
+	if authorizedPartial && len(missed) > 0 {
+		// Record the missed commitments the top tier authorized shipping as partial.
+		annotations = append(annotations, missed...)
+	}
 	branch := CampaignBranch(cam)
 	title := campaignPRTitle(cam)
 	body := campaignPRBody(cam, brief, annotations)
@@ -934,17 +958,25 @@ func (c *Conductor) deliverCampaign(ctx context.Context, id string, folders []st
 			opened++
 		}
 	}
+	if opened == 0 {
+		// A failed push/PR-open from the campaign branch IS a capability/delivery
+		// failure — route it through blockCampaign so it carries a schema-valid
+		// postmortem (E2 invariant), never a bare blocked write.
+		c.UpdateCampaign(id, func(cam *run.Campaign) {
+			if cam.Status == "stopped" || cam.Status == "done" {
+				return
+			}
+			cam.PRs = prs
+		})
+		c.blockCampaign(id, "no pull request could be opened from the campaign branch: "+firstPRErr(prs)+
+			" Check each repo has an 'origin' remote you can push to and that gh is authenticated. The branch persists; resume to retry.")
+		return
+	}
 	c.UpdateCampaign(id, func(cam *run.Campaign) {
 		if cam.Status == "stopped" || cam.Status == "done" {
 			return // a concurrent Stop/completion is authoritative
 		}
 		cam.PRs = prs
-		if opened == 0 {
-			cam.Status = "blocked"
-			cam.PauseReason = "no pull request could be opened from the campaign branch: " + firstPRErr(prs) +
-				" Check each repo has an 'origin' remote you can push to and that gh is authenticated. The branch persists; resume to retry."
-			return
-		}
 		cam.Status = "done"
 		cam.PauseReason = ""
 	})
@@ -1304,6 +1336,11 @@ func (c *Conductor) blockCampaign(id, reason string) {
 		cam.Status = "blocked"
 		cam.PauseReason = reason
 	})
+	// E2 invariant: no terminal `blocked` write without a schema-valid postmortem.
+	// Attach a synthesised one (all six §3 fields) once the block actually landed.
+	if cam, ok := c.GetCampaign(id); ok && cam.Status == "blocked" && cam.Postmortem == nil {
+		c.attachCampaignPostmortem(id, "campaign", reason, reason)
+	}
 }
 
 // appendCampaignNote appends a DURABLE non-blocking note to the campaign (e.g. a
