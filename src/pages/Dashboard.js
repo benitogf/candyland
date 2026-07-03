@@ -110,9 +110,10 @@ const WATCH_STATE = {
 const watchMeta = (s) => WATCH_STATE[s] || WATCH_STATE.watching
 const isWatchTerminal = (s) => s === 'merged' || s === 'stopped'
 
-// One dot colour per tick kind — the tick log is an append-only trail of what
-// each interval poll observed, newest first in the surface.
-const TICK_DOT = { idle: candy.line, fix: candy.lemon, approved: candy.mint, merged: candy.mint, error: candy.pink }
+// One dot colour per tick decision — the tick log is an append-only trail of what
+// each interval poll observed, newest first in the surface. Keys match the
+// WatchDecision values the conductor serializes (wait|feedback|merge|done).
+const TICK_DOT = { wait: candy.line, feedback: candy.lemon, merge: candy.mint, done: candy.mint }
 const tickDot = (k) => TICK_DOT[k] || candy.line
 
 const tickTime = (at) => {
@@ -126,9 +127,12 @@ const prNumber = (url) => (url ? `#${String(url).split('/').pop()}` : '')
 // The terminal outcome, once the watch has ended — a positive, honest close:
 // merged (the PR landed) or stopped (the watch was ended without a merge). While
 // the watch is live this renders nothing.
-const WatchOutcome = ({ outcome }) => {
-    if (outcome === 'merged') return <Chip icon={<CallMergeIcon />} size="small" color="success" variant="outlined" label="Merged" sx={{ flexShrink: 0 }} />
-    if (outcome === 'stopped') return <Chip size="small" color="default" variant="outlined" label="Watch stopped" sx={{ flexShrink: 0 }} />
+// state is the terminal watch lifecycle state (merged|stopped); outcome is the
+// backend's human sentence (e.g. 'PR #7 merged on approval.'), surfaced as the
+// chip's tooltip. The chip variant keys off state, never the free-text outcome.
+const WatchOutcome = ({ state, outcome }) => {
+    if (state === 'merged') return <Chip icon={<CallMergeIcon />} size="small" color="success" variant="outlined" label="Merged" title={outcome || undefined} sx={{ flexShrink: 0 }} />
+    if (state === 'stopped') return <Chip size="small" color="default" variant="outlined" label="Watch stopped" title={outcome || undefined} sx={{ flexShrink: 0 }} />
     return null
 }
 
@@ -141,9 +145,9 @@ const TickLog = ({ ticks }) => {
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             {recent.map((t, i) => (
                 <Box key={i} sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}>
-                    <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: tickDot(t.kind), flexShrink: 0, alignSelf: 'center' }} />
+                    <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: tickDot(t.decision), flexShrink: 0, alignSelf: 'center' }} />
                     <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', flexShrink: 0 }}>{tickTime(t.at)}</Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, ...clamp2, WebkitLineClamp: 1 }}>{t.note}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, ...clamp2, WebkitLineClamp: 1 }}>{t.detail}</Typography>
                 </Box>
             ))}
         </Box>
@@ -168,7 +172,7 @@ const BabysitCard = ({ run, onOpen, onDismiss }) => {
                     <Chip icon={<VisibilityIcon />} size="small" variant="outlined" label="babysit" sx={{ height: 20, borderColor: meta.color, color: meta.color, '& .MuiChip-icon': { color: meta.color } }} />
                     <Chip size="small" variant="outlined" label={meta.label} sx={{ height: 20, borderColor: meta.color, color: meta.color }} />
                     <Box sx={{ flexGrow: 1 }} />
-                    {terminal && <WatchOutcome outcome={watch.outcome || (state === 'merged' ? 'merged' : 'stopped')} />}
+                    {terminal && <WatchOutcome state={isWatchTerminal(state) ? state : 'stopped'} outcome={watch.outcome} />}
                     {terminal && <DismissButton onDismiss={onDismiss} />}
                 </Box>
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, ...clamp2 }}>{runLabel(run)}</Typography>

@@ -99,7 +99,14 @@ func (c *Conductor) watchOnce(ctx context.Context, id, repo string, prNum int) (
 		st := strings.ToLower(pr.State)
 		tick.Detail = fmt.Sprintf("PR is %s upstream — nothing left to watch", st)
 		c.recordWatchTick(id, tick)
-		c.finishWatch(id, "merged", fmt.Sprintf("PR #%d %s upstream.", prNum, st))
+		// Only a genuinely MERGED PR is an honest "merged" terminal state. A PR that
+		// left OPEN by being CLOSED (unmerged/abandoned) ends the watch as "stopped" so
+		// the dashboard never shows a green "Merged" chip for a PR that never merged.
+		if strings.EqualFold(pr.State, "MERGED") {
+			c.finishWatch(id, "merged", fmt.Sprintf("PR #%d %s upstream.", prNum, st))
+		} else {
+			c.finishWatch(id, "stopped", fmt.Sprintf("PR #%d %s upstream without merging.", prNum, st))
+		}
 		return true
 
 	default: // WatchWait
