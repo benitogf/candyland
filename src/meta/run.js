@@ -36,10 +36,3 @@ export const STATUS_COLOR = {
     running: 'info',
     planning: 'secondary',
 }
-
-// Autonomy level → short human label (L1 report-only | L2 gate-PR | L3 unattended).
-export const AUTONOMY_LABEL = {
-    L1: 'L1 · report-only',
-    L2: 'L2 · gate PRs',
-    L3: 'L3 · unattended',
-}

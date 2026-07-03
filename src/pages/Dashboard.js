@@ -11,7 +11,7 @@ import ClearIcon from '@mui/icons-material/Clear'
 
 import { candy } from '../config'
 import { PHASES, STATUS_COLOR } from '../meta/run'
-import { runLabel } from '../util'
+import { runLabel, questLabel, campaignLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, recency } from '../data/ooo'
 import { archiveRun, archiveQuest, archiveCampaign } from '../data/api'
 import { useToast } from '../feedback'
@@ -22,6 +22,10 @@ const isParentRunning = (p) => p.status === 'running' || p.status === 'planning'
 // Actively working — no dismiss affordance. Anything else on the dashboard
 // (blocked / paused / stopped / done / failed) can be dismissed to the Work history.
 const isActive = (s) => s === 'running' || s === 'planning'
+
+// Hard 2-line clamp for card titles — a legacy title-less item can carry a huge
+// objective; the full text stays in the detail view's Objective & Intent tab.
+const clamp2 = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' }
 const statusLabel = (r) => (r.status === 'done' ? 'Done' : r.status === 'cancelled' ? 'Cancelled' : (PHASES[r.phase] || r.status))
 
 // Dismiss (archive) an item from the dashboard — it stays in the Work history.
@@ -42,7 +46,7 @@ const RunCard = ({ run, onOpen, onDismiss }) => (
     <Card onClick={() => onOpen(run.id)} sx={{ cursor: 'pointer', transition: 'background-color 120ms', '&:hover': { backgroundColor: candy.bgPaperHi } }}>
         <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
             <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, mb: 1 }}>
-                <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, wordBreak: 'break-word' }}>{runLabel(run)}</Typography>
+                <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0, ...clamp2 }}>{runLabel(run)}</Typography>
                 {!isActive(run.status) && <DismissButton onDismiss={onDismiss} />}
             </Box>
             <Box sx={{ minWidth: 0 }}>
@@ -73,7 +77,7 @@ const ParentCard = ({ parent, kind, title, children, onOpenParent, onDismiss }) 
                     <Box sx={{ flexGrow: 1 }} />
                     {!isActive(parent.status) && <DismissButton onDismiss={onDismiss} />}
                 </Box>
-                <Typography variant="subtitle1" sx={{ fontWeight: 700, wordBreak: 'break-word' }}>{title}</Typography>
+                <Typography variant="subtitle1" sx={{ fontWeight: 700, ...clamp2 }}>{title}</Typography>
                 <Box sx={{ mt: 0.5 }}>
                     <Typography variant="caption" color="text.secondary">{children.length} run{children.length === 1 ? '' : 's'} · {greenT}/{totalT} green</Typography>
                 </Box>
@@ -110,7 +114,7 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) =
             node: (
                 <ParentCard
                     key={`campaign-${c.id}`} parent={c} kind="campaign"
-                    title={c.intentBrief?.restatedGoal || c.originalInput || c.id}
+                    title={campaignLabel(c)}
                     children={childrenOfCampaign(c)} onOpenParent={onOpenParent}
                     onDismiss={() => onDismiss('campaign', c.id)}
                 />
@@ -121,7 +125,7 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) =
             node: (
                 <ParentCard
                     key={`quest-${q.id}`} parent={q} kind="quest"
-                    title={q.objective || q.originalObjective || q.id}
+                    title={questLabel(q)}
                     children={childrenOfQuest(q)} onOpenParent={onOpenParent}
                     onDismiss={() => onDismiss('quest', q.id)}
                 />

@@ -20,7 +20,8 @@ import CloseIcon from '@mui/icons-material/Close'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 
-import { STATUS_COLOR, AUTONOMY_LABEL } from '../meta/run'
+import { STATUS_COLOR } from '../meta/run'
+import { campaignLabel, questLabel } from '../util'
 import { runLabel } from '../util'
 import { useCampaign, useQuests, useRuns } from '../data/ooo'
 import { useSystemStatus } from '../data/system'
@@ -150,9 +151,8 @@ const CampaignWorkspace = ({ id, onClose }) => {
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                             <Chip size="small" color="secondary" variant="outlined" label={`campaign · ${campaign.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[campaign.status] || 'default'} variant="outlined" label={campaign.status} />
-                            {campaign.autonomyLevel && <Chip size="small" variant="outlined" label={AUTONOMY_LABEL[campaign.autonomyLevel] || campaign.autonomyLevel} />}
                         </Box>
-                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere' }}>{brief.restatedGoal || campaign.originalInput || campaign.id}</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{campaignLabel(campaign)}</Typography>
                     </Box>
                     <CampaignControls
                         campaign={campaign} reachable={reachable}
@@ -217,7 +217,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                             ? <Empty>No child quests launched yet.</Empty>
                             : childQuests.map((q) => (
                                 <Box key={q.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-                                    <Link component="button" type="button" onClick={() => navigate(`/quest/${q.id}`)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere' }}>{q.objective || q.id}</Link>
+                                    <Link component="button" type="button" onClick={() => navigate(`/quest/${q.id}`)} sx={{ fontWeight: 600, minWidth: 0, textAlign: 'left', overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{questLabel(q)}</Link>
                                     <Chip size="small" variant="outlined" color={STATUS_COLOR[q.status] || 'default'} label={q.status} sx={{ height: 20 }} />
                                 </Box>
                             ))}

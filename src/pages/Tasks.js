@@ -14,7 +14,7 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import Typography from '@mui/material/Typography'
 
 import { PHASES, STATUS_COLOR } from '../meta/run'
-import { runLabel } from '../util'
+import { runLabel, questLabel, campaignLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, deliverOf } from '../data/ooo'
 import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
@@ -38,6 +38,10 @@ const statusText = (r) => {
     if (r.status === 'running' && typeof r.phase === 'number') return PHASES[r.phase] || 'Running'
     return r.status ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : '—'
 }
+
+// Hard 2-line clamp for the Work-table title cells — a legacy title-less item
+// can carry a huge objective; the full text stays in the detail views.
+const clamp2 = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', maxWidth: 480 }
 
 const StatusChip = ({ status, text }) => (
     <Chip size="small" variant="outlined" color={STATUS_COLOR[status] || 'default'} label={text} sx={{ height: 22 }} />
@@ -119,7 +123,7 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                 <TableRow key={r.id} hover onClick={() => onOpen('run', r.id)} sx={{ cursor: 'pointer', opacity: r.archived ? 0.6 : 1 }}>
                     <TableCell>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{runLabel(r)}</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{runLabel(r)}</Typography>
                             {r.archived && <Chip size="small" variant="outlined" label="cleared" sx={{ height: 18, fontSize: 10 }} />}
                             <CopyReference kind="run" id={r.id} />
                         </Box>
@@ -158,7 +162,7 @@ const QuestsTable = ({ rows, onDrill, onPivot }) => (
                 <TableRow key={q.id} hover onClick={() => onDrill('runs', q.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{q.objective || q.originalObjective || q.id}</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{questLabel(q)}</Typography>
                             <CopyReference kind="quest" id={q.id} />
                         </Box>
                         <FolderText folder={folderOf(q)} />
@@ -196,7 +200,7 @@ const CampaignsTable = ({ rows, onDrill }) => (
                 <TableRow key={c.id} hover onClick={() => onDrill('quests', c.id)} sx={{ cursor: 'pointer' }}>
                     <TableCell>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{c.intentBrief?.restatedGoal || c.originalInput || c.id}</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{campaignLabel(c)}</Typography>
                             <CopyReference kind="campaign" id={c.id} />
                         </Box>
                     </TableCell>
