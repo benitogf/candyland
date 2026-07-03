@@ -56,8 +56,15 @@ func TestValidateSettings(t *testing.T) {
 	if err := ValidateSettings(Settings{Levels: map[string]LevelConfig{RoleCoder: {Model: "gpt-4"}}}); err == nil {
 		t.Error("an unknown model must be rejected")
 	}
-	if err := ValidateSettings(Settings{Levels: map[string]LevelConfig{RoleCoder: {Thinking: "xhigh"}}}); err == nil {
-		t.Error("a thinking option outside low|medium|high must be rejected")
+	if err := ValidateSettings(Settings{Levels: map[string]LevelConfig{RoleCoder: {Thinking: "ultra"}}}); err == nil {
+		t.Error("a thinking option outside low|medium|high|xhigh|max must be rejected")
+	}
+	// The extended effort ladder (xhigh, max) and the fable-5 model must validate.
+	if err := ValidateSettings(Settings{Levels: map[string]LevelConfig{RoleCoder: {Model: "claude-fable-5", Thinking: "xhigh"}}}); err != nil {
+		t.Errorf("claude-fable-5 + xhigh must validate: %v", err)
+	}
+	if err := ValidateSettings(Settings{Levels: map[string]LevelConfig{RoleTechLead: {Thinking: "max"}}}); err != nil {
+		t.Errorf("max effort must validate: %v", err)
 	}
 	if err := ValidateSettings(Settings{Levels: map[string]LevelConfig{"nope": {Model: "claude-opus-4-8"}}}); err == nil {
 		t.Error("an unknown role must be rejected")
