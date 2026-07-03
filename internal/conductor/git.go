@@ -2,6 +2,7 @@ package conductor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/benitogf/candyland/internal/run"
 	"github.com/benitogf/candyland/internal/winproc"
 )
 
@@ -289,6 +291,50 @@ func prURL(ctx context.Context, repo string, n int) (string, error) {
 		return "", fmt.Errorf("gh pr view %d produced no URL", n)
 	}
 	return url, nil
+}
+
+// ghPRReview reads a watched PR's current review state via gh so the babysit watch
+// loop can decide whether to merge, dispatch a feedback fix, or keep waiting. It
+// resolves the PR's latest commit (headRefOid), the aggregate reviewDecision, and —
+// from the individual reviews — the commit the latest APPROVED review was on (so an
+// approval on a stale commit doesn't trigger a merge). Best-effort on the
+// per-review commit: an absent oid leaves ApprovedSHA empty (→ treated as no
+// current approval). Overridable for tests via Conductor.prReview.
+func ghPRReview(ctx context.Context, repo string, n int) (run.PRReview, error) {
+	out, err := runCmd(ctx, repo, ghBin(), "pr", "view", strconv.Itoa(n),
+		"--json", "state,reviewDecision,headRefOid,reviews")
+	if err != nil {
+		return run.PRReview{}, err
+	}
+	var raw struct {
+		State          string `json:"state"`
+		ReviewDecision string `json:"reviewDecision"`
+		HeadRefOid     string `json:"headRefOid"`
+		Reviews        []struct {
+			State  string `json:"state"`
+			Commit struct {
+				Oid string `json:"oid"`
+			} `json:"commit"`
+		} `json:"reviews"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return run.PRReview{}, fmt.Errorf("gh pr view %d produced unreadable JSON: %v", n, err)
+	}
+	pr := run.PRReview{State: raw.State, ReviewDecision: raw.ReviewDecision, HeadSHA: raw.HeadRefOid}
+	// The LAST APPROVED review in gh's chronological list is the current approval.
+	for _, rv := range raw.Reviews {
+		if strings.EqualFold(rv.State, "APPROVED") {
+			pr.ApprovedSHA = rv.Commit.Oid
+		}
+	}
+	return pr, nil
+}
+
+// ghMergePR merges a watched PR via gh (squash-merge, deleting the head branch).
+// Overridable for tests via Conductor.mergePR.
+func ghMergePR(ctx context.Context, repo string, n int) error {
+	_, err := runCmd(ctx, repo, ghBin(), "pr", "merge", strconv.Itoa(n), "--squash", "--delete-branch")
+	return err
 }
 
 func openPR(ctx context.Context, repo, base, head, title, body string) (string, error) {

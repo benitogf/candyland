@@ -155,6 +155,10 @@ type Run struct {
 	ReviewRounds int          `json:"reviewRounds,omitempty"`
 	Escalations  []Escalation `json:"escalations,omitempty"`
 	Postmortem   *Postmortem  `json:"postmortem,omitempty"`
+	// Watch is the babysit post-delivery watch-phase state, present only on a
+	// "babysit"-delivery run and only once its PR is open. It carries the watched
+	// PR, the watch lifecycle state, the terminal outcome, and the tick log.
+	Watch *WatchState `json:"watch,omitempty"`
 }
 
 // Audit is the queryable record of a completed run, derived from its final
@@ -231,7 +235,72 @@ const (
 	// it behaves like feedback (updates TargetPR); when it had none it ends as a
 	// review-only no-op with an empty prUrl by design.
 	DeliverReview Delivery = "review"
+	// DeliverBabysit opens a PR exactly like "pr" and THEN enters a post-delivery
+	// watch phase: the run watches the PR it opened on an interval, dispatches a
+	// feedback fix when changes are requested, and merges the PR once an approval
+	// lands on its latest commit — a terminating loop whose exit is the merge. The
+	// watch-phase state rides on Run.Watch. It requires no TargetPR (the run opens
+	// and then owns the PR it watches).
+	DeliverBabysit Delivery = "babysit"
 )
+
+// WatchDecision is the action a single babysit watch tick concluded to take on the
+// PR it is watching, derived purely from the PR's current review state.
+type WatchDecision string
+
+const (
+	// WatchWait — nothing actionable yet (review still pending, or the only approval
+	// is on a stale commit). Keep watching.
+	WatchWait WatchDecision = "wait"
+	// WatchFeedback — changes were requested. Dispatch a feedback fix run against the
+	// PR's head (once per head commit — not re-dispatched while that fix is in flight).
+	WatchFeedback WatchDecision = "feedback"
+	// WatchMerge — an approval landed on the PR's latest commit. Merge and exit.
+	WatchMerge WatchDecision = "merge"
+	// WatchDone — the PR is already merged or closed upstream. Exit.
+	WatchDone WatchDecision = "done"
+)
+
+// PRReview is the snapshot of a watched PR's review state a watch tick reasons over.
+// It is the small, provider-agnostic shape ghPRReview populates from gh (and tests
+// supply directly), so the decision logic (decideWatch) is pure and unit-testable.
+type PRReview struct {
+	State          string `json:"state"`          // OPEN|MERGED|CLOSED (upstream PR state)
+	ReviewDecision string `json:"reviewDecision"` // APPROVED|CHANGES_REQUESTED|REVIEW_REQUIRED|"" (none yet)
+	HeadSHA        string `json:"headSha"`        // the PR's latest commit
+	ApprovedSHA    string `json:"approvedSha"`    // the commit the latest APPROVED review was on ("" if none)
+}
+
+// WatchTick is one iteration of the babysit watch loop: the PR head it observed,
+// the decision it reached, a human-readable detail, and the feedback child run it
+// launched (when the decision was feedback). Accumulated on WatchState.Ticks so the
+// dashboard can render the watch-phase tick log.
+type WatchTick struct {
+	ID         string        `json:"id"`
+	At         string        `json:"at"` // RFC3339 when the tick ran
+	HeadSHA    string        `json:"headSha,omitempty"`
+	Decision   WatchDecision `json:"decision"`
+	Detail     string        `json:"detail,omitempty"`
+	ChildRunID string        `json:"childRunId,omitempty"` // the feedback run launched, when one was
+}
+
+// WatchState is the babysit post-delivery watch phase's persisted state, attached to
+// Run.Watch once the run's PR is open. It carries the PR being watched, the current
+// lifecycle State (watching|merged|stopped|blocked), the terminal Outcome, and the
+// tick log. LastFeedbackSHA records the head commit a feedback fix was last
+// dispatched for, so a changes-requested review isn't re-dispatched every tick while
+// that fix is still in flight.
+type WatchState struct {
+	PR              int         `json:"pr"`
+	Repo            string      `json:"repo,omitempty"`
+	PRUrl           string      `json:"prUrl,omitempty"`
+	State           string      `json:"state"`             // watching|merged|stopped|blocked
+	Outcome         string      `json:"outcome,omitempty"` // human-readable terminal outcome
+	LastFeedbackSHA string      `json:"lastFeedbackSha,omitempty"`
+	Ticks           []WatchTick `json:"ticks,omitempty"`
+	StartedAt       string      `json:"startedAt,omitempty"`
+	UpdatedAt       string      `json:"updatedAt,omitempty"`
+}
 
 // Convergence is a quest's delivery policy — orthogonal to Delivery. It decides
 // how a quest's accepted findings become PRs:

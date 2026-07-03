@@ -111,6 +111,33 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 		},
 	})
 
+	// Read a babysit run's post-delivery watch-phase state: the watched PR, the
+	// watch lifecycle state, the terminal outcome, and the tick log. 404 when the
+	// run doesn't exist; 204 (no body) when the run has no watch phase (not a
+	// babysit run, or its PR isn't open yet). Served from storage so it works for
+	// finished/untracked runs too.
+	server.Endpoint(ooo.EndpointConfig{
+		Path:    "/api/runs/{id}/watch",
+		Methods: get,
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			obj, err := server.Storage.Get("runs/" + mux.Vars(r)["id"])
+			if err != nil {
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			var rr run.Run
+			if err := json.Unmarshal(obj.Data, &rr); err != nil {
+				http.Error(w, "run unreadable", http.StatusInternalServerError)
+				return
+			}
+			if rr.Watch == nil {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			writeJSON(w, rr.Watch)
+		},
+	})
+
 	// Begin the build. This is the detritus trigger (POST after POST /api/runs):
 	// it just starts the run. The body is ignored; an empty body is fine.
 	server.Endpoint(ooo.EndpointConfig{
