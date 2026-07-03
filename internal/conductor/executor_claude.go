@@ -1068,14 +1068,54 @@ var hedgeWords = []string{
 	"i assume", "sibling branch", "other branch", "not a genuine blocker",
 }
 
+// narrationProse strips quoted code from a reviewer's output — fenced ``` blocks
+// and the git-diff hunks it pastes after running `git diff` — leaving only its own
+// prose. The verdict-integrity detectors scan this prose, so a blocker-class
+// KEYWORD that merely appears in the DIFF UNDER REVIEW (this file, for one, lists
+// "unreachable" and "regression" as admission phrases) cannot masquerade as the
+// reviewer's own admission and bounce an otherwise-clean verdict.
+func narrationProse(text string) string {
+	var b strings.Builder
+	inFence, inDiff := false, false
+	for _, ln := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if strings.HasPrefix(t, "diff --git") || strings.HasPrefix(t, "@@") {
+			inDiff = true
+			continue
+		}
+		if inDiff {
+			// A hunk's body/context/header lines start with +, -, a space, or \;
+			// index/---/+++ headers too. Anything else ends the hunk (back to prose).
+			if ln == "" || strings.HasPrefix(ln, "+") || strings.HasPrefix(ln, "-") ||
+				strings.HasPrefix(ln, " ") || strings.HasPrefix(ln, "\\") ||
+				strings.HasPrefix(t, "index ") {
+				continue
+			}
+			inDiff = false
+		}
+		b.WriteString(ln)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // cleanVerdictContradictsNarration reports whether a REVIEW_CLEAN's own narration
 // undermines it: it contains a blocker-class admission (the reviewer described a
 // real defect) OR a hedge word (the reviewer guessed rather than proved). It is a
 // pure, separately-testable detector — the structural backstop behind the parsed
 // verdict, so a model that narrates a problem then stamps CLEAN can't slip a PR
 // through. reason names the first offending phrase for the bounced-back finding.
+// It scans only the reviewer's PROSE (via narrationProse), never quoted diff/code,
+// so a keyword present in the change under review isn't mistaken for an admission.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(narrationProse(text))
 	for _, p := range blockerAdmissions {
 		if strings.Contains(lower, p) {
 			return true, "blocker-class admission in narration: " + strconv.Quote(p)

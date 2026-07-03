@@ -40,6 +40,28 @@ func TestCleanVerdictContradictsNarration(t *testing.T) {
 			t.Errorf("self-contradicting/hedged narration %q must be flagged, was not", s)
 		}
 	}
+	// A blocker-class KEYWORD that appears only in QUOTED DIFF/CODE the reviewer
+	// pasted (running `git diff`) is NOT the reviewer's own admission — it must not
+	// bounce an otherwise-clean verdict. Guards the self-inflicted false positive
+	// where the diff under review itself lists "unreachable"/"regression".
+	quotedDiff := []string{
+		"I ran the binary; the feature is reachable and wired.\n" +
+			"diff --git a/x.go b/x.go\n" +
+			"@@ -1 +1,2 @@\n" +
+			"+\t\"unreachable\", \"regression\",\n" +
+			" \tprose after context\n" +
+			"REVIEW_CLEAN",
+		"Traced it end to end, the consumer calls it.\n" +
+			"```go\n" +
+			"var blockerAdmissions = []string{\"not wired\", \"dead code\", \"unreachable\"}\n" +
+			"```\n" +
+			"REVIEW_CLEAN",
+	}
+	for _, s := range quotedDiff {
+		if bad, reason := cleanVerdictContradictsNarration(s); bad {
+			t.Errorf("keyword in quoted diff/code wrongly flagged as an admission: %s", reason)
+		}
+	}
 }
 
 // hedgedCleanReviewerClaude: the reviewer NARRATES a hedge ("plausibly … sibling
