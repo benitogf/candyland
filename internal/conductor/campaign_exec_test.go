@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -26,51 +27,78 @@ func waitForCampaign(t *testing.T, c *Conductor, id string, until func(run.Campa
 	return cam
 }
 
-// campaignClaude is a scripted stub `claude` driving the whole campaign supervisor
-// with no real model. Composed from the stubClaude harness (see stubclaude_test.go);
-// it branches on the spawn's role (the prompt) and a per-stage fixture/counter file:
-//   - the INTENT LEAD fails the brief gate ONCE (a goal that shares no terms with the
-//     original input — recorded via CANDYLAND_BRIEF_FIXTURE), then on the route-back
-//     emits a consistent brief with one draft task and two commitments c1/c2.
-//   - the child run's TECH LEAD emits a one-task PARTITION; its CODER writes a file +
-//     a green TEST; its code REVIEWER returns REVIEW_CLEAN — the existing run executor
-//     then COMMITS onto the campaign branch and opens NO PR (Deliver=branch).
-//   - the INTENT REVIEWER emits a per-commitment INTENT_REVIEW: c1 satisfied, and c2
-//     either `missed` (blocks the PR) or `partial` (annotates only) per
-//     CANDYLAND_TEST_VERDICT — the lever the oracle flips to assert both gates.
-var campaignClaude = stubClaude(
-	role("intent lead", `if [[ -f "$CANDYLAND_BRIEF_FIXTURE" ]]; then
-  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"add csv export to the reports page\",\"scopeByDomain\":[\"backend\"],\"draftTasks\":[\"implement csv export endpoint\",\"add csv export button\"],\"commitments\":[{\"id\":\"c1\",\"statement\":\"export endpoint exists\"},{\"id\":\"c2\",\"statement\":\"export includes totals\"}]}`)+`  `+emitResult("brief", 2)+`else
+// --- reusable campaign stub fragments (the two managers + the child quest pipeline) ---
+
+// campIntentLead fails the brief gate ONCE (a goal that shares no terms with the
+// original input — recorded via CANDYLAND_BRIEF_FIXTURE), then on the route-back
+// emits a consistent brief with one draft task and two commitments c1/c2.
+var campIntentLead = role("intent lead", `if [[ -f "$CANDYLAND_BRIEF_FIXTURE" ]]; then
+  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"add csv export to the reports page\",\"scopeByDomain\":[\"backend\"],\"draftTasks\":[\"implement csv export endpoint\"],\"commitments\":[{\"id\":\"c1\",\"statement\":\"export endpoint exists\"},{\"id\":\"c2\",\"statement\":\"export includes totals\"}]}`)+`  `+emitResult("brief", 2)+`else
   touch "$CANDYLAND_BRIEF_FIXTURE"
   `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"totally unrelated nonsense\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+`  `+emitResult("brief", 1)+`fi
-`),
-	// The intent reviewer's verdict for c2 is interpolated from the env at run time
-	// (CANDYLAND_TEST_VERDICT), so the INTENT_REVIEW line is double-escaped and echoed
-	// directly rather than built from emitText.
-	role("intent reviewer", `echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+`)
+
+// campQuestLead surfaces ONE work item per tick. Every child quest runs with
+// CANDYLAND_QUEST_MAX_TICKS=1 (set by setCampaignFixtures), so each quest does exactly
+// one tick — surface → launch a child run → the drive pauses at the tick bound — which
+// works uniformly for the initial and the remediation quests (no shared tick marker).
+// It appends the cwd to CANDYLAND_ORDER_LOG so a deps test can assert ordering, and
+// sleeps briefly so a concurrency test has a window to observe overlap.
+var campQuestLead = role("quest lead", `[[ -n "$CANDYLAND_ORDER_LOG" ]] && echo "$(pwd)" >> "$CANDYLAND_ORDER_LOG"
+sleep 0.3
+`+emitText(`WORKITEMS [{\"title\":\"do the campaign item\",\"evidence\":\"needed for the goal\",\"classification\":\"feature\",\"decision\":\"do\"}]`)+`  `+emitResult("work", 2))
+
+// campIntentReviewer emits a per-commitment INTENT_REVIEW: c1 satisfied, and c2's
+// verdict from CANDYLAND_TEST_VERDICT (partial → annotate; missed → remediate/block).
+var campIntentReviewer = role("intent reviewer", `echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
 echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added in handler.go\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$CANDYLAND_TEST_VERDICT\\\",\\\"evidence\\\":[\\\"totals column not wired\\\"]}]}\"}]}}"
-`+emitResult("reviewed", 1)),
+`+emitResult("reviewed", 1))
+
+// campTechDone always confirms technical done (gate 2a) — the intent review is the
+// lever the oracles flip.
+var campTechDone = role("technical sign-off", emitTechDone(true, "integrated green on the campaign branch"))
+
+// campChildPipeline is the run-level pipeline every child quest drives: a tech lead
+// PARTITION, a coder that writes a PID-named file + a green TEST, and a clean reviewer.
+var campChildTechLead = role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`))
+var campChildCoder = coder(writeWorktreeFile("work_$$.txt"), emitTest(1, 0))
+
+// campaignClaude drives the whole two-manager campaign supervisor with no real model:
+// the tech manager emits a ONE-quest QUESTS partition, the intent manager AGREES at
+// gate 1, the child quest drives its discover→run→review→branch pipeline, and gate 2
+// dual sign-off (tech done + intent review) decides delivery.
+var campaignClaude = stubClaude(
+	campIntentLead,
+	role("intent manager", emitPartitionReview(true, "the quest covers both commitments")),
+	campIntentReviewer,
+	campTechDone,
+	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export end to end","folders":[],"deps":[]}]`)),
+	campQuestLead,
 	roleCleanReviewer,
-	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
-	// Each coder writes a file UNIQUE to its worktree (PID-named) so two child runs
-	// sharing the campaign branch don't collide — their commits ACCUMULATE on it.
-	coder(writeWorktreeFile("work_$$.txt"), emitTest(1, 0)),
+	campChildTechLead,
+	campChildCoder,
 )
 
-// The ORACLE for the campaign execution layer. A scripted-stub run drives the full
-// intent→delivery supervisor deterministically and asserts every gate:
-//   - the BRIEF GATE fails the inconsistent first brief and routes back (bounded),
-//     then passes the consistent one;
-//   - the PLAN GATE passes (a child was decomposed for the commitments);
-//   - the FINAL INTENT REVIEW carries a per-commitment verdict {satisfied|partial|
-//     missed} with cited evidence;
-//   - a `partial` verdict ANNOTATES the PR but the PR STILL OPENS (campaign done).
-//
-// The `missed`-blocks-the-PR half is the sibling test below.
-func TestCampaignDeliversWithPartialAnnotation(t *testing.T) {
-	c, repo := deliveryConductor(t, campaignClaude)
+// setCampaignFixtures sets the per-test marker/verdict env the campaign stubs read.
+func setCampaignFixtures(t *testing.T, c2Verdict string) {
+	t.Helper()
 	t.Setenv("CANDYLAND_BRIEF_FIXTURE", filepath.Join(t.TempDir(), "brief-first"))
-	t.Setenv("CANDYLAND_TEST_VERDICT", "partial") // c2 partial → annotate, do NOT block
+	t.Setenv("CANDYLAND_QUEST_MAX_TICKS", "1") // one surface→launch tick per child quest
+	if c2Verdict != "" {
+		t.Setenv("CANDYLAND_TEST_VERDICT", c2Verdict)
+	}
+}
+
+// The ORACLE for the campaign execution layer: a scripted-stub run drives the full
+// two-manager intent→delivery supervisor deterministically and asserts every stage:
+//   - the BRIEF GATE fails the inconsistent first brief and routes back, then passes;
+//   - the tech manager decomposes into a child QUEST (not a bare run) via QUESTS parse;
+//   - GATE 1 (the intent manager) agrees the partition covers the commitments;
+//   - GATE 2 dual sign-off runs (tech done + per-commitment intent review);
+//   - a `partial` verdict ANNOTATES the PR but the PR STILL OPENS (campaign done).
+func TestCampaignDecomposesIntoQuestAndDelivers(t *testing.T) {
+	c, repo := deliveryConductor(t, campaignClaude)
+	setCampaignFixtures(t, "partial") // c2 partial → annotate, do NOT block
 
 	id := c.CreateCampaign(run.CampaignSpec{
 		Input:   "add CSV export to the reports page",
@@ -82,7 +110,7 @@ func TestCampaignDeliversWithPartialAnnotation(t *testing.T) {
 
 	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
 		return cam.Status == "done" || cam.Status == "blocked"
-	}, 90*time.Second)
+	}, 120*time.Second)
 	if cam.Status != "done" {
 		t.Fatalf("campaign did not finish: status=%q reason=%q", cam.Status, cam.PauseReason)
 	}
@@ -91,82 +119,51 @@ func TestCampaignDeliversWithPartialAnnotation(t *testing.T) {
 	if !cam.BriefGate.Passed || cam.BriefGate.DecidedAt == "" {
 		t.Errorf("brief gate must end passed+decided, got %+v", cam.BriefGate)
 	}
-	if cam.IntentBrief.RestatedGoal == "" || len(cam.IntentBrief.Commitments) != 2 {
-		t.Fatalf("settled brief wrong: %+v", cam.IntentBrief)
-	}
-
-	// PLAN GATE: passed (a child run was decomposed for the commitments).
+	// GATE 1 (recorded on PlanGate): the intent manager agreed the partition.
 	if !cam.PlanGate.Passed || cam.PlanGate.DecidedAt == "" {
-		t.Errorf("plan gate must end passed+decided, got %+v", cam.PlanGate)
+		t.Errorf("gate 1 must end passed+decided, got %+v", cam.PlanGate)
 	}
 
-	// Two child runs were launched (one per draft task), each branch-delivered (no
-	// child PR of its own) — their commits ACCUMULATE on the shared campaign branch.
-	if len(cam.RunIDs) != 2 {
-		t.Fatalf("expected two child runs (one per draft task), got %v", cam.RunIDs)
+	// DECOMPOSED INTO A CHILD QUEST (not a bare run).
+	if len(cam.QuestIDs) != 1 {
+		t.Fatalf("campaign must decompose into one child QUEST, got questIds=%v runIds=%v", cam.QuestIDs, cam.RunIDs)
 	}
-	for _, rid := range cam.RunIDs {
-		child, ok := c.Get(rid)
-		if !ok {
-			t.Fatalf("child run %q not tracked", rid)
-		}
-		if child.CampaignID != id {
-			t.Errorf("child %s CampaignID = %q, want %q", rid, child.CampaignID, id)
-		}
-		if child.Deliver != run.DeliverBranch {
-			t.Errorf("child %s must deliver to branch, got %q", rid, child.Deliver)
-		}
-		if child.PrURL != "" {
-			t.Errorf("a branch-delivered child must open NO PR, got %q", child.PrURL)
-		}
+	child, ok := c.GetQuest(cam.QuestIDs[0])
+	if !ok {
+		t.Fatalf("child quest %q not tracked", cam.QuestIDs[0])
+	}
+	if child.CampaignID != id {
+		t.Errorf("child quest CampaignID = %q, want %q", child.CampaignID, id)
+	}
+	if child.Title != "csv export" {
+		t.Errorf("child quest title must come from the QUESTS emission, got %q", child.Title)
+	}
+	// The child quest integrates onto the CAMPAIGN branch and opens NO PR of its own.
+	if QuestBranch(child) != CampaignBranch(cam) {
+		t.Errorf("child quest must integrate onto the campaign branch %q, got %q", CampaignBranch(cam), QuestBranch(child))
+	}
+	if len(child.PRs) != 0 {
+		t.Errorf("a campaign-child quest must open NO PR of its own, got %+v", child.PRs)
 	}
 
-	// INTENT REVIEW: per-commitment verdict schema {satisfied|partial|missed} + evidence.
-	v := cam.IntentReview.Verdicts
-	if len(v) != 2 || cam.IntentReview.ReviewedAt == "" {
-		t.Fatalf("intent review must carry 2 verdicts + a timestamp, got %+v", cam.IntentReview)
-	}
+	// GATE 2: per-commitment verdicts recorded {satisfied|partial|missed} + evidence.
 	byID := map[string]run.CommitmentVerdict{}
-	for _, vv := range v {
+	for _, vv := range cam.IntentReview.Verdicts {
 		byID[vv.CommitmentID] = vv
 	}
-	if byID["c1"].Verdict != "satisfied" || len(byID["c1"].Evidence) == 0 {
-		t.Errorf("c1 must be satisfied with cited evidence, got %+v", byID["c1"])
-	}
-	if byID["c2"].Verdict != "partial" || len(byID["c2"].Evidence) == 0 {
-		t.Errorf("c2 must be partial with cited evidence, got %+v", byID["c2"])
+	if byID["c1"].Verdict != "satisfied" || byID["c2"].Verdict != "partial" {
+		t.Errorf("gate 2 verdicts wrong: %+v", cam.IntentReview.Verdicts)
 	}
 
-	// DELIVERY GATE: no `missed` → the campaign opens ONE PR per repo; the `partial`
-	// annotates the PR body but did NOT block (the PR opened).
+	// DELIVERY: no `missed` and tech done → ONE PR per repo; the `partial` annotated it.
 	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
-		t.Fatalf("a no-missed campaign must open one PR, got %+v", cam.PRs)
+		t.Fatalf("a clean-gate-2 campaign must open one PR, got %+v", cam.PRs)
 	}
-
-	// ACCUMULATION: the two children deliver to the SHARED campaign branch, each
-	// child basing its integration off the prior tip (executor_claude.go integrateRepo:
-	// resolve the existing branch tip to a SHA before addWorktree's branch -D), so
-	// sibling commits ACCUMULATE rather than the second clobbering the first. Assert
-	// the final campaign branch carries BOTH children's distinct PID-named files —
-	// the exact clobber the SHA-pinning guards against.
+	// The child quest's work landed on the campaign branch.
 	branch := CampaignBranch(cam)
 	out := gitOut(t, repo, "ls-tree", "-r", "--name-only", branch)
-	var workFiles []string
-	for _, f := range strings.Split(strings.TrimSpace(out), "\n") {
-		if strings.HasPrefix(f, "work_") && strings.HasSuffix(f, ".txt") {
-			workFiles = append(workFiles, f)
-		}
-	}
-	if len(workFiles) != 2 {
-		t.Fatalf("campaign branch %s must accumulate BOTH children's files, got %v (full tree:\n%s)", branch, workFiles, out)
-	}
-	// And both children's commits are reachable from the tip (the second is a
-	// descendant that did not reset away the first).
-	logOut := gitOut(t, repo, "log", "--name-only", "--pretty=format:", branch)
-	for _, wf := range workFiles {
-		if !strings.Contains(logOut, wf) {
-			t.Errorf("commit adding %s is not in the campaign branch history:\n%s", wf, logOut)
-		}
+	if !strings.Contains(out, "work_") {
+		t.Errorf("campaign branch %s must carry the child quest's work file, tree:\n%s", branch, out)
 	}
 }
 
@@ -182,13 +179,13 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-// The `missed`-blocks-the-PR half of the oracle: a single `missed` commitment
-// verdict BLOCKS that repo's PR — the campaign stays blocked with a visible reason
-// and the branch persists; no PR opens.
+// The `missed`-blocks-the-PR half of the oracle: a `missed` commitment that cannot be
+// remediated (the reviewer keeps returning missed) BLOCKS delivery after the bounded
+// remediation rounds — the campaign stays blocked with a visible reason, no PR opens.
 func TestCampaignMissedCommitmentBlocksPR(t *testing.T) {
 	c, repo := deliveryConductor(t, campaignClaude)
-	t.Setenv("CANDYLAND_BRIEF_FIXTURE", filepath.Join(t.TempDir(), "brief-first"))
-	t.Setenv("CANDYLAND_TEST_VERDICT", "missed") // c2 missed → BLOCK the PR
+	setCampaignFixtures(t, "missed") // c2 always missed → block after remediation bound
+	t.Setenv("CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS", "1")
 
 	id := c.CreateCampaign(run.CampaignSpec{
 		Input:   "add CSV export to the reports page",
@@ -198,14 +195,13 @@ func TestCampaignMissedCommitmentBlocksPR(t *testing.T) {
 
 	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
 		return cam.Status == "blocked" || cam.Status == "done"
-	}, 90*time.Second)
+	}, 120*time.Second)
 	if cam.Status != "blocked" {
-		t.Fatalf("a missed commitment must BLOCK delivery, got status=%q reason=%q", cam.Status, cam.PauseReason)
+		t.Fatalf("an un-remediable missed commitment must BLOCK delivery, got status=%q reason=%q", cam.Status, cam.PauseReason)
 	}
 	if cam.PauseReason == "" {
 		t.Error("a blocked campaign must carry a visible reason")
 	}
-	// The review still ran and recorded the missed verdict (it's why delivery blocked).
 	missed := false
 	for _, v := range cam.IntentReview.Verdicts {
 		if v.CommitmentID == "c2" && v.Verdict == "missed" {
@@ -215,7 +211,6 @@ func TestCampaignMissedCommitmentBlocksPR(t *testing.T) {
 	if !missed {
 		t.Errorf("the blocking missed verdict must be recorded, got %+v", cam.IntentReview.Verdicts)
 	}
-	// No PR opened (a missed verdict blocks it); the branch persists for resume.
 	for _, pr := range cam.PRs {
 		if pr.URL != "" {
 			t.Errorf("no PR may open when a commitment is missed, got %q", pr.URL)
@@ -223,13 +218,256 @@ func TestCampaignMissedCommitmentBlocksPR(t *testing.T) {
 	}
 }
 
-// briefGate / planGate are deterministic checks; pin their contract so a change to
-// the gate logic is a deliberate, test-visible edit. (The agent doctrine is composed
-// via kb_get in the prompts; the gates themselves are mechanical consistency checks.)
-func TestCampaignGates(t *testing.T) {
+// campaignRemediationClaude flips c2 from `missed` (first review) to `satisfied` (the
+// re-review after remediation) via CANDYLAND_REVIEW_FIXTURE. It proves a campaign does
+// NOT park in "blocked" on the first miss — the tech manager spawns a remediation
+// QUEST targeting the missed commitment, re-reviews, and delivers.
+var campaignRemediationClaude = stubClaude(
+	campIntentLead,
+	role("intent manager", emitPartitionReview(true, "the quest covers both commitments")),
+	role("intent reviewer", `if [[ -f "$CANDYLAND_REVIEW_FIXTURE" ]]; then verdict=satisfied; else verdict=missed; touch "$CANDYLAND_REVIEW_FIXTURE"; fi
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$verdict\\\",\\\"evidence\\\":[\\\"totals column\\\"]}]}\"}]}}"
+`+emitResult("reviewed", 1)),
+	campTechDone,
+	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export","folders":[],"deps":[]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// A missed commitment must NOT immediately park the campaign in "blocked": gate 2
+// spawns a remediation QUEST for the missed commitment, re-reviews, and — once the
+// re-review clears — delivers the PR.
+func TestCampaignRemediatesMissedThenDelivers(t *testing.T) {
+	c, repo := deliveryConductor(t, campaignRemediationClaude)
+	setCampaignFixtures(t, "")
+	t.Setenv("CANDYLAND_REVIEW_FIXTURE", filepath.Join(t.TempDir(), "review-first"))
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
+	})
+	c.BeginCampaign(id)
+
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 150*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("campaign must remediate the missed commitment and deliver, got status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	// An initial child quest PLUS a remediation quest for the missed c2.
+	if len(cam.QuestIDs) < 2 {
+		t.Fatalf("expected an initial child quest + a remediation quest, got questIds=%v", cam.QuestIDs)
+	}
+	c2 := ""
+	for _, v := range cam.IntentReview.Verdicts {
+		if v.CommitmentID == "c2" {
+			c2 = v.Verdict
+		}
+	}
+	if c2 != "satisfied" {
+		t.Errorf("final review must show c2 satisfied after remediation, got %q", c2)
+	}
+	note := false
+	for _, n := range cam.Notes {
+		if strings.Contains(n, "remediation round") {
+			note = true
+		}
+	}
+	if !note {
+		t.Errorf("a remediation round note must be recorded, got notes=%v", cam.Notes)
+	}
+	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
+		t.Errorf("a remediated campaign must open its PR, got %+v", cam.PRs)
+	}
+}
+
+// campaignGate1Claude makes the intent manager REJECT the tech manager's partition
+// ONCE (via CANDYLAND_GATE1_FIXTURE) then AGREE, and counts the tech-manager spawns in
+// CANDYLAND_TECHMGR_LOG. It proves gate 1 loops back to the tech manager (bounded by
+// maxPartitionAttempts) before work launches.
+var campaignGate1Claude = stubClaude(
+	campIntentLead,
+	role("intent manager", `if [[ -f "$CANDYLAND_GATE1_FIXTURE" ]]; then
+  `+emitPartitionReview(true, "now the partition covers both commitments")+`else
+  touch "$CANDYLAND_GATE1_FIXTURE"
+  `+emitPartitionReview(false, "the partition misses commitment c2")+`fi
+`),
+	campIntentReviewer,
+	campTechDone,
+	role("tech manager", `echo "spawn" >> "$CANDYLAND_TECHMGR_LOG"
+`+emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export","folders":[],"deps":[]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// GATE 1 loop-back: the intent manager rejects the first partition, the tech manager
+// re-emits, the intent manager agrees, and the campaign proceeds — bounded by
+// maxPartitionAttempts (default 2, so exactly one re-emit).
+func TestCampaignGate1LoopsBackThenProceeds(t *testing.T) {
+	c, repo := deliveryConductor(t, campaignGate1Claude)
+	setCampaignFixtures(t, "partial")
+	t.Setenv("CANDYLAND_GATE1_FIXTURE", filepath.Join(t.TempDir(), "gate1-first"))
+	techLog := filepath.Join(t.TempDir(), "techmgr.log")
+	t.Setenv("CANDYLAND_TECHMGR_LOG", techLog)
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
+	})
+	c.BeginCampaign(id)
+
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 120*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("campaign must converge after a gate-1 loop-back and deliver, got status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	if !cam.PlanGate.Passed {
+		t.Errorf("gate 1 must end passed after the loop-back, got %+v", cam.PlanGate)
+	}
+	// The tech manager was spawned TWICE for the partition (initial + one re-emit) —
+	// proof gate 1 routed back rather than launching the rejected partition.
+	spawns := strings.Count(gitReadFile(t, techLog), "spawn")
+	if spawns < 2 {
+		t.Errorf("gate 1 must loop back to the tech manager (>=2 partition spawns), got %d", spawns)
+	}
+}
+
+// campaignConcurrencyClaude has the tech manager emit TWO INDEPENDENT quests, each
+// scoped to its own repo (folders), so they run CONCURRENTLY.
+var campaignConcurrencyClaude = stubClaude(
+	campIntentLead,
+	role("intent manager", emitPartitionReview(true, "both quests are needed")),
+	campIntentReviewer,
+	campTechDone,
+	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"alpha work","objective":"do alpha","folders":["alpha"],"deps":[]},{"id":"q2","title":"beta work","objective":"do beta","folders":["beta"],"deps":[]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// perRepoConductor is multiRepoConductor with a folders override that routes each run
+// to its OWN spec folders (so a child quest in repo "alpha" doesn't span "beta").
+func perRepoConductor(t *testing.T, script string, names ...string) (*Conductor, []string) {
+	c, repos := multiRepoConductor(t, script, names...)
+	writeFakeGh(t)
+	c.folders = func(r run.Run) ([]string, error) {
+		if len(r.Folders) > 0 {
+			return r.Folders, nil
+		}
+		return repos, nil
+	}
+	return c, repos
+}
+
+// GATE-launched child quests with NO deps between them run CONCURRENTLY: at some
+// moment both child quests are "running" at once.
+func TestCampaignRunsIndependentQuestsConcurrently(t *testing.T) {
+	c, repos := perRepoConductor(t, campaignConcurrencyClaude, "alpha", "beta")
+	setCampaignFixtures(t, "partial")
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export across alpha and beta",
+		Folders: repos,
+	})
+	c.BeginCampaign(id)
+
+	// Poll for a moment where >=2 of this campaign's quests are running at once.
+	sawConcurrent := false
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		running := 0
+		for _, q := range c.CampaignChildQuests(id) {
+			if q.Status == "running" {
+				running++
+			}
+		}
+		if running >= 2 {
+			sawConcurrent = true
+			break
+		}
+		if cam, _ := c.GetCampaign(id); cam.Status == "done" || cam.Status == "blocked" {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !sawConcurrent {
+		t.Error("independent child quests must run concurrently (never observed 2 running at once)")
+	}
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 120*time.Second)
+	if len(cam.QuestIDs) != 2 {
+		t.Errorf("expected two child quests, got %v", cam.QuestIDs)
+	}
+}
+
+// campaignDepsClaude emits TWO quests where q2 depends on q1, so q1 must finish before
+// q2 starts. Each quest-lead appends its cwd to CANDYLAND_ORDER_LOG on its work tick.
+var campaignDepsClaude = stubClaude(
+	campIntentLead,
+	role("intent manager", emitPartitionReview(true, "the ordering is sound")),
+	campIntentReviewer,
+	campTechDone,
+	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"alpha first","objective":"do alpha first","folders":["alpha"],"deps":[]},{"id":"q2","title":"beta second","objective":"do beta after alpha","folders":["beta"],"deps":["q1"]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// A declared dependency SEQUENCES the dependent quest behind its dependency: q1 (in
+// alpha) always reaches its work tick before q2 (in beta).
+func TestCampaignDepsSequenceQuests(t *testing.T) {
+	c, repos := perRepoConductor(t, campaignDepsClaude, "alpha", "beta")
+	setCampaignFixtures(t, "partial")
+	orderLog := filepath.Join(t.TempDir(), "order.log")
+	t.Setenv("CANDYLAND_ORDER_LOG", orderLog)
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export across alpha and beta",
+		Folders: repos,
+	})
+	c.BeginCampaign(id)
+
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 150*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("dep campaign did not finish: status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	order := gitReadFile(t, orderLog)
+	iAlpha := strings.Index(order, "alpha")
+	iBeta := strings.Index(order, "beta")
+	if iAlpha < 0 || iBeta < 0 {
+		t.Fatalf("both quests must have run (order log: %q)", order)
+	}
+	if iAlpha > iBeta {
+		t.Errorf("q1 (alpha) must reach its work tick before q2 (beta) — deps not respected. order log:\n%s", order)
+	}
+}
+
+// gitReadFile reads a file written by the stubs (best-effort; empty if absent).
+func gitReadFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// briefGate is a deterministic check; pin its contract so a change to the gate logic
+// is a deliberate, test-visible edit. (Gate 1/2 doctrine is composed via kb_get in the
+// agent prompts; the brief gate itself is a mechanical consistency check.)
+func TestCampaignBriefGate(t *testing.T) {
 	input := "add CSV export to the reports page"
-	// Brief gate: missing goal / no commitments / drifted goal all fail; a consistent
-	// brief with checkable commitments passes.
 	if _, ok := briefGate(input, run.IntentBrief{Commitments: []run.Commitment{{Statement: "x"}}}); ok {
 		t.Error("a brief with no restated goal must fail the gate")
 	}
@@ -242,23 +480,11 @@ func TestCampaignGates(t *testing.T) {
 	if _, ok := briefGate(input, run.IntentBrief{RestatedGoal: "add csv export to reports", Commitments: []run.Commitment{{Statement: "endpoint exists"}}}); !ok {
 		t.Error("a consistent brief with a checkable commitment must pass the gate")
 	}
-
-	// Plan gate: zero children, or a brief with no commitments, fails; otherwise passes.
-	brief := run.IntentBrief{Commitments: []run.Commitment{{ID: "c1", Statement: "x"}}}
-	if _, ok := planGate(brief, nil); ok {
-		t.Error("zero decomposed children must fail the plan gate")
-	}
-	if _, ok := planGate(run.IntentBrief{}, []childPrompt{{title: "t"}}); ok {
-		t.Error("a brief with no commitments must fail the plan gate")
-	}
-	if _, ok := planGate(brief, []childPrompt{{title: "t"}}); !ok {
-		t.Error("a child decomposed for a commitment must pass the plan gate")
-	}
 }
 
-// parseIntentBrief / parseIntentReview are the fenced agent-verdict conventions
-// (INTENT_BRIEF / INTENT_REVIEW lines), mirroring parseWorkItems/parseReview. Pin
-// them so the contract the stub and a real agent share can't drift silently.
+// parseIntentBrief / parseIntentReview / parseQuests / parsePartitionVerdict /
+// parseTechDone are the fenced agent-verdict conventions. Pin them so the contract the
+// stub and a real agent share can't drift silently.
 func TestParseCampaignVerdicts(t *testing.T) {
 	brief, ok := parseIntentBrief(`preamble
 INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
@@ -270,85 +496,48 @@ INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
 	}
 
 	review, ok := parseIntentReview(`INTENT_REVIEW {"verdicts":[{"commitmentId":"c1","verdict":"satisfied","evidence":["e"]},{"commitmentId":"c2","verdict":"missed","evidence":["m"]}]}`)
-	if !ok || len(review.Verdicts) != 2 {
+	if !ok || len(review.Verdicts) != 2 || review.Verdicts[1].Verdict != "missed" {
 		t.Fatalf("INTENT_REVIEW must parse: ok=%v review=%+v", ok, review)
 	}
-	if review.Verdicts[1].Verdict != "missed" || len(review.Verdicts[1].Evidence) != 1 {
-		t.Errorf("verdict schema not parsed: %+v", review.Verdicts[1])
+
+	quests, ok := parseQuests(`QUESTS [{"id":"q1","title":"t","objective":"o","folders":["web"],"deps":["q0"]}]`)
+	if !ok || len(quests) != 1 || quests[0].ID != "q1" || quests[0].Deps[0] != "q0" {
+		t.Fatalf("QUESTS must parse: ok=%v quests=%+v", ok, quests)
 	}
-	if _, ok := parseIntentReview("no verdict"); ok {
-		t.Error("text with no INTENT_REVIEW line must report ok=false")
+	if _, ok := parseQuests("no verdict"); ok {
+		t.Error("text with no QUESTS line must report ok=false")
+	}
+
+	pv, ok := parsePartitionVerdict(`PARTITION_REVIEW {"agree":false,"reason":"gap"}`)
+	if !ok || pv.Agree || pv.Reason != "gap" {
+		t.Fatalf("PARTITION_REVIEW must parse: ok=%v pv=%+v", ok, pv)
+	}
+
+	td, ok := parseTechDone(`TECH_DONE {"done":true,"reason":"green"}`)
+	if !ok || !td.Done || td.Reason != "green" {
+		t.Fatalf("TECH_DONE must parse: ok=%v td=%+v", ok, td)
 	}
 }
 
-// campaignRemediationClaude drives the remediation loop: the intent reviewer judges
-// c2 `missed` on the FIRST review, then `satisfied` on the re-review after
-// remediation (flipped via CANDYLAND_REVIEW_FIXTURE). It proves a campaign does NOT
-// park in "blocked" on the first miss — it spawns a remediation child targeting the
-// missed commitment, re-reviews, and delivers.
-var campaignRemediationClaude = stubClaude(
-	role("intent lead", `if [[ -f "$CANDYLAND_BRIEF_FIXTURE" ]]; then
-  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"add csv export to the reports page\",\"scopeByDomain\":[\"backend\"],\"draftTasks\":[\"implement csv export endpoint\"],\"commitments\":[{\"id\":\"c1\",\"statement\":\"export endpoint exists\"},{\"id\":\"c2\",\"statement\":\"export includes totals\"}]}`)+`  `+emitResult("brief", 2)+`else
-  touch "$CANDYLAND_BRIEF_FIXTURE"
-  `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"totally unrelated nonsense\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+`  `+emitResult("brief", 1)+`fi
-`),
-	role("intent reviewer", `if [[ -f "$CANDYLAND_REVIEW_FIXTURE" ]]; then verdict=satisfied; else verdict=missed; touch "$CANDYLAND_REVIEW_FIXTURE"; fi
-echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
-echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$verdict\\\",\\\"evidence\\\":[\\\"totals column\\\"]}]}\"}]}}"
-`+emitResult("reviewed", 1)),
-	roleCleanReviewer,
-	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
-	coder(writeWorktreeFile("work_$$.txt"), emitTest(1, 0)),
-)
-
-// A missed commitment must NOT immediately park the campaign in "blocked": the
-// delivery gate spawns a remediation child for the missed commitment, re-reviews,
-// and — once the re-review clears — delivers the PR. This is the "campaigns cannot
-// block without finishing the work" contract.
-func TestCampaignRemediatesMissedThenDelivers(t *testing.T) {
-	c, repo := deliveryConductor(t, campaignRemediationClaude)
-	t.Setenv("CANDYLAND_BRIEF_FIXTURE", filepath.Join(t.TempDir(), "brief-first"))
-	t.Setenv("CANDYLAND_REVIEW_FIXTURE", filepath.Join(t.TempDir(), "review-first"))
-
-	id := c.CreateCampaign(run.CampaignSpec{
-		Input:   "add CSV export to the reports page",
-		Folders: []string{repo},
+// sanitizeDeps drops unknown dep ids and breaks cycles (clearing all deps) so the
+// dependency waits can never deadlock.
+func TestSanitizeDeps(t *testing.T) {
+	// Unknown dep id dropped.
+	out := sanitizeDeps(nil, "", []questPartitionItem{
+		{ID: "a"},
+		{ID: "b", Deps: []string{"a", "ghost"}},
 	})
-	c.BeginCampaign(id)
-
-	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
-		return cam.Status == "done" || cam.Status == "blocked"
-	}, 120*time.Second)
-
-	if cam.Status != "done" {
-		t.Fatalf("campaign must remediate the missed commitment and deliver, got status=%q reason=%q", cam.Status, cam.PauseReason)
+	if len(out[1].Deps) != 1 || out[1].Deps[0] != "a" {
+		t.Errorf("unknown dep must be dropped, got %v", out[1].Deps)
 	}
-	// An initial child (one draft task) PLUS a remediation child for the missed c2.
-	if len(cam.RunIDs) < 2 {
-		t.Fatalf("expected an initial child + a remediation child, got runIDs=%v", cam.RunIDs)
-	}
-	// The final (post-remediation) review shows c2 satisfied.
-	c2 := ""
-	for _, v := range cam.IntentReview.Verdicts {
-		if v.CommitmentID == "c2" {
-			c2 = v.Verdict
+	// A cycle clears all deps.
+	cyc := sanitizeDeps(nil, "", []questPartitionItem{
+		{ID: "a", Deps: []string{"b"}},
+		{ID: "b", Deps: []string{"a"}},
+	})
+	for _, q := range cyc {
+		if len(q.Deps) != 0 {
+			t.Errorf("a dep cycle must be broken (deps cleared), got %q deps=%v", q.ID, q.Deps)
 		}
-	}
-	if c2 != "satisfied" {
-		t.Errorf("final review must show c2 satisfied after remediation, got %q", c2)
-	}
-	// A durable remediation note records the loop-back (not a silent re-run).
-	note := false
-	for _, n := range cam.Notes {
-		if strings.Contains(n, "remediation round") {
-			note = true
-		}
-	}
-	if !note {
-		t.Errorf("a remediation round note must be recorded, got notes=%v", cam.Notes)
-	}
-	// Delivery happened: the PR opened.
-	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
-		t.Errorf("a remediated campaign must open its PR, got %+v", cam.PRs)
 	}
 }

@@ -464,8 +464,9 @@ type Campaign struct {
 	// IntentBrief is the intent-lead's structured restatement of OriginalInput.
 	// Empty until the brief phase (a later task) populates it.
 	IntentBrief IntentBrief `json:"intentBrief"`
-	// BriefGate (post-brief) and PlanGate (post-plan) are the campaign gates. The
-	// gate execution is a later phase; these hold the results.
+	// BriefGate (the deterministic post-brief consistency check) and PlanGate (gate 1:
+	// the intent manager's agentic review of the tech manager's quest partition) are
+	// the pre-launch campaign gates; these hold the results.
 	BriefGate GateResult `json:"briefGate"`
 	PlanGate  GateResult `json:"planGate"`
 	// QuestIDs/RunIDs are the campaign's children, linked as they are launched (a
@@ -501,7 +502,7 @@ type Campaign struct {
 	// Deliver is how the campaign's child runs ship their work: "pr" (the default —
 	// children commit onto the campaign branch, the campaign opens one PR per impacted
 	// repo at the end) or "feedback"/"review" (children land on the EXISTING TargetPR
-	// instead of the campaign branch — see launchCampaignChild's propagation). Set at
+	// instead of the campaign branch — see the campaign child-quest launch). Set at
 	// creation, defaulted to "pr" when empty. Always serialized (no omitempty) so the
 	// frontend can key UI on cam.deliver even for a default "pr" campaign.
 	Deliver Delivery `json:"deliver"`
