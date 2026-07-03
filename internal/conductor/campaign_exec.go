@@ -432,11 +432,22 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 	quests = sanitizeDeps(c, id, quests)
 	tokenCap := effectiveTokenCap(cam)
 	// One done-channel per quest id, closed when that quest reaches terminal — a
-	// dependent selects on its deps' channels before it launches.
+	// dependent selects on its deps' channels before it launches. parseQuests already
+	// guarantees non-empty, unique ids; this is a belt-and-suspenders guard so a
+	// caller that ever bypasses that validation can't key two goroutines onto the same
+	// channel and panic with "close of closed channel" (which would kill the sidecar).
+	// The dedup keeps exactly one owner (and one close) per channel.
 	doneCh := make(map[string]chan struct{}, len(quests))
+	unique := make([]questPartitionItem, 0, len(quests))
 	for _, q := range quests {
+		if _, exists := doneCh[q.ID]; exists {
+			c.appendCampaignNote(id, fmt.Sprintf("duplicate quest id %q in partition — skipping the duplicate to protect the sidecar from a double channel-close", q.ID))
+			continue
+		}
 		doneCh[q.ID] = make(chan struct{})
+		unique = append(unique, q)
 	}
+	quests = unique
 	sem := make(chan struct{}, campaignConcurrency())
 	var mu sync.Mutex
 	completed := 0
@@ -683,7 +694,7 @@ func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.
 			return nil, false
 		}
 		c.setCampaignRunning(id)
-		quests, tokens, errMsg := c.emitQuests(ctx, id, cam, brief, folders, feedback)
+		quests, tokens, errMsg, retryFeedback := c.emitQuests(ctx, id, cam, brief, folders, feedback)
 		c.addCampaignTokens(id, tokens)
 		if ctx.Err() != nil {
 			return nil, false
@@ -691,6 +702,10 @@ func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.
 		if errMsg != "" {
 			c.blockCampaign(id, "tech manager: "+errMsg)
 			return nil, false
+		}
+		if retryFeedback != "" {
+			feedback = retryFeedback
+			continue
 		}
 		if len(quests) == 0 {
 			feedback = "you emitted no child quests — a campaign must decompose into at least one quest that delivers the brief's commitments"
@@ -719,7 +734,11 @@ func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.
 // context; its PROMPT tells it to load roles/tech-lead via kb_get and APPLY it (no
 // inlined rubric). feedback (non-empty on a gate-1 route-back) rides the bus brief so
 // the tech manager corrects the prior partition — never on argv.
-func (c *Conductor) emitQuests(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, folders []string, feedback string) ([]questPartitionItem, int, string) {
+//
+// A parsed-but-invalid partition (empty or duplicate quest id) is not a hard error: it
+// is surfaced as retryFeedback so partitionUntilGated routes it back to the tech
+// manager for a clean re-emission, bounded by maxPartitionAttempts.
+func (c *Conductor) emitQuests(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, folders []string, feedback string) (quests []questPartitionItem, tokens int, errMsg, retryFeedback string) {
 	primary := folders[0]
 	extra := extraDirsFor(primary, folders)
 	c.putBrief(techManagerID, bus.Brief{
@@ -730,19 +749,24 @@ func (c *Conductor) emitQuests(ctx context.Context, id string, cam run.Campaign,
 	})
 	res := streamOnce(ctx, c, id, techManagerID, techManagerBootstrap, primary, extra)
 	if ctx.Err() != nil {
-		return nil, res.tokens, ""
+		return nil, res.tokens, "", ""
 	}
 	if res.startErr != nil {
-		return nil, res.tokens, startFailurePrefix + res.startErr.Error()
+		return nil, res.tokens, startFailurePrefix + res.startErr.Error(), ""
 	}
 	if res.stalled {
-		return nil, res.tokens, "the tech manager stalled before producing a quest partition"
+		return nil, res.tokens, "the tech manager stalled before producing a quest partition", ""
 	}
-	quests, ok := parseQuests(res.allText)
+	parsed, ok, reason := parseQuests(res.allText)
 	if !ok {
-		return nil, res.tokens, "the tech manager produced no QUESTS partition"
+		if reason != "" {
+			// A QUESTS line was present but its ids violate the uniqueness invariant —
+			// recoverable: route back to the tech manager for a clean re-emission.
+			return nil, res.tokens, "", "your quest partition is unusable: " + reason
+		}
+		return nil, res.tokens, "the tech manager produced no QUESTS partition", ""
 	}
-	return quests, res.tokens, ""
+	return parsed, res.tokens, "", ""
 }
 
 // reviewPartition spawns the intent manager (gate 1) and parses its PARTITION_REVIEW
@@ -1130,9 +1154,15 @@ type techDoneVerdict struct {
 // parseQuests extracts the tech manager's child-quest partition from a `QUESTS <json>`
 // line (mirroring parsePartition). ok is false when no such line is present (no
 // verdict — a failure, never a silent pass). The last QUESTS line wins.
-func parseQuests(text string) ([]questPartitionItem, bool) {
-	var quests []questPartitionItem
-	ok := false
+//
+// A parsed partition is only returned with ok=true once its ids satisfy the
+// doneCh-keying invariant: every quest id is non-empty and unique (see
+// validateQuestIDs). When a QUESTS line is present but violates that invariant, ok is
+// false and reason is a non-empty explanation — the caller routes it back to the tech
+// manager (the gate-1 loop) to re-request a clean partition rather than launching work
+// that would panic the sidecar on a double channel-close.
+func parseQuests(text string) (quests []questPartitionItem, ok bool, reason string) {
+	found := false
 	for _, ln := range strings.Split(text, "\n") {
 		ln = strings.TrimSpace(ln)
 		if !strings.HasPrefix(ln, "QUESTS ") {
@@ -1140,10 +1170,37 @@ func parseQuests(text string) ([]questPartitionItem, bool) {
 		}
 		var parsed []questPartitionItem
 		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "QUESTS ")), &parsed) == nil {
-			quests, ok = parsed, true
+			quests, found = parsed, true
 		}
 	}
-	return quests, ok
+	if !found {
+		return nil, false, ""
+	}
+	if bad := validateQuestIDs(quests); bad != "" {
+		return nil, false, bad
+	}
+	return quests, true, ""
+}
+
+// validateQuestIDs enforces the invariant executeChildQuests relies on to build its
+// per-quest done-channels: every quest carries a non-empty, unique id. Two quests with
+// the same id (or two with an empty id) would key two goroutines onto the same
+// doneCh[q.ID] channel, and each closes it on exit — a `close of closed channel` panic
+// in a bare goroutine with no recover, which would tear down the whole conductor
+// sidecar and every other campaign/quest/run in it. Returns "" when valid, otherwise a
+// human-readable reason (routed back to the tech manager as gate-1 feedback).
+func validateQuestIDs(quests []questPartitionItem) string {
+	seen := make(map[string]bool, len(quests))
+	for i, q := range quests {
+		if strings.TrimSpace(q.ID) == "" {
+			return fmt.Sprintf("quest #%d (%q) has an empty id — every quest must carry a unique, non-empty id", i+1, q.Title)
+		}
+		if seen[q.ID] {
+			return fmt.Sprintf("quest id %q is used by more than one quest — every quest must carry a unique id", q.ID)
+		}
+		seen[q.ID] = true
+	}
+	return ""
 }
 
 // parsePartitionVerdict extracts the intent manager's gate-1 verdict from a

@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -500,12 +501,12 @@ INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
 		t.Fatalf("INTENT_REVIEW must parse: ok=%v review=%+v", ok, review)
 	}
 
-	quests, ok := parseQuests(`QUESTS [{"id":"q1","title":"t","objective":"o","folders":["web"],"deps":["q0"]}]`)
-	if !ok || len(quests) != 1 || quests[0].ID != "q1" || quests[0].Deps[0] != "q0" {
-		t.Fatalf("QUESTS must parse: ok=%v quests=%+v", ok, quests)
+	quests, ok, reason := parseQuests(`QUESTS [{"id":"q1","title":"t","objective":"o","folders":["web"],"deps":["q0"]}]`)
+	if !ok || reason != "" || len(quests) != 1 || quests[0].ID != "q1" || quests[0].Deps[0] != "q0" {
+		t.Fatalf("QUESTS must parse: ok=%v reason=%q quests=%+v", ok, reason, quests)
 	}
-	if _, ok := parseQuests("no verdict"); ok {
-		t.Error("text with no QUESTS line must report ok=false")
+	if _, ok, reason := parseQuests("no verdict"); ok || reason != "" {
+		t.Errorf("text with no QUESTS line must report ok=false with no reason, got ok=%v reason=%q", ok, reason)
 	}
 
 	pv, ok := parsePartitionVerdict(`PARTITION_REVIEW {"agree":false,"reason":"gap"}`)
@@ -539,5 +540,56 @@ func TestSanitizeDeps(t *testing.T) {
 		if len(q.Deps) != 0 {
 			t.Errorf("a dep cycle must be broken (deps cleared), got %q deps=%v", q.ID, q.Deps)
 		}
+	}
+}
+
+// TestParseQuestsRejectsCollidingIDs pins the doneCh-keying invariant: parseQuests must
+// reject a partition whose quest ids are empty or duplicated, since executeChildQuests
+// builds one done-channel per id and closes it exactly once — a collision would panic
+// the whole sidecar with "close of closed channel". A rejection carries a reason so the
+// gate-1 loop can re-request a clean partition (ok=false but reason!="").
+func TestParseQuestsRejectsCollidingIDs(t *testing.T) {
+	// A duplicate id is rejected with a reason (recoverable → loop back).
+	if q, ok, reason := parseQuests(`QUESTS [{"id":"q1","title":"a"},{"id":"q1","title":"b"}]`); ok || reason == "" {
+		t.Errorf("duplicate id must be rejected with a reason, got ok=%v reason=%q quests=%+v", ok, reason, q)
+	}
+	// An empty id is rejected with a reason.
+	if q, ok, reason := parseQuests(`QUESTS [{"id":"q1","title":"a"},{"id":"","title":"b"}]`); ok || reason == "" {
+		t.Errorf("empty id must be rejected with a reason, got ok=%v reason=%q quests=%+v", ok, reason, q)
+	}
+	// A whitespace-only id is treated as empty.
+	if q, ok, reason := parseQuests(`QUESTS [{"id":"  ","title":"a"}]`); ok || reason == "" {
+		t.Errorf("whitespace-only id must be rejected, got ok=%v reason=%q quests=%+v", ok, reason, q)
+	}
+	// A clean, unique partition still passes with no reason.
+	if q, ok, reason := parseQuests(`QUESTS [{"id":"q1","title":"a"},{"id":"q2","title":"b"}]`); !ok || reason != "" || len(q) != 2 {
+		t.Errorf("a clean partition must pass, got ok=%v reason=%q quests=%+v", ok, reason, q)
+	}
+}
+
+// TestExecuteChildQuestsNoPanicOnDuplicateIDs is the belt-and-suspenders guard: even if
+// a colliding-id partition ever reaches executeChildQuests (bypassing parseQuests), the
+// per-id dedup must ensure exactly one goroutine owns (and closes) each done-channel, so
+// the -race run does NOT hit "close of closed channel". A cancelled context makes every
+// goroutine close its channel and return before launching any real quest, which is
+// precisely the window where an unguarded double-close would panic.
+func TestExecuteChildQuestsNoPanicOnDuplicateIDs(t *testing.T) {
+	c, repo := deliveryConductor(t, "")
+	id := c.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{repo}})
+	cam, ok := c.GetCampaign(id)
+	if !ok {
+		t.Fatalf("campaign %s not found", id)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled up front: goroutines close-and-return, never launch a real quest
+	// Deliberately malformed: two "dup" ids and an empty id. Without the dedup guard
+	// three goroutines would close two channels → panic.
+	quests := []questPartitionItem{
+		{ID: "dup", Title: "a"},
+		{ID: "dup", Title: "b"},
+		{ID: "", Title: "c"},
+	}
+	if got := c.executeChildQuests(ctx, id, cam, []string{repo}, quests); got {
+		t.Errorf("executeChildQuests on a cancelled ctx must report false, got true")
 	}
 }
