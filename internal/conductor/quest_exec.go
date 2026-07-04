@@ -583,9 +583,34 @@ func questIsNoOp(q *run.Quest) bool {
 	return !delivered && surfaced
 }
 
+// questDeliveryFailed reports whether a converge quest attempted its terminal
+// per-repo PR delivery and EVERY attempt errored (PRs recorded, none opened). A
+// quest that completed work but could push/open no PR delivered nothing — it must
+// terminate "delivery-failed", never "done" (mirrors the campaign, which routes a
+// no-PR-opened delivery to a non-done terminal via blockCampaign). A branch/
+// feedback/review/perFinding quest records no terminal q.PRs, so this is false for
+// them. Partial-failure isolation: one opened PR makes the delivery a real (partial)
+// success.
+func questDeliveryFailed(q *run.Quest) bool {
+	if len(q.PRs) == 0 {
+		return false // no terminal per-repo delivery was attempted
+	}
+	for _, pr := range q.PRs {
+		if pr.URL != "" {
+			return false // at least one PR opened
+		}
+	}
+	return true
+}
+
 // questTerminalStatus is the terminal status a finished quest should carry:
-// "surfaced-only" for a zero-delivery no-op (Q2), else plain "done".
+// "delivery-failed" when its terminal PR delivery errored outright (never "done"),
+// "reviewed" for a review quest, "surfaced-only" for a zero-delivery no-op (Q2),
+// else plain "done".
 func questTerminalStatus(q *run.Quest) string {
+	if questDeliveryFailed(q) {
+		return "delivery-failed" // completed work but shipped no PR — honor the delivery failure
+	}
 	if q.Deliver == run.DeliverReview {
 		return "reviewed" // a review quest opens no PR — its terminal state is "reviewed", not "done"
 	}
@@ -599,6 +624,9 @@ func questTerminalStatus(q *run.Quest) string {
 // such instead of an undifferentiated "done". For a no-op it accounts the
 // surfaced/executed/PR counts.
 func questTerminalSummary(q *run.Quest) string {
+	if questDeliveryFailed(q) {
+		return fmt.Sprintf("delivery-failed: %d item(s) completed but no PR could be opened — %s", q.ItemsCompleted, firstPRErr(q.PRs))
+	}
 	if q.Deliver == run.DeliverReview {
 		if q.ItemsCompleted > 0 {
 			return fmt.Sprintf("reviewed PR #%d (%d review item(s) completed)", q.TargetPR, q.ItemsCompleted)
