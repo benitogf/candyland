@@ -1162,6 +1162,20 @@ func narrationProse(text string) string {
 // the very phrase it is refuting.
 var negators = []string{"not", "no", "isn't", "aren't", "wasn't", "never", "nor", "without"}
 
+// quotedAt reports whether the phrase spanning [i, i+n) in lower is wrapped in
+// matching backticks or double quotes — the reviewer QUOTING a phrase/identifier
+// (e.g. naming the "dead code" admission string this file itself lists) rather than
+// admitting the defect. narrationProse strips fenced/diff blocks but not inline
+// quotations, so without this a reviewer discussing a change that is ABOUT
+// blocker-class phrases would bounce its own clean verdict.
+func quotedAt(lower string, i, n int) bool {
+	if i == 0 || i+n >= len(lower) {
+		return false
+	}
+	open, close := lower[i-1], lower[i+n]
+	return (open == '`' && close == '`') || (open == '"' && close == '"')
+}
+
 // negatedAt reports whether the phrase found at index i in lower is preceded (within
 // a few words) by a negator, making it mitigating rather than an admission.
 func negatedAt(lower string, i int) bool {
@@ -1192,7 +1206,9 @@ func negatedAt(lower string, i int) bool {
 // A blocker phrase in a NEGATED/mitigating context ("not dead code", "isn't
 // unreachable") is the reviewer refuting the defect, not admitting it, so it is not
 // flagged — otherwise the cited-mitigating-evidence path a bounce demands could
-// never clear.
+// never clear. An inline-QUOTED occurrence (`dead code` / "dead code") is the
+// reviewer naming the phrase (e.g. reviewing a change that is itself about these
+// admission strings), not admitting the defect, so it is not flagged either.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 	lower := strings.ToLower(narrationProse(text))
 	for _, p := range blockerAdmissions {
@@ -1202,7 +1218,7 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 				break
 			}
 			at := from + idx
-			if !negatedAt(lower, at) {
+			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) {
 				return true, "blocker-class admission in narration: " + strconv.Quote(p)
 			}
 			from = at + len(p)

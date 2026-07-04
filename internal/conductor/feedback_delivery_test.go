@@ -76,6 +76,20 @@ func TestCleanVerdictContradictsNarration(t *testing.T) {
 			t.Errorf("negated/mitigating narration %q wrongly flagged: %s", s, reason)
 		}
 	}
+	// An inline-QUOTED occurrence (backticks or double quotes) is the reviewer NAMING
+	// the phrase — e.g. reviewing a change that is itself about these admission strings
+	// — not admitting the defect. narrationProse strips fenced/diff blocks but not
+	// inline quotations, so this guards the self-referential false positive.
+	quotedInline := []string{
+		"I verified the `dead code` detector fires and is wired from reviewUntilClean.\nREVIEW_CLEAN",
+		"The change adds \"dead code\" to the admission list; I traced it reachable from main.\nREVIEW_CLEAN",
+		"The `unreachable` and `regression` keywords are new detector inputs, all wired.\nREVIEW_CLEAN",
+	}
+	for _, s := range quotedInline {
+		if bad, reason := cleanVerdictContradictsNarration(s); bad {
+			t.Errorf("inline-quoted phrase wrongly flagged as an admission: %s", reason)
+		}
+	}
 }
 
 // hedgedCleanReviewerClaude: the reviewer NARRATES a hedge ("plausibly … sibling
