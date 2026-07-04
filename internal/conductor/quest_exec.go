@@ -168,6 +168,12 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 
 	ticks := maxQuestTicks()
 	itemAttempts := map[string]int{} // work-item title → times a child run was launched (thrash cap)
+	// blocked holds items whose child run FAILED but still have attempts left (a
+	// transient block). Convergence re-surfaces them on a later tick for a retry
+	// instead of terminating with them unresolved — they only become a durable
+	// "blocked" WorkItem once they exhaust the thrash cap. Keyed by title so a
+	// re-surfaced item shares the same itemAttempts counter (bounded retries).
+	blocked := map[string]questWorkItem{}
 	for tick := 1; tick <= ticks; tick++ {
 		if ctx.Err() != nil {
 			return // paused/stopped — cooperative halt between ticks
@@ -183,7 +189,7 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 			return
 		}
 
-		cont := c.runQuestTick(ctx, id, tick, itemAttempts)
+		cont := c.runQuestTick(ctx, id, tick, itemAttempts, blocked)
 		if !cont {
 			return // the tick decided the loop should stop (no work / blocked / stopped / budget)
 		}
@@ -201,7 +207,7 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 // runQuestTick performs one iteration and returns whether the loop should continue.
 // It spawns the quest lead, parses its work items, launches child runs for the
 // accepted ones, and records the Tick + updates rollups.
-func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemAttempts map[string]int) bool {
+func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemAttempts map[string]int, blocked map[string]questWorkItem) bool {
 	q, ok := c.GetQuest(id)
 	if !ok {
 		return false
@@ -277,7 +283,14 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	rec.TriageDecisions = append(rec.TriageDecisions, skipDecisions...)
 
 	if len(items) == 0 || len(accepted) == 0 {
-		if seed, ok := seedReviewItem(q); ok {
+		if retry := resurfaceBlocked(blocked); len(retry) > 0 {
+			// Convergence re-surface: nothing NEW surfaced, but items are still blocked
+			// with attempts to spare. Re-surface them for a retry so a transient block
+			// converges (or exhausts its cap into a durable block) rather than leaving
+			// the quest to terminate with unresolved work.
+			accepted = retry
+			rec.DiscoverySummary = fmt.Sprintf("discovery surfaced nothing new — re-surfacing %d blocked item(s) for a convergence retry", len(retry))
+		} else if seed, ok := seedReviewItem(q); ok {
 			accepted = []questWorkItem{seed}
 			rec.DiscoverySummary = fmt.Sprintf("discovery surfaced nothing — seeding a review of target PR #%d (it was not yet reviewed)", q.TargetPR)
 		} else {
@@ -315,6 +328,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 			rec.Blockers = append(rec.Blockers, fmt.Sprintf("giving up on %q after %d attempts", it.Title, maxItemAttempts()))
 			w.Disposition = "blocked"
 			ledger = append(ledger, w)
+			delete(blocked, it.Title) // durably blocked now — stop re-surfacing it
 			continue
 		}
 		itemAttempts[it.Title]++
@@ -329,11 +343,21 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		rec.PRs = append(rec.PRs, childPRs...)
 		if childErr != "" {
 			rec.Blockers = append(rec.Blockers, it.Title+": "+childErr)
-			w.Disposition = "blocked"
-		} else {
-			w.Disposition = "completed"
+			if itemAttempts[it.Title] >= maxItemAttempts() {
+				// Exhausted the thrash cap on this very attempt — a DURABLE block: record
+				// it in the ledger (ItemsBlocked > 0 gates the terminal clean "done").
+				w.Disposition = "blocked"
+				ledger = append(ledger, w)
+				delete(blocked, it.Title)
+			} else {
+				// Transient block — hold it for a convergence re-surface, not durable yet.
+				blocked[it.Title] = it
+			}
+			continue
 		}
+		w.Disposition = "completed"
 		ledger = append(ledger, w)
+		delete(blocked, it.Title) // a prior transient block converged on retry
 	}
 	rec.NextAction = "launched child runs — continue next tick"
 
@@ -531,6 +555,14 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 	if branch := QuestBranch(q); strings.HasPrefix(branch, "quest/") && q.ItemsCompleted > 0 {
 		prs = openBranchPRs(ctx, q.Folders, branch, questPRTitle(q), questPRBody(q))
 	}
+	// Convergence gate: a quest with unresolved blocked items cannot reach a clean
+	// terminal — it converges to "blocked", never "done"/"reviewed"/"surfaced-only".
+	// The E2 invariant demands a schema-valid postmortem before any blocked write.
+	if q.ItemsBlocked > 0 {
+		c.attachQuestPostmortem(id, questLeadID,
+			fmt.Sprintf("%d work item(s) could not converge after %d attempts each", q.ItemsBlocked, maxItemAttempts()),
+			questBlockedEvidence(q))
+	}
 	c.UpdateQuest(id, func(q *run.Quest) {
 		if q.Status == "stopped" {
 			return // a concurrent Stop is authoritative
@@ -586,6 +618,9 @@ func questIsNoOp(q *run.Quest) bool {
 // questTerminalStatus is the terminal status a finished quest should carry:
 // "surfaced-only" for a zero-delivery no-op (Q2), else plain "done".
 func questTerminalStatus(q *run.Quest) string {
+	if q.ItemsBlocked > 0 {
+		return "blocked" // convergence gate: a clean terminal requires zero blocked items
+	}
 	if q.Deliver == run.DeliverReview {
 		return "reviewed" // a review quest opens no PR — its terminal state is "reviewed", not "done"
 	}
@@ -595,10 +630,30 @@ func questTerminalStatus(q *run.Quest) string {
 	return "done"
 }
 
+// questBlockedEvidence names the blocked items (their evidence/classification from
+// the ledger) so the terminal postmortem cites what actually failed to converge.
+func questBlockedEvidence(q run.Quest) string {
+	var parts []string
+	for _, w := range q.WorkItems {
+		if w.Disposition == "blocked" {
+			ev := strings.TrimSpace(w.Classification + " " + w.Evidence)
+			parts = append(parts, orDefault(ev, w.ID))
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("quest %s has %d blocked item(s)", q.ID, q.ItemsBlocked)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // questTerminalSummary names a terminal quest's outcome so a no-op is reported as
 // such instead of an undifferentiated "done". For a no-op it accounts the
 // surfaced/executed/PR counts.
 func questTerminalSummary(q *run.Quest) string {
+	if q.ItemsBlocked > 0 {
+		return fmt.Sprintf("blocked: %d item(s) could not converge after %d attempts (%d completed, %d PRs)",
+			q.ItemsBlocked, maxItemAttempts(), q.ItemsCompleted, q.PRsOpened)
+	}
 	if q.Deliver == run.DeliverReview {
 		if q.ItemsCompleted > 0 {
 			return fmt.Sprintf("reviewed PR #%d (%d review item(s) completed)", q.TargetPR, q.ItemsCompleted)
@@ -712,6 +767,23 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 		if d == "skip" || d == "block" {
 			continue
 		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// resurfaceBlocked returns the transiently-blocked items held for a convergence
+// retry (a child run failed but the item still has thrash-cap attempts left). It
+// is the "re-surface" half of convergence: when a tick discovers nothing new, the
+// loop re-launches these instead of terminating with them unresolved. An item is
+// only in this set while attempts remain; once it exhausts the cap it becomes a
+// durable "blocked" WorkItem and is dropped from the map.
+func resurfaceBlocked(blocked map[string]questWorkItem) []questWorkItem {
+	if len(blocked) == 0 {
+		return nil
+	}
+	out := make([]questWorkItem, 0, len(blocked))
+	for _, it := range blocked {
 		out = append(out, it)
 	}
 	return out
