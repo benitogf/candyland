@@ -301,7 +301,61 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	// capability paths).
 	if opened == 0 {
 		c.attachRunPostmortem(id, c.blockerPostmortemFor("tl", "", "delivery: no pull request could be opened", firstPRErr(prs), 1, "branch "+r.Branch))
+		return
 	}
+
+	// ── Babysit: a "babysit"-delivery run doesn't end when its PR opens — it hands
+	//    the primary PR to the post-delivery watch loop, which merges on approval and
+	//    dispatches feedback fixes until then. watchPR blocks (in this executor
+	//    goroutine) until the PR merges or the run is stopped (ctx cancel). ──
+	if r.Deliver == run.DeliverBabysit {
+		primary, num := primaryPR(prs)
+		if num > 0 {
+			c.watchPR(ctx, id, primaryRepoDir(folders, delivered, primary), primary.URL, num)
+		}
+	}
+}
+
+// primaryPR returns the first successfully opened PR and its parsed number (0 when
+// the number can't be parsed from the URL). It's the PR a babysit run watches.
+func primaryPR(prs []run.PR) (run.PR, int) {
+	for _, pr := range prs {
+		if pr.URL == "" {
+			continue
+		}
+		return pr, prNumberFromURL(pr.URL)
+	}
+	return run.PR{}, 0
+}
+
+// prNumberFromURL extracts the trailing PR number from a gh PR URL
+// (…/pull/<n>). Returns 0 when there's no parseable trailing number.
+func prNumberFromURL(url string) int {
+	url = strings.TrimRight(url, "/")
+	i := strings.LastIndex(url, "/")
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(url[i+1:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// primaryRepoDir resolves the integration worktree dir the primary PR was opened
+// from, so the watch loop runs its gh commands in a repo that has the right remote.
+// Falls back to the run's primary folder when the delivered map doesn't key it.
+func primaryRepoDir(folders []string, delivered map[string]string, primary run.PR) string {
+	for repo, dir := range delivered {
+		if repoBase(repo) == primary.Repo {
+			return dir
+		}
+	}
+	if len(folders) > 0 {
+		return folders[0]
+	}
+	return primary.Repo
 }
 
 // deliverToBranch is the delivery step for a campaign/quest-owned child run: it
@@ -1014,14 +1068,54 @@ var hedgeWords = []string{
 	"i assume", "sibling branch", "other branch", "not a genuine blocker",
 }
 
+// narrationProse strips quoted code from a reviewer's output — fenced ``` blocks
+// and the git-diff hunks it pastes after running `git diff` — leaving only its own
+// prose. The verdict-integrity detectors scan this prose, so a blocker-class
+// KEYWORD that merely appears in the DIFF UNDER REVIEW (this file, for one, lists
+// "unreachable" and "regression" as admission phrases) cannot masquerade as the
+// reviewer's own admission and bounce an otherwise-clean verdict.
+func narrationProse(text string) string {
+	var b strings.Builder
+	inFence, inDiff := false, false
+	for _, ln := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if strings.HasPrefix(t, "diff --git") || strings.HasPrefix(t, "@@") {
+			inDiff = true
+			continue
+		}
+		if inDiff {
+			// A hunk's body/context/header lines start with +, -, a space, or \;
+			// index/---/+++ headers too. Anything else ends the hunk (back to prose).
+			if ln == "" || strings.HasPrefix(ln, "+") || strings.HasPrefix(ln, "-") ||
+				strings.HasPrefix(ln, " ") || strings.HasPrefix(ln, "\\") ||
+				strings.HasPrefix(t, "index ") {
+				continue
+			}
+			inDiff = false
+		}
+		b.WriteString(ln)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // cleanVerdictContradictsNarration reports whether a REVIEW_CLEAN's own narration
 // undermines it: it contains a blocker-class admission (the reviewer described a
 // real defect) OR a hedge word (the reviewer guessed rather than proved). It is a
 // pure, separately-testable detector — the structural backstop behind the parsed
 // verdict, so a model that narrates a problem then stamps CLEAN can't slip a PR
 // through. reason names the first offending phrase for the bounced-back finding.
+// It scans only the reviewer's PROSE (via narrationProse), never quoted diff/code,
+// so a keyword present in the change under review isn't mistaken for an admission.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(narrationProse(text))
 	for _, p := range blockerAdmissions {
 		if strings.Contains(lower, p) {
 			return true, "blocker-class admission in narration: " + strconv.Quote(p)
