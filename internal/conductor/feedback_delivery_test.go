@@ -62,6 +62,20 @@ func TestCleanVerdictContradictsNarration(t *testing.T) {
 			t.Errorf("keyword in quoted diff/code wrongly flagged as an admission: %s", reason)
 		}
 	}
+	// A blocker phrase in a NEGATED/mitigating context is the reviewer REFUTING the
+	// defect (the cited-evidence path a bounce demands), not admitting it — it must
+	// not be re-flagged. Guards the false positive where a reviewer proves the change
+	// is wired by naming the phrase it disproves.
+	mitigating := []string{
+		"I traced it from main; this is not dead code, the consumer calls it.\nREVIEW_CLEAN",
+		"There is no dead code here — every branch is reachable.\nREVIEW_CLEAN",
+		"The handler isn't unreachable; the router registers it at startup.\nREVIEW_CLEAN",
+	}
+	for _, s := range mitigating {
+		if bad, reason := cleanVerdictContradictsNarration(s); bad {
+			t.Errorf("negated/mitigating narration %q wrongly flagged: %s", s, reason)
+		}
+	}
 }
 
 // hedgedCleanReviewerClaude: the reviewer NARRATES a hedge ("plausibly … sibling

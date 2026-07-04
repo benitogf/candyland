@@ -1155,6 +1155,32 @@ func narrationProse(text string) string {
 	return b.String()
 }
 
+// negators are the words that, immediately before a blocker-class phrase, flip it
+// from an admission into MITIGATING evidence: "this is not dead code", "there is no
+// dead code", "it isn't unreachable". A reviewer citing that the change is wired and
+// works — exactly what a bounced verdict is told to do — must not be re-bounced by
+// the very phrase it is refuting.
+var negators = []string{"not", "no", "isn't", "aren't", "wasn't", "never", "nor", "without"}
+
+// negatedAt reports whether the phrase found at index i in lower is preceded (within
+// a few words) by a negator, making it mitigating rather than an admission.
+func negatedAt(lower string, i int) bool {
+	prefix := lower[:i]
+	fields := strings.Fields(prefix)
+	for j := len(fields) - 1; j >= 0 && j >= len(fields)-4; j-- {
+		w := strings.Trim(fields[j], ".,;:!?\"'()")
+		if strings.HasSuffix(w, "n't") {
+			return true
+		}
+		for _, n := range negators {
+			if w == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // cleanVerdictContradictsNarration reports whether a REVIEW_CLEAN's own narration
 // undermines it: it contains a blocker-class admission (the reviewer described a
 // real defect) OR a hedge word (the reviewer guessed rather than proved). It is a
@@ -1163,11 +1189,23 @@ func narrationProse(text string) string {
 // through. reason names the first offending phrase for the bounced-back finding.
 // It scans only the reviewer's PROSE (via narrationProse), never quoted diff/code,
 // so a keyword present in the change under review isn't mistaken for an admission.
+// A blocker phrase in a NEGATED/mitigating context ("not dead code", "isn't
+// unreachable") is the reviewer refuting the defect, not admitting it, so it is not
+// flagged — otherwise the cited-mitigating-evidence path a bounce demands could
+// never clear.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 	lower := strings.ToLower(narrationProse(text))
 	for _, p := range blockerAdmissions {
-		if strings.Contains(lower, p) {
-			return true, "blocker-class admission in narration: " + strconv.Quote(p)
+		for from := 0; ; {
+			idx := strings.Index(lower[from:], p)
+			if idx < 0 {
+				break
+			}
+			at := from + idx
+			if !negatedAt(lower, at) {
+				return true, "blocker-class admission in narration: " + strconv.Quote(p)
+			}
+			from = at + len(p)
 		}
 	}
 	for _, h := range hedgeWords {
