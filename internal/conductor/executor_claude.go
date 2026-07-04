@@ -222,9 +222,9 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	}
 
 	// ── Branch delivery (campaign/quest-owned child): the run commits its work onto
-	//    the campaign branch (campaign/<id> — the same name in each impacted repo) and
-	//    opens NO PR — the parent campaign opens one PR per repo at the end, after intent
-	//    review (Delivery & PR Policy: children never open PRs). Push the branch so the
+	//    the shared parent branch (quest/<id> or campaign/<id> — the same name in each
+	//    impacted repo) and opens NO PR — the parent opens one PR per repo at the end
+	//    (Delivery & PR Policy: children never open PRs). Push the branch so the
 	//    parent can collect the commits; record no PR. ──
 	if r.Deliver == run.DeliverBranch {
 		c.deliverToBranch(ctx, id, folders, delivered, r.Branch)
@@ -359,14 +359,16 @@ func primaryRepoDir(folders []string, delivered map[string]string, primary run.P
 }
 
 // deliverToBranch is the delivery step for a campaign/quest-owned child run: it
-// pushes each impacted repo's reviewed work onto the campaign branch (campaign/<id> —
-// the same name in each impacted repo) and opens NO pull request (children never open
-// PRs — the parent campaign opens one PR per repo at the end, after intent review).
-// The branch is r.Branch (campaign/<id>), set by the parent at launch. Pushing it
-// makes the commits
+// pushes each impacted repo's reviewed work onto the shared parent branch (quest/<id>
+// for a standalone quest's children, campaign/<id> for a campaign's — the same name in
+// each impacted repo) and opens NO pull request (children never open PRs — the parent
+// opens one PR per repo at the end).
+// The branch is r.Branch, set by the parent at launch. Pushing it makes the commits
 // collectable by the parent; a push failure is recorded per repo (partial-failure
-// isolation) but never opens a PR. The run reaches the PR phase as its terminal
-// state — its "delivery" is the pushed branch, not a PR.
+// isolation) but never opens a PR. When at least one repo's push lands the run reaches
+// the PR phase as its terminal state — its "delivery" is the pushed branch, not a PR.
+// If EVERY repo's push fails (pushed==0) the child delivered nothing: it records the
+// error and blocks the agent instead of claiming the terminal PR phase.
 func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []string, delivered map[string]string, branch string) {
 	c.Update(id, func(r *run.Run) {
 		r.StatusLine = "Pushing work onto the campaign branch (no PR — the campaign delivers)…"
@@ -381,12 +383,42 @@ func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []st
 		}
 		prs = append(prs, pr)
 	}
+	// A branch-delivered child's delivery IS the pushed branch (no PR opens), so a
+	// PR record with an empty Err is a landed commit. If EVERY repo's push failed the
+	// child delivered nothing — that's a capability/delivery failure, not a silent
+	// success: record the error, block the agent, and never claim the terminal PR
+	// phase (the parent would otherwise expect commits that were never pushed).
+	// Partial-failure isolation: at least one landed branch is a real (partial) delivery.
+	pushed := branchDeliveryPushed(prs)
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
+		if pushed == 0 {
+			r.Error = "Couldn't push onto the campaign branch " + branch + ". " + firstPRErr(prs) +
+				" Check the repo has an 'origin' remote you can push to."
+			setAgentState(r, "tl", "blocked", "no branch pushed")
+			return
+		}
 		r.Phase = run.PhasePR
 		r.StatusLine = "Committed onto " + branch + " — the campaign will open the PR after intent review."
 		setAgentState(r, "tl", "done", "committed onto "+branch)
 	})
+	// E2: a delivery-stage block (nothing pushed) carries a schema-valid postmortem,
+	// like the no-PR-opened and feedback-update blocks.
+	if pushed == 0 {
+		c.attachRunPostmortem(id, c.blockerPostmortemFor("tl", "", "delivery: could not push onto "+branch, firstPRErr(prs), 1, "branch "+branch))
+	}
+}
+
+// branchDeliveryPushed counts the repos whose branch-delivery push landed (an empty
+// Err on a PR-less branch record). Zero means the child delivered nothing.
+func branchDeliveryPushed(prs []run.PR) int {
+	pushed := 0
+	for _, pr := range prs {
+		if pr.Err == "" {
+			pushed++
+		}
+	}
+	return pushed
 }
 
 // feedbackBaseRef resolves the target PR's head branch to a local SHA (fetching it
@@ -648,19 +680,31 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 		setAgentState(r, "tl", "integrating", "merging the slices")
 	})
 	integDir := filepath.Join(repoWt, "integrate")
-	// A branch-delivered child shares ONE branch (campaign/<id>) with its siblings,
+	// A branch-delivered child shares ONE branch with its siblings (quest/<id> or
+	// campaign/<id>, per the parent),
 	// who run sequentially. If the shared branch already carries an earlier child's
-	// commits, base this integration off that tip (resolved to a SHA so addWorktree's
-	// branch -D doesn't strand the base) so the work ACCUMULATES rather than resets.
+	// commits, base this integration off that tip (resolved to a SHA so a later
+	// branch move doesn't strand the base) so the work ACCUMULATES rather than resets.
 	if cr, _ := c.Get(id); cr.Deliver == run.DeliverBranch {
 		if sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err == nil && sha != "" {
 			base = sha
 		}
 	}
+	// Integrate in a DETACHED worktree at the base SHA — never checking out `branch`,
+	// which a sibling/stale worktree may still hold. That sidesteps the "already used
+	// by worktree" collision that used to hard-block every child run after the first;
+	// the branch is (re)pointed at the integrated tip below via syncBranchRef.
+	//
 	// Feedback/review base resolution (the target-PR head SHA) is done by the caller
 	// (attemptDelivery) and passed in as `base`, so coders and this integration share
 	// the same base — no add/add conflict against files the PR already changed.
-	if err := addWorktree(ctx, repo, integDir, branch, base); err != nil {
+	if err := addDetachedWorktree(ctx, repo, integDir, base); err != nil {
+		// A branch-checkout collision is RETRYABLE — re-plan (re-derive the base off
+		// the branch tip) rather than hard-block; only a genuine failure is terminal.
+		if isWorktreeCollision(err) {
+			return "", "Couldn't create the integration worktree for " + repoBase(repo) + " (" + err.Error() +
+				"). A worktree still holds the run branch — retry the integration.", false
+		}
 		fail(ctx, c, id, "tl", "Couldn't create the integration worktree for "+repoBase(repo)+": "+err.Error())
 		return "", "", false
 	}
@@ -688,6 +732,12 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 		if ctx.Err() != nil {
 			return "", "", false
 		}
+	}
+	// Publish the integrated tip under the run branch: the integration worktree is
+	// detached, so update the local branch ref (push/PR resolve it) to HEAD.
+	if err := syncBranchRef(ctx, integDir, branch); err != nil {
+		fail(ctx, c, id, "tl", "Couldn't update the "+branch+" ref after integrating "+repoBase(repo)+": "+err.Error())
+		return "", "", false
 	}
 	return integDir, "", true
 }
@@ -1106,6 +1156,46 @@ func narrationProse(text string) string {
 	return b.String()
 }
 
+// negators are the words that, immediately before a blocker-class phrase, flip it
+// from an admission into MITIGATING evidence: "this is not dead code", "there is no
+// dead code", "it isn't unreachable". A reviewer citing that the change is wired and
+// works — exactly what a bounced verdict is told to do — must not be re-bounced by
+// the very phrase it is refuting.
+var negators = []string{"not", "no", "isn't", "aren't", "wasn't", "never", "nor", "without"}
+
+// quotedAt reports whether the phrase spanning [i, i+n) in lower is wrapped in
+// matching backticks or double quotes — the reviewer QUOTING a phrase/identifier
+// (e.g. naming the "dead code" admission string this file itself lists) rather than
+// admitting the defect. narrationProse strips fenced/diff blocks but not inline
+// quotations, so without this a reviewer discussing a change that is ABOUT
+// blocker-class phrases would bounce its own clean verdict.
+func quotedAt(lower string, i, n int) bool {
+	if i == 0 || i+n >= len(lower) {
+		return false
+	}
+	open, close := lower[i-1], lower[i+n]
+	return (open == '`' && close == '`') || (open == '"' && close == '"')
+}
+
+// negatedAt reports whether the phrase found at index i in lower is preceded (within
+// a few words) by a negator, making it mitigating rather than an admission.
+func negatedAt(lower string, i int) bool {
+	prefix := lower[:i]
+	fields := strings.Fields(prefix)
+	for j := len(fields) - 1; j >= 0 && j >= len(fields)-4; j-- {
+		w := strings.Trim(fields[j], ".,;:!?\"'()")
+		if strings.HasSuffix(w, "n't") {
+			return true
+		}
+		for _, n := range negators {
+			if w == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // cleanVerdictContradictsNarration reports whether a REVIEW_CLEAN's own narration
 // undermines it: it contains a blocker-class admission (the reviewer described a
 // real defect) OR a hedge word (the reviewer guessed rather than proved). It is a
@@ -1114,11 +1204,25 @@ func narrationProse(text string) string {
 // through. reason names the first offending phrase for the bounced-back finding.
 // It scans only the reviewer's PROSE (via narrationProse), never quoted diff/code,
 // so a keyword present in the change under review isn't mistaken for an admission.
+// A blocker phrase in a NEGATED/mitigating context ("not dead code", "isn't
+// unreachable") is the reviewer refuting the defect, not admitting it, so it is not
+// flagged — otherwise the cited-mitigating-evidence path a bounce demands could
+// never clear. An inline-QUOTED occurrence (`dead code` / "dead code") is the
+// reviewer naming the phrase (e.g. reviewing a change that is itself about these
+// admission strings), not admitting the defect, so it is not flagged either.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 	lower := strings.ToLower(narrationProse(text))
 	for _, p := range blockerAdmissions {
-		if strings.Contains(lower, p) {
-			return true, "blocker-class admission in narration: " + strconv.Quote(p)
+		for from := 0; ; {
+			idx := strings.Index(lower[from:], p)
+			if idx < 0 {
+				break
+			}
+			at := from + idx
+			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) {
+				return true, "blocker-class admission in narration: " + strconv.Quote(p)
+			}
+			from = at + len(p)
 		}
 	}
 	for _, h := range hedgeWords {
@@ -1257,6 +1361,12 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	}
 	if _, err := commitAll(ctx, integDir, "candyland(review): address findings in "+repoBase(repo)); err != nil {
 		fail(ctx, c, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
+		return false
+	}
+	// The integration worktree is detached; keep the run branch ref (what push/PR
+	// resolve) tracking the review-fix commits that just landed on HEAD.
+	if err := syncBranchRef(ctx, integDir, branch); err != nil {
+		fail(ctx, c, id, reviewerID, "Couldn't update the "+branch+" ref after review fixes for "+repoBase(repo)+": "+err.Error())
 		return false
 	}
 	return true

@@ -62,6 +62,34 @@ func TestCleanVerdictContradictsNarration(t *testing.T) {
 			t.Errorf("keyword in quoted diff/code wrongly flagged as an admission: %s", reason)
 		}
 	}
+	// A blocker phrase in a NEGATED/mitigating context is the reviewer REFUTING the
+	// defect (the cited-evidence path a bounce demands), not admitting it — it must
+	// not be re-flagged. Guards the false positive where a reviewer proves the change
+	// is wired by naming the phrase it disproves.
+	mitigating := []string{
+		"I traced it from main; this is not dead code, the consumer calls it.\nREVIEW_CLEAN",
+		"There is no dead code here — every branch is reachable.\nREVIEW_CLEAN",
+		"The handler isn't unreachable; the router registers it at startup.\nREVIEW_CLEAN",
+	}
+	for _, s := range mitigating {
+		if bad, reason := cleanVerdictContradictsNarration(s); bad {
+			t.Errorf("negated/mitigating narration %q wrongly flagged: %s", s, reason)
+		}
+	}
+	// An inline-QUOTED occurrence (backticks or double quotes) is the reviewer NAMING
+	// the phrase — e.g. reviewing a change that is itself about these admission strings
+	// — not admitting the defect. narrationProse strips fenced/diff blocks but not
+	// inline quotations, so this guards the self-referential false positive.
+	quotedInline := []string{
+		"I verified the `dead code` detector fires and is wired from reviewUntilClean.\nREVIEW_CLEAN",
+		"The change adds \"dead code\" to the admission list; I traced it reachable from main.\nREVIEW_CLEAN",
+		"The `unreachable` and `regression` keywords are new detector inputs, all wired.\nREVIEW_CLEAN",
+	}
+	for _, s := range quotedInline {
+		if bad, reason := cleanVerdictContradictsNarration(s); bad {
+			t.Errorf("inline-quoted phrase wrongly flagged as an admission: %s", reason)
+		}
+	}
 }
 
 // hedgedCleanReviewerClaude: the reviewer NARRATES a hedge ("plausibly … sibling

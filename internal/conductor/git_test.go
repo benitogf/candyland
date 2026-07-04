@@ -2,10 +2,83 @@ package conductor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// The integration flow must survive the collision that used to hard-block every
+// child run after the first: the run branch is held by another worktree (a
+// sibling's leftover integration dir, a stale/foreign checkout) — even a DIRTY
+// one that must not be force-removed. A DETACHED worktree at the base SHA never
+// claims the branch, so the add always succeeds; setBranchRef then (re)points the
+// branch at the integrated tip without a checkout, so nothing collides.
+func TestDetachedWorktreeIntegratesPastBranchHolder(t *testing.T) {
+	repo := newGitRepo(t)
+	ctx := context.Background()
+	branch := "campaign/c1"
+
+	// A DIRTY holder of the branch — the case addWorktree refuses to force-remove.
+	held := filepath.Join(t.TempDir(), "held")
+	if err := addWorktree(ctx, repo, held, branch, "main"); err != nil {
+		t.Fatalf("setup holder failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(held, "dirty.txt"), []byte("unsaved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	base, err := git(ctx, repo, "rev-parse", "main")
+	if err != nil {
+		t.Fatalf("resolve base: %v", err)
+	}
+	integ := filepath.Join(t.TempDir(), "integrate")
+	if err := addDetachedWorktree(ctx, repo, integ, base); err != nil {
+		t.Fatalf("detached integration worktree must succeed past a branch holder: %v", err)
+	}
+	// The dirty holder is left intact (never force-removed).
+	if _, err := os.Stat(filepath.Join(held, "dirty.txt")); err != nil {
+		t.Fatalf("dirty holder's unsaved work must be preserved: %v", err)
+	}
+	// Produce an integrated commit and publish it under the branch.
+	if err := os.WriteFile(filepath.Join(integ, "feature.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, integ, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, integ, "commit", "-m", "integrate"); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncBranchRef(ctx, integ, branch); err != nil {
+		t.Fatalf("syncBranchRef must move a branch held elsewhere: %v", err)
+	}
+	tip, err := git(ctx, integ, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := git(ctx, repo, "rev-parse", branch)
+	if err != nil {
+		t.Fatalf("resolve branch: %v", err)
+	}
+	if got != tip {
+		t.Fatalf("branch %q should point at the integrated tip %q, got %q", branch, tip, got)
+	}
+}
+
+// A real "already used by worktree" refusal is classified retryable, ordinary
+// errors are not — so the run re-plans on a collision instead of hard-blocking.
+func TestIsWorktreeCollision(t *testing.T) {
+	if !isWorktreeCollision(errors.New("fatal: 'campaign/c1' is already used by worktree at '/x'")) {
+		t.Fatal("git's branch-checkout collision must classify as retryable")
+	}
+	if isWorktreeCollision(errors.New("fatal: not a git repository")) {
+		t.Fatal("an unrelated error must not classify as a worktree collision")
+	}
+	if isWorktreeCollision(nil) {
+		t.Fatal("nil must not classify as a worktree collision")
+	}
+}
 
 // A Restart re-runs delivery from a clean slate, which means re-adding a worktree
 // on a branch a prior attempt already created — including the run branch, which
@@ -29,7 +102,7 @@ func TestAddWorktreeRestartable(t *testing.T) {
 	removeWorktree(ctx, repo, wt)
 }
 
-// Campaign/quest children share ONE branch (campaign/<id>) and integrate
+// Campaign/quest children share ONE branch (quest/<id> or campaign/<id>) and integrate
 // sequentially, each via its own integration worktree. If a sibling's worktree
 // (or any stale/foreign checkout) still holds the shared branch at a different
 // path, a plain `worktree add -B` fails with "already used by worktree" — the

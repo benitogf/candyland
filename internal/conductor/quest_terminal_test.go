@@ -98,6 +98,44 @@ func TestQuestBranchDeliveryNotSurfacedOnly(t *testing.T) {
 	}
 }
 
+// c-terminal-fidelity: a converge quest that COMPLETED work but whose terminal
+// per-repo PR delivery errored outright (every PR recorded an Err, none opened)
+// must terminate "delivery-failed" — never a misleading "done". Partial delivery
+// (one PR opened) is a real success and stays "done".
+func TestQuestDeliveryFailureNeverDone(t *testing.T) {
+	failed := &run.Quest{
+		Deliver:        run.DeliverBranch, // carve-out would say "not a no-op"; delivery failure still wins
+		ItemsCompleted: 2,
+		PRs:            []run.PR{{Repo: "candyland", Err: "push failed: no origin"}},
+	}
+	if !questDeliveryFailed(failed) {
+		t.Fatal("a quest whose only PR errored must be flagged delivery-failed")
+	}
+	if st := questTerminalStatus(failed); st != "delivery-failed" {
+		t.Errorf("terminal status = %q, want delivery-failed", st)
+	}
+	if s := questTerminalSummary(failed); !containsFold(s, "delivery-failed") || !containsFold(s, "push failed") {
+		t.Errorf("summary must account the delivery failure, got %q", s)
+	}
+
+	// Partial delivery — one repo opened, one errored — is a real (partial) success.
+	partial := &run.Quest{
+		ItemsCompleted: 2,
+		PRs:            []run.PR{{Repo: "a", URL: "http://x/pull/1"}, {Repo: "b", Err: "push failed"}},
+	}
+	if questDeliveryFailed(partial) {
+		t.Error("a partial delivery (one PR opened) is not a delivery failure")
+	}
+	if st := questTerminalStatus(partial); st != "done" {
+		t.Errorf("partial-delivery terminal status = %q, want done", st)
+	}
+
+	// A quest that opened no terminal PRs by design (no q.PRs) is not delivery-failed.
+	if questDeliveryFailed(&run.Quest{ItemsCompleted: 1}) {
+		t.Error("a quest with no terminal PRs recorded must not be delivery-failed")
+	}
+}
+
 // O3: a campaign's child run is linked BOTH ways right at launch — the child
 // carries CampaignID, and the parent's RunIDs lists the child — so the rollup is
 // never empty while the campaign runs.

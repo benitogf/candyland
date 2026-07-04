@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -241,6 +242,83 @@ func TestQuestTokenBudgetPauses(t *testing.T) {
 	if q.PauseReason == "" {
 		t.Error("the pause must carry a visible reason")
 	}
+}
+
+// resurfaceBlocked is the "re-surface" half of convergence: transiently-blocked
+// items (a child run failed but attempts remain) are handed back for a retry when a
+// tick discovers nothing new, so a transient block converges instead of terminating
+// unresolved. Pin the contract the drive loop relies on.
+func TestResurfaceBlocked(t *testing.T) {
+	if got := resurfaceBlocked(nil); got != nil {
+		t.Fatalf("empty map must re-surface nothing, got %+v", got)
+	}
+	blocked := map[string]questWorkItem{
+		"flaky item":   {Title: "flaky item", Evidence: "e1", Classification: "c1", Decision: "do"},
+		"another item": {Title: "another item", Evidence: "e2", Classification: "c2", Decision: "do"},
+	}
+	got := resurfaceBlocked(blocked)
+	if len(got) != 2 {
+		t.Fatalf("both blocked items must re-surface, got %d (%+v)", len(got), got)
+	}
+	seen := map[string]bool{}
+	for _, it := range got {
+		seen[it.Title] = true
+	}
+	if !seen["flaky item"] || !seen["another item"] {
+		t.Errorf("re-surfaced titles = %v, want both blocked items", seen)
+	}
+}
+
+// The convergence gate: a quest with unresolved blocked items converges to a
+// terminal "blocked" (with a schema-valid postmortem, E2) — NEVER a clean "done".
+// A quest with zero blocked items reaches "done". This is the "gates clean done on
+// zero blocked" half of the task.
+func TestQuestConvergenceGatesDoneOnBlocked(t *testing.T) {
+	// zero blocked, delivered work → clean "done".
+	clean := &run.Quest{ItemsCompleted: 1, PRsOpened: 1, WorkItems: []run.WorkItem{{Disposition: "completed"}}}
+	if got := questTerminalStatus(clean); got != "done" {
+		t.Errorf("zero-blocked delivered quest status = %q, want done", got)
+	}
+	// one blocked item → the gate forces "blocked", not "done".
+	blocked := &run.Quest{ItemsCompleted: 1, ItemsBlocked: 1}
+	if got := questTerminalStatus(blocked); got != "blocked" {
+		t.Errorf("quest with a blocked item status = %q, want blocked", got)
+	}
+
+	// finishQuest end to end: a converge quest whose only item is durably blocked must
+	// land "blocked" with a postmortem attached and a summary naming the block — not a
+	// silent "done". ItemsCompleted is 0 so no terminal branch PR is attempted (no git).
+	c, _ := newQuestServer(t)
+	id := c.CreateQuest(run.QuestSpec{Objective: "converge me", Folders: []string{"/repo"}})
+	c.UpdateQuest(id, func(q *run.Quest) {
+		q.WorkItems = []run.WorkItem{{ID: "t1-w0", SourceTick: "t1", Classification: "cleanup", Evidence: "a stale import", Disposition: "blocked"}}
+		recomputeQuestRollups(q)
+	})
+	c.finishQuest(context.Background(), id)
+
+	q, _ := c.GetQuest(id)
+	if q.Status != "blocked" {
+		t.Fatalf("blocked-item quest terminal status = %q, want blocked", q.Status)
+	}
+	if q.Postmortem == nil {
+		t.Error("a terminal blocked quest must carry a schema-valid postmortem (E2)")
+	}
+	if q.Summary == "" || !contains(q.Summary, "blocked") {
+		t.Errorf("terminal summary must name the block, got %q", q.Summary)
+	}
+}
+
+// contains reports whether sub appears in s (a tiny local helper to keep the assert
+// legible without pulling strings into the test's imports).
+func contains(s, sub string) bool { return len(sub) == 0 || indexOf(s, sub) >= 0 }
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }
 
 // parseWorkItems is the quest-lead verdict convention (the WORKITEMS / WORKITEMS_NONE
