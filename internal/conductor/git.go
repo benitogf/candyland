@@ -134,6 +134,57 @@ func addWorktree(ctx context.Context, repo, wtDir, branch, base string) error {
 	return err
 }
 
+// addDetachedWorktree creates a worktree at wtDir checked out DETACHED at ref (a
+// SHA or branch name), so the integration flow can build on a base without ever
+// holding `branch` in a worktree. A branch may be checked out in only ONE
+// worktree, so a plain `worktree add -B branch` collides ("already used by
+// worktree") when a sibling child run's leftover integration worktree — or a
+// stale/foreign checkout — still holds the shared branch at a different path. A
+// detached checkout sidesteps that whole class of collision: it never claims the
+// branch. The run branch is (re)pointed at the integrated tip afterwards via
+// setBranchRef, which needs no checkout and so never collides either.
+//
+// Like addWorktree it clears any leftover worktree/dir at the same path first, so
+// a quick stop→edit→begin (or an id reused after a restart) starts clean.
+func addDetachedWorktree(ctx context.Context, repo, wtDir, ref string) error {
+	_, _ = git(ctx, repo, "worktree", "remove", "--force", wtDir)
+	_, _ = git(ctx, repo, "worktree", "prune")
+	_ = os.RemoveAll(wtDir) // drop any orphan directory left by a crashed prior run
+	_, err := git(ctx, repo, "worktree", "add", "--detach", wtDir, ref)
+	return err
+}
+
+// setBranchRef (re)points refs/heads/branch at sha using the low-level update-ref,
+// which — unlike `git branch -f` — moves a branch even while it is checked out (or
+// dirty) in ANOTHER worktree. That is exactly the stale/sibling holder that made
+// `worktree add -B` collide; here the detached integration worktree owns the
+// commits and update-ref just publishes them under the branch name, so downstream
+// push/PR (which read the local branch ref) see the integrated tip.
+func setBranchRef(ctx context.Context, dir, branch, sha string) error {
+	_, err := git(ctx, dir, "update-ref", "refs/heads/"+branch, sha)
+	return err
+}
+
+// syncBranchRef points branch at the worktree's current HEAD — called after each
+// integration/review-fix commit lands on the detached integration worktree so the
+// local branch ref (what push/PR resolve) tracks the accumulated work.
+func syncBranchRef(ctx context.Context, wtDir, branch string) error {
+	sha, err := git(ctx, wtDir, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	return setBranchRef(ctx, wtDir, branch, sha)
+}
+
+// isWorktreeCollision reports whether err is git's "already used by worktree"
+// refusal — a branch held by another (stale/sibling/foreign) worktree. It is
+// RETRYABLE, never terminal: a re-plan re-derives the base off the current branch
+// tip, and the detached integration worktree avoids the collision entirely, so the
+// run must never hard-block on it.
+func isWorktreeCollision(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "already used by worktree")
+}
+
 // worktreesForBranch returns the worktree directories currently checked out on
 // branch (normally zero or one). It parses `git worktree list --porcelain`, whose
 // records are blank-line separated with a "worktree <path>" line and, for a

@@ -682,17 +682,28 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 	integDir := filepath.Join(repoWt, "integrate")
 	// A branch-delivered child shares ONE branch (campaign/<id>) with its siblings,
 	// who run sequentially. If the shared branch already carries an earlier child's
-	// commits, base this integration off that tip (resolved to a SHA so addWorktree's
-	// branch -D doesn't strand the base) so the work ACCUMULATES rather than resets.
+	// commits, base this integration off that tip (resolved to a SHA so a later
+	// branch move doesn't strand the base) so the work ACCUMULATES rather than resets.
 	if cr, _ := c.Get(id); cr.Deliver == run.DeliverBranch {
 		if sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err == nil && sha != "" {
 			base = sha
 		}
 	}
+	// Integrate in a DETACHED worktree at the base SHA — never checking out `branch`,
+	// which a sibling/stale worktree may still hold. That sidesteps the "already used
+	// by worktree" collision that used to hard-block every child run after the first;
+	// the branch is (re)pointed at the integrated tip below via syncBranchRef.
+	//
 	// Feedback/review base resolution (the target-PR head SHA) is done by the caller
 	// (attemptDelivery) and passed in as `base`, so coders and this integration share
 	// the same base — no add/add conflict against files the PR already changed.
-	if err := addWorktree(ctx, repo, integDir, branch, base); err != nil {
+	if err := addDetachedWorktree(ctx, repo, integDir, base); err != nil {
+		// A branch-checkout collision is RETRYABLE — re-plan (re-derive the base off
+		// the branch tip) rather than hard-block; only a genuine failure is terminal.
+		if isWorktreeCollision(err) {
+			return "", "Couldn't create the integration worktree for " + repoBase(repo) + " (" + err.Error() +
+				"). A worktree still holds the run branch — retry the integration.", false
+		}
 		fail(ctx, c, id, "tl", "Couldn't create the integration worktree for "+repoBase(repo)+": "+err.Error())
 		return "", "", false
 	}
@@ -720,6 +731,12 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 		if ctx.Err() != nil {
 			return "", "", false
 		}
+	}
+	// Publish the integrated tip under the run branch: the integration worktree is
+	// detached, so update the local branch ref (push/PR resolve it) to HEAD.
+	if err := syncBranchRef(ctx, integDir, branch); err != nil {
+		fail(ctx, c, id, "tl", "Couldn't update the "+branch+" ref after integrating "+repoBase(repo)+": "+err.Error())
+		return "", "", false
 	}
 	return integDir, "", true
 }
@@ -1289,6 +1306,12 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	}
 	if _, err := commitAll(ctx, integDir, "candyland(review): address findings in "+repoBase(repo)); err != nil {
 		fail(ctx, c, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
+		return false
+	}
+	// The integration worktree is detached; keep the run branch ref (what push/PR
+	// resolve) tracking the review-fix commits that just landed on HEAD.
+	if err := syncBranchRef(ctx, integDir, branch); err != nil {
+		fail(ctx, c, id, reviewerID, "Couldn't update the "+branch+" ref after review fixes for "+repoBase(repo)+": "+err.Error())
 		return false
 	}
 	return true
