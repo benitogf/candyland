@@ -381,12 +381,42 @@ func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []st
 		}
 		prs = append(prs, pr)
 	}
+	// A branch-delivered child's delivery IS the pushed branch (no PR opens), so a
+	// PR record with an empty Err is a landed commit. If EVERY repo's push failed the
+	// child delivered nothing — that's a capability/delivery failure, not a silent
+	// success: record the error, block the agent, and never claim the terminal PR
+	// phase (the parent would otherwise expect commits that were never pushed).
+	// Partial-failure isolation: at least one landed branch is a real (partial) delivery.
+	pushed := branchDeliveryPushed(prs)
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
+		if pushed == 0 {
+			r.Error = "Couldn't push onto the campaign branch " + branch + ". " + firstPRErr(prs) +
+				" Check the repo has an 'origin' remote you can push to."
+			setAgentState(r, "tl", "blocked", "no branch pushed")
+			return
+		}
 		r.Phase = run.PhasePR
 		r.StatusLine = "Committed onto " + branch + " — the campaign will open the PR after intent review."
 		setAgentState(r, "tl", "done", "committed onto "+branch)
 	})
+	// E2: a delivery-stage block (nothing pushed) carries a schema-valid postmortem,
+	// like the no-PR-opened and feedback-update blocks.
+	if pushed == 0 {
+		c.attachRunPostmortem(id, c.blockerPostmortemFor("tl", "", "delivery: could not push onto "+branch, firstPRErr(prs), 1, "branch "+branch))
+	}
+}
+
+// branchDeliveryPushed counts the repos whose branch-delivery push landed (an empty
+// Err on a PR-less branch record). Zero means the child delivered nothing.
+func branchDeliveryPushed(prs []run.PR) int {
+	pushed := 0
+	for _, pr := range prs {
+		if pr.Err == "" {
+			pushed++
+		}
+	}
+	return pushed
 }
 
 // feedbackBaseRef resolves the target PR's head branch to a local SHA (fetching it
