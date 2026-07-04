@@ -365,8 +365,10 @@ func primaryRepoDir(folders []string, delivered map[string]string, primary run.P
 // The branch is r.Branch (campaign/<id>), set by the parent at launch. Pushing it
 // makes the commits
 // collectable by the parent; a push failure is recorded per repo (partial-failure
-// isolation) but never opens a PR. The run reaches the PR phase as its terminal
-// state — its "delivery" is the pushed branch, not a PR.
+// isolation) but never opens a PR. When at least one repo's push lands the run reaches
+// the PR phase as its terminal state — its "delivery" is the pushed branch, not a PR.
+// If EVERY repo's push fails (pushed==0) the child delivered nothing: it records the
+// error and blocks the agent instead of claiming the terminal PR phase.
 func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []string, delivered map[string]string, branch string) {
 	c.Update(id, func(r *run.Run) {
 		r.StatusLine = "Pushing work onto the campaign branch (no PR — the campaign delivers)…"
