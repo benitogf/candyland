@@ -222,9 +222,9 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	}
 
 	// ── Branch delivery (campaign/quest-owned child): the run commits its work onto
-	//    the campaign branch (campaign/<id> — the same name in each impacted repo) and
-	//    opens NO PR — the parent campaign opens one PR per repo at the end, after intent
-	//    review (Delivery & PR Policy: children never open PRs). Push the branch so the
+	//    the shared parent branch (quest/<id> or campaign/<id> — the same name in each
+	//    impacted repo) and opens NO PR — the parent opens one PR per repo at the end
+	//    (Delivery & PR Policy: children never open PRs). Push the branch so the
 	//    parent can collect the commits; record no PR. ──
 	if r.Deliver == run.DeliverBranch {
 		c.deliverToBranch(ctx, id, folders, delivered, r.Branch)
@@ -359,11 +359,11 @@ func primaryRepoDir(folders []string, delivered map[string]string, primary run.P
 }
 
 // deliverToBranch is the delivery step for a campaign/quest-owned child run: it
-// pushes each impacted repo's reviewed work onto the campaign branch (campaign/<id> —
-// the same name in each impacted repo) and opens NO pull request (children never open
-// PRs — the parent campaign opens one PR per repo at the end, after intent review).
-// The branch is r.Branch (campaign/<id>), set by the parent at launch. Pushing it
-// makes the commits
+// pushes each impacted repo's reviewed work onto the shared parent branch (quest/<id>
+// for a standalone quest's children, campaign/<id> for a campaign's — the same name in
+// each impacted repo) and opens NO pull request (children never open PRs — the parent
+// opens one PR per repo at the end).
+// The branch is r.Branch, set by the parent at launch. Pushing it makes the commits
 // collectable by the parent; a push failure is recorded per repo (partial-failure
 // isolation) but never opens a PR. When at least one repo's push lands the run reaches
 // the PR phase as its terminal state — its "delivery" is the pushed branch, not a PR.
@@ -680,7 +680,8 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 		setAgentState(r, "tl", "integrating", "merging the slices")
 	})
 	integDir := filepath.Join(repoWt, "integrate")
-	// A branch-delivered child shares ONE branch (campaign/<id>) with its siblings,
+	// A branch-delivered child shares ONE branch with its siblings (quest/<id> or
+	// campaign/<id>, per the parent),
 	// who run sequentially. If the shared branch already carries an earlier child's
 	// commits, base this integration off that tip (resolved to a SHA so a later
 	// branch move doesn't strand the base) so the work ACCUMULATES rather than resets.

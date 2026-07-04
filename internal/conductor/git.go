@@ -114,12 +114,17 @@ func prBase(ctx context.Context, repo string) string {
 // A branch can be checked out in only ONE worktree, so `worktree add -B` also
 // fails with "already used by worktree" when `branch` is held at a DIFFERENT
 // path — e.g. a sibling child run's leftover integration worktree (campaign/quest
-// children share one branch, campaign/<id>), or a stale/foreign checkout of that
-// branch. Clearing only wtDir misses those, so addWorktree detaches every OTHER
-// worktree on this branch first, making the add idempotent w.r.t. the branch. A
+// children share one branch: quest/<id> for a standalone quest's children,
+// campaign/<id> for a campaign's), or a stale/foreign checkout of that branch.
+// Clearing only wtDir misses those, so addWorktree detaches every OTHER worktree
+// on this branch first, making the add idempotent w.r.t. the branch. An OTHER-path
 // holder with uncommitted changes is left untouched (the add then fails honestly
-// rather than nuking unsaved work); the branch ref and its commits always survive
-// — only the worktree registration is removed.
+// rather than nuking unsaved work), and a detached clean holder keeps its commits;
+// the leftover at wtDir itself is cleared unconditionally, and `branch -D` + `-B`
+// reset the branch ref to base, so callers use addWorktree only for run-scoped
+// task/tl branches; the shared parent branch is never added here — integration
+// builds in a DETACHED worktree at the accumulated tip (addDetachedWorktree) and
+// re-points the branch via setBranchRef, which this reset therefore never touches.
 func addWorktree(ctx context.Context, repo, wtDir, branch, base string) error {
 	_, _ = git(ctx, repo, "worktree", "remove", "--force", wtDir)
 	for _, other := range worktreesForBranch(ctx, repo, branch) {

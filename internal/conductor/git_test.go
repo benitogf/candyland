@@ -102,7 +102,7 @@ func TestAddWorktreeRestartable(t *testing.T) {
 	removeWorktree(ctx, repo, wt)
 }
 
-// Campaign/quest children share ONE branch (campaign/<id>) and integrate
+// Campaign/quest children share ONE branch (quest/<id> or campaign/<id>) and integrate
 // sequentially, each via its own integration worktree. If a sibling's worktree
 // (or any stale/foreign checkout) still holds the shared branch at a different
 // path, a plain `worktree add -B` fails with "already used by worktree" — the
