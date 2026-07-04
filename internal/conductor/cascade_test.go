@@ -54,3 +54,51 @@ func TestStopQuestCascadeIsSafeWithoutLiveRuns(t *testing.T) {
 		t.Errorf("quest status = %q, want stopped", q.Status)
 	}
 }
+
+// Stopping a quest/campaign stamps its OWN coordinating agents (quest lead,
+// intent/tech managers) terminal — not just its child runs' agents. Without the
+// stamp the dashboard renders a killed coordinator as "Working" beside a stopped
+// parent (the stopped+Working contradiction, quest/campaign half). Genuinely
+// terminal agents keep their real outcome.
+func TestStopStampsCoordinatingAgentsTerminal(t *testing.T) {
+	c, _ := newQuestServer(t)
+
+	camID := c.CreateCampaign(run.CampaignSpec{Input: "build the thing", Folders: []string{"/repo"}})
+	qID := c.CreateQuest(run.QuestSpec{Objective: "a child quest", Folders: []string{"/repo"}, CampaignID: camID})
+
+	// Seed in-flight + terminal coordinating agents the way mapAgentLine would.
+	c.UpdateCampaign(camID, func(cam *run.Campaign) {
+		cam.Agents = []run.Agent{
+			{ID: intentManagerID, Role: RoleIntentManager, State: "working"},
+			{ID: techManagerID, Role: RoleTechManager, State: "done"},
+		}
+	})
+	c.UpdateQuest(qID, func(q *run.Quest) {
+		q.Agents = []run.Agent{{ID: questLeadID, Role: RoleQuestLead, State: "working"}}
+	})
+
+	if !c.StopCampaign(camID, "operator halt") {
+		t.Fatal("StopCampaign should succeed")
+	}
+
+	cam, _ := c.GetCampaign(camID)
+	for _, a := range cam.Agents {
+		switch a.ID {
+		case intentManagerID:
+			if a.State != "stopped" {
+				t.Errorf("in-flight campaign coordinator %q state = %q, want stopped", a.ID, a.State)
+			}
+		case techManagerID:
+			if a.State != "done" {
+				t.Errorf("terminal campaign coordinator %q state = %q, want done (preserved)", a.ID, a.State)
+			}
+		}
+	}
+	// The cascade goes through StopQuest, so the child quest's lead is stamped too.
+	q, _ := c.GetQuest(qID)
+	for _, a := range q.Agents {
+		if a.ID == questLeadID && a.State != "stopped" {
+			t.Errorf("quest lead state = %q, want stopped (cascade)", a.State)
+		}
+	}
+}

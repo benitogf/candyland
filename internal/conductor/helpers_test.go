@@ -25,3 +25,28 @@ func TestRunBranch(t *testing.T) {
 		}
 	}
 }
+
+// stopInFlightAgents stamps in-flight agents terminal on a stop but must preserve
+// a genuine outcome — a green/done/blocked agent keeps its real state, so a stop
+// never rewrites finished work as "stopped".
+func TestStopInFlightAgents(t *testing.T) {
+	agents := []run.Agent{
+		{ID: "idle", State: "idle"},
+		{ID: "working", State: "working"},
+		{ID: "retrying", State: "retrying"},
+		{ID: "integrating", State: "integrating"},
+		{ID: "green", State: "green"},
+		{ID: "done", State: "done"},
+		{ID: "blocked", State: "blocked"},
+	}
+	stopInFlightAgents(agents)
+	want := map[string]string{
+		"idle": "stopped", "working": "stopped", "retrying": "stopped", "integrating": "stopped",
+		"green": "green", "done": "done", "blocked": "blocked",
+	}
+	for _, a := range agents {
+		if a.State != want[a.ID] {
+			t.Errorf("agent %q: got state %q, want %q", a.ID, a.State, want[a.ID])
+		}
+	}
+}

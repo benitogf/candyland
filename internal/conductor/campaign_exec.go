@@ -167,6 +167,11 @@ func (c *Conductor) StopCampaign(id, reason string) bool {
 		cam.Status = "stopped"
 		cam.StopReason = reason
 		cam.PauseReason = reason
+		// Stamp the campaign's own coordinating agents (intent/tech managers)
+		// terminal so the dashboard doesn't show "Working" beside a stopped
+		// campaign. A live drive's in-flight stream write may land after this,
+		// but its exit defer re-stamps, so the final state is always terminal.
+		stopInFlightAgents(cam.Agents)
 	})
 }
 
@@ -252,6 +257,16 @@ func (c *Conductor) CampaignChildQuests(id string) []run.Quest {
 // persists for resume.
 func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 	defer c.haltCampaignDrive(id)
+	// Every campaign-agent write happens synchronously in this goroutine
+	// (campaignSpawn/streamOnce inside the stages), so drive exit is the race-safe
+	// join point to stamp the coordinating agents terminal on a stop — mirroring
+	// the run executor's stopped <-done branch. StopCampaign also stamps (for the
+	// no-live-drive case); this defer runs after any post-stop stream write.
+	defer func() {
+		if cam, ok := c.GetCampaign(id); ok && cam.Status == "stopped" {
+			c.UpdateCampaign(id, func(cam *run.Campaign) { stopInFlightAgents(cam.Agents) })
+		}
+	}()
 	defer c.cleanupBusConfigs(intentLeadID)
 	defer c.cleanupBusConfigs(intentManagerID)
 	defer c.cleanupBusConfigs(intentReviewerID)

@@ -89,17 +89,18 @@ export const RepoDelivery = ({ prs }) => {
 // child quests, and the parent's own coordinating agents). Buckets agents by
 // working vs done vs other, and sums tokens.
 export const agentActivity = (entities) => {
-    let working = 0; let done = 0; let other = 0; let tokens = 0; let total = 0
+    let working = 0; let done = 0; let stopped = 0; let other = 0; let tokens = 0; let total = 0
     for (const e of entities || []) {
         for (const a of e?.agents || []) {
             total++
             tokens += a.tokens || 0
             if (a.state === 'working' || a.state === 'retrying' || a.state === 'integrating') working++
             else if (a.state === 'green' || a.state === 'done') done++
+            else if (a.state === 'stopped') stopped++
             else other++
         }
     }
-    return { working, done, other, tokens, total }
+    return { working, done, stopped, other, tokens, total }
 }
 
 export const AgentActivity = ({ entities }) => {
@@ -110,6 +111,7 @@ export const AgentActivity = ({ entities }) => {
             <Chip size="small" variant="outlined" label={`${a.total} agent${a.total > 1 ? 's' : ''}`} sx={{ height: 22 }} />
             {a.working > 0 && <Chip size="small" variant="outlined" color="info" label={`${a.working} working`} sx={{ height: 22 }} />}
             {a.done > 0 && <Chip size="small" variant="outlined" color="success" label={`${a.done} done`} sx={{ height: 22 }} />}
+            {a.stopped > 0 && <Chip size="small" variant="outlined" label={`${a.stopped} stopped`} sx={{ height: 22 }} />}
             {a.other > 0 && <Chip size="small" variant="outlined" label={`${a.other} idle/blocked`} sx={{ height: 22 }} />}
             <Typography variant="body2" color="text.secondary">· {a.tokens.toLocaleString()} tokens across children</Typography>
         </Box>

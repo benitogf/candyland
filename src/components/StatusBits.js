@@ -16,6 +16,7 @@ import BlockIcon from '@mui/icons-material/Block'
 import CallMergeIcon from '@mui/icons-material/CallMerge'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import TaskAltIcon from '@mui/icons-material/TaskAlt'
+import StopCircleIcon from '@mui/icons-material/StopCircle'
 
 import { candy } from '../config'
 import { STATE_META } from '../meta/run'
@@ -31,6 +32,7 @@ export const STATE_ICON = {
     integrating: CallMergeIcon,
     green: CheckCircleIcon,
     done: TaskAltIcon,
+    stopped: StopCircleIcon,
 }
 
 export const StateIcon = ({ state, size = 15 }) => {
@@ -67,7 +69,7 @@ export const StateChip = ({ state }) => {
 
 // A two-bucket legend — the distinction the task list needs: in progress vs done.
 const PROGRESS = ['idle', 'working', 'retrying', 'blocked', 'integrating']
-const DONE = ['green', 'done']
+const DONE = ['green', 'done', 'stopped']
 
 const LegendGroup = ({ title, keys }) => (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexWrap: 'wrap' }}>

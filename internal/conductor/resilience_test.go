@@ -424,6 +424,22 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 			t.Error("a coder killed mid-flight by stop was falsely marked green")
 		}
 	}
+	// The coder is stamped terminal "stopped" once the run unwinds — never left
+	// "working", which would render as a live "Working" agent card beside the
+	// run's stopped status (the stopped+Working dashboard contradiction).
+	r = waitFor(t, c, id, func(r run.Run) bool {
+		for _, a := range r.Agents {
+			if a.ID == "a" {
+				return a.State == "stopped"
+			}
+		}
+		return false
+	}, 15*time.Second)
+	for _, a := range r.Agents {
+		if a.ID == "a" && a.State != "stopped" {
+			t.Errorf("coder killed by stop should be stamped %q, got %q", "stopped", a.State)
+		}
+	}
 	if r.TasksGreen != 0 {
 		t.Errorf("tasksGreen=%d want 0 after stopping an in-flight run", r.TasksGreen)
 	}

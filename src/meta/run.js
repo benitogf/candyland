@@ -16,6 +16,9 @@ export const STATE_META = {
     integrating: { label: 'Integrating', color: 'secondary.main', dot: candy.mint, phase: 'progress' },
     green: { label: 'Green', color: 'success.main', dot: '#7bdc6a', phase: 'done' },
     done: { label: 'Done', color: 'primary.main', dot: candy.pink, phase: 'done' },
+    // A worker killed by a stop: terminal, but not a success. Rendered neutral so
+    // a stopped run's agent cards read "Stopped", never a lingering "Working".
+    stopped: { label: 'Stopped', color: 'text.secondary', dot: '#6b5c8a', phase: 'done' },
 }
 
 export const isDone = (state) => STATE_META[state]?.phase === 'done'
