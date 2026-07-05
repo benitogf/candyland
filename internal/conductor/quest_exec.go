@@ -94,6 +94,11 @@ func (c *Conductor) StopQuest(id, reason string) bool {
 		q.Status = "stopped"
 		q.StopReason = reason
 		q.PauseReason = reason
+		// Stamp the quest's own coordinating agents (the quest lead) terminal so
+		// the dashboard doesn't show "Working" beside a stopped quest. A live
+		// drive's in-flight stream write may land after this, but its exit defer
+		// re-stamps, so the final state is always terminal.
+		stopInFlightAgents(q.Agents)
 	})
 	if ok {
 		c.stopChildRuns(c.QuestChildRuns(id))
@@ -165,6 +170,16 @@ func (c *Conductor) QuestChildRuns(id string) []run.Run {
 func (c *Conductor) driveQuest(ctx context.Context, id string) {
 	defer c.haltQuestDrive(id)    // forget the driver on exit so a later BeginQuest can re-drive
 	defer c.cleanupBusConfigs(id) // drop the quest lead's per-spawn --mcp-config files
+	// Every quest-agent write happens synchronously in this goroutine (streamOnce
+	// inside the ticks), so drive exit is the race-safe join point to stamp the
+	// coordinating agents terminal on a stop — mirroring the run executor's
+	// stopped <-done branch. StopQuest also stamps (for the no-live-drive case);
+	// this defer runs after any stream write a live drive got in post-stop.
+	defer func() {
+		if q, ok := c.GetQuest(id); ok && q.Status == "stopped" {
+			c.UpdateQuest(id, func(q *run.Quest) { stopInFlightAgents(q.Agents) })
+		}
+	}()
 
 	ticks := maxQuestTicks()
 	itemAttempts := map[string]int{} // work-item title → times a child run was launched (thrash cap)

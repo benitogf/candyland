@@ -102,7 +102,11 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 			if stopped {
 				// Stopped — park on the control channel only. Setting done to nil
 				// stops this select from spinning on the now-closed done channel
-				// (a busy loop).
+				// (a busy loop). fanOut has fully unwound by the time done fires, so
+				// no coder goroutine can re-write an agent after this — stamp every
+				// still-in-flight agent terminal so the dashboard doesn't render a
+				// killed agent as "Working" beside the run's stopped status.
+				c.Update(id, func(r *run.Run) { stopInFlightAgents(r.Agents) })
 				done = nil
 				continue
 			}
