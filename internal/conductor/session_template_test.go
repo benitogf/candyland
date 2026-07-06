@@ -23,6 +23,19 @@ import (
 // failure. The stub records every spawn in a counter file so the tests can pin
 // "exactly one creation" (caching, singleflight) and "zero spawns" (kill switch).
 
+// TestMain defaults the session-reuse kill switch OFF for the whole package:
+// the pre-existing run/quest/campaign tests sequence their stub-claude scripts
+// by invocation count, and an implicit synchronous template creation at a spawn
+// site would corrupt that accounting. Template/fork tests opt back in
+// deliberately (templateConductor sets CANDYLAND_SESSION_REUSE=1). An explicit
+// value already present in the environment is respected.
+func TestMain(m *testing.M) {
+	if _, set := os.LookupEnv("CANDYLAND_SESSION_REUSE"); !set {
+		os.Setenv("CANDYLAND_SESSION_REUSE", "0")
+	}
+	os.Exit(m.Run())
+}
+
 // templateStubClaude speaks the two contracts the registry uses: a --version
 // probe (stamped into the entry) and a template-creation spawn — it logs the
 // spawn + argv to $CANDYLAND_TEMPLATE_FIXTURE, echoes back the --session-id it
@@ -53,6 +66,9 @@ func templateConductor(t *testing.T, claudeScript string) (*Conductor, string, s
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { srv.Close(os.Interrupt) })
+	// The package default (TestMain) is reuse OFF; the tests built on this
+	// helper exercise the template feature deliberately.
+	t.Setenv("CANDYLAND_SESSION_REUSE", "1")
 	writeFakeClaude(t, claudeScript)
 	writeFakeDetritus(t)
 	fixture := filepath.Join(t.TempDir(), "template")
