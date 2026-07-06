@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"os/exec"
@@ -65,11 +66,15 @@ type sessionTemplate struct {
 	CreatedAt       string `json:"createdAt"`
 }
 
-// templateKey is the storage key for a role's template in a repo. Keyed by the
-// repo BASENAME (like the per-repo worktree layout) — the template session is
-// created in that repo's directory, which is where a fork resolves it.
+// templateKey is the storage key for a role's template in a repo: the repo
+// BASENAME for readability plus a short hash of the full path — two repos that
+// share a basename must not share an entry, because the session transcript
+// exists only under the creating repo's project dir and the other repo's forks
+// would pay a doomed fork + cold fallback on every spawn, forever.
 func templateKey(role, repo string) string {
-	return "templates/" + role + "/" + repoBase(repo)
+	h := fnv.New32a()
+	h.Write([]byte(repo))
+	return fmt.Sprintf("templates/%s/%s-%08x", role, repoBase(repo), h.Sum32())
 }
 
 // --- binary version stamping (cached per process) ---------------------------
@@ -85,14 +90,19 @@ var binVersions = struct {
 
 // binVersion probes and caches a binary's --version (first output line).
 // "unknown" when the probe fails — stamped and compared consistently, so an
-// unprobeable binary still yields stable (never thrashing) entries.
+// unprobeable binary still yields stable (never thrashing) entries. The probe
+// is hard-bounded: it runs on every templated spawn's registry lookup while
+// holding the cache lock, so a hung binary must degrade to "unknown" rather
+// than wedging every spawn site (the feature's never-fail-a-run contract).
 func binVersion(bin string) string {
 	binVersions.mu.Lock()
 	defer binVersions.mu.Unlock()
 	if v, ok := binVersions.m[bin]; ok {
 		return v
 	}
-	cmd := exec.Command(bin, "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "--version")
 	cmd.Env = claudeEnv()
 	configureProc(cmd)
 	out, err := cmd.Output()

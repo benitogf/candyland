@@ -119,7 +119,6 @@ type attemptOutcome struct {
 	stderr    string         // the process's stderr (why it exited), surfaced on failure
 	tokens    int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
 	allText   string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
-	sessionID string         // claude's session id, from the FIRST stream line that carries one (the fork-template handle)
 	// Raw usage totals accumulated from result lines — UNSCALED counts, unlike
 	// tokens above which keeps its /1000 display scaling. Input vs cache-read vs
 	// cache-creation split so cost and cache efficiency are derivable per attempt.
@@ -330,11 +329,6 @@ loop:
 			var line streamLine
 			if json.Unmarshal(b, &line) != nil {
 				continue
-			}
-			// The FIRST session_id on the stream is the process's own session — the
-			// handle a template-session fork resumes later.
-			if out.sessionID == "" && line.SessionID != "" {
-				out.sessionID = line.SessionID
 			}
 			if line.Type == "result" {
 				out.tokens += line.Usage.OutputTokens / 1000 // same 1k scaling appendToAgent uses

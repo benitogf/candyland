@@ -102,7 +102,9 @@ at that checkpoint (`claude --resume <session-id> --fork-session`) instead of
 starting cold. The fork starts with the doctrine already in context; the template
 session itself is never continued in place, so it stays pristine for the next fork.
 
-- **Registry** — templates persist in storage under `templates/<role>/<repoBase>`,
+- **Registry** — templates persist in storage under
+  `templates/<role>/<repoBase>-<pathHash>` (the hash keeps same-basename repos
+  from sharing an entry),
   stamped with the claude CLI version, detritus version, and the role's
   model + thinking at creation. Any stamp mismatch — a CLI upgrade, a doctrine
   (detritus) upgrade, or a settings change for the role — invalidates the entry

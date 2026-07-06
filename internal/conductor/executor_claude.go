@@ -1281,8 +1281,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 		r.StatusLine = "Reviewing the integrated changes before opening a pull request…"
 		r.Agents = append(r.Agents, run.Agent{ID: reviewerID, Role: "Reviewer", Emoji: "🔎",
 			Task: "review the integrated diff", State: "working", Activity: "loading review doctrine",
-			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: reviewerModel, Thinking: reviewerThinking,
-			Events: []run.Event{{T: "system", Text: "reviewer · doctrine template fork (core/review-rigor + truthseeker)"}}})
+			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: reviewerModel, Thinking: reviewerThinking})
 	})
 	folders := orderedDelivered(delivered)
 	totalRounds := 0
@@ -1295,6 +1294,16 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 		// byte-for-byte today's cold spawn: the full kb_get bootstrap, no fork args.
 		// A fork that fails mid-run falls back to the full bootstrap (streamOnce).
 		tpl, tplOK := c.templateForWorkdir(RoleReviewer, repo, integDir)
+		// Record which doctrine path this repo's rounds actually take — the event
+		// must never claim a fork the spawn didn't get (kill switch, failed
+		// creation, or failed copy all degrade to the cold kb_get path).
+		doctrineEvent := "reviewer · kb_get core/review-rigor + truthseeker — " + repoBase(repo)
+		if tplOK {
+			doctrineEvent = "reviewer · doctrine template fork (core/review-rigor + truthseeker) — " + repoBase(repo)
+		}
+		c.Update(id, func(r *run.Run) {
+			appendToAgent(r, reviewerID, run.Event{T: "system", Text: doctrineEvent}, 0)
+		})
 		for round := 1; round <= rounds; round++ {
 			if ctx.Err() != nil {
 				return false // stopped mid-review

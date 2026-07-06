@@ -350,6 +350,32 @@ func TestQuestLeadForksTemplate(t *testing.T) {
 	if string(prompt) != questLeadForkBootstrap {
 		t.Errorf("fork spawn prompt must be the slim bootstrap:\n got %q\nwant %q", prompt, questLeadForkBootstrap)
 	}
+
+	// Tick ≥2 — the acceptance criterion's letter: a later tick's fresh spawn
+	// forks the SAME template (cached, no second creation) with the slim
+	// bootstrap. This is the exact spot the deleted cross-tick doctrineLoaded
+	// state used to diverge.
+	out = c.streamQuestLead(context.Background(), qid, repo, nil)
+	if out.startErr != nil || out.stalled {
+		t.Fatalf("tick-2 quest lead did not run cleanly: startErr=%v stalled=%v", out.startErr, out.stalled)
+	}
+	if got := spawnCount(t, os.Getenv("CANDYLAND_TEMPLATE_FIXTURE")); got != 1 {
+		t.Errorf("tick 2 must reuse the cached template, want 1 creation total, got %d", got)
+	}
+	argv = invocationArgs(t, fixture)
+	if len(argv) != 2 {
+		t.Fatalf("want exactly 2 quest-lead spawns after two ticks, got %d: %v", len(argv), argv)
+	}
+	if !strings.Contains(argv[1], "--resume "+e.SessionID+" --fork-session") {
+		t.Errorf("tick-2 argv must fork the same template session %q, argv was %q", e.SessionID, argv[1])
+	}
+	prompt, err = os.ReadFile(fixture + ".prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(prompt) != questLeadForkBootstrap {
+		t.Errorf("tick-2 fork spawn prompt must be the slim bootstrap:\n got %q\nwant %q", prompt, questLeadForkBootstrap)
+	}
 }
 
 // With the kill switch off the tick is byte-for-byte today's: no template

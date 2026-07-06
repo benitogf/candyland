@@ -108,18 +108,15 @@ echo '{"type":"assistant","session_id":"sess-later","message":{"content":[{"type
 echo '{"type":"result","subtype":"success","session_id":"sess-later","result":"done","usage":{"output_tokens":4000,"input_tokens":12,"cache_creation_input_tokens":34,"cache_read_input_tokens":56}}'
 `
 
-// streamOnce must capture the FIRST non-empty session_id and accumulate the raw
-// (unscaled) usage counts, while the existing /1000 tokens field is untouched;
-// the same raw counts must land on the agent record for the dashboard/learn.
-func TestStreamOnceCapturesSessionAndRawUsage(t *testing.T) {
+// streamOnce must accumulate the raw (unscaled) usage counts, while the existing
+// /1000 tokens field is untouched; the same raw counts must land on the agent
+// record for the dashboard/learn.
+func TestStreamOnceCapturesRawUsage(t *testing.T) {
 	c, repo := deliveryConductor(t, sessionUsageClaude)
 	id := c.Create(run.Spec{Prompt: "capture"})
 
 	out := streamOnce(context.Background(), c, id, "a", "capture", repo, nil)
 
-	if out.sessionID != "sess-first" {
-		t.Errorf("sessionID = %q, want the FIRST non-empty session_id %q", out.sessionID, "sess-first")
-	}
 	if out.inputTokens != 12 || out.cacheWriteTokens != 34 || out.cacheReadTokens != 56 {
 		t.Errorf("raw usage = in:%d write:%d read:%d, want in:12 write:34 read:56",
 			out.inputTokens, out.cacheWriteTokens, out.cacheReadTokens)
@@ -184,9 +181,6 @@ func TestStreamOnceForkFallback(t *testing.T) {
 	if out.startErr != nil || out.runErr != nil || out.stalled {
 		t.Fatalf("fallback attempt must end clean, got startErr=%v runErr=%v stalled=%v stderr=%q",
 			out.startErr, out.runErr, out.stalled, out.stderr)
-	}
-	if out.sessionID != "sess-cold" {
-		t.Errorf("sessionID = %q, want the fallback run's %q", out.sessionID, "sess-cold")
 	}
 	if !strings.Contains(out.allText, "FULL BOOTSTRAP fallback") {
 		t.Errorf("the rerun must carry the fallback prompt, saw %q", out.allText)

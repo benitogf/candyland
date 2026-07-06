@@ -385,8 +385,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 // items, a discovery summary, the tokens it consumed, and a non-empty error string
 // when the discovery agent failed (couldn't start / produced no verdict). The
 // quest lead runs in the quest's primary folder with the others as --add-dir
-// context, and its PROMPT instructs it to load the detritus loop/audit/completion
-// doctrine via kb_get and emit a WORKITEMS / WORKITEMS_NONE verdict.
+// context, with the loop/audit/completion doctrine in context — forked from the
+// quest-lead session template when one resolves, loaded via kb_get by the cold
+// bootstrap otherwise — and emits a WORKITEMS / WORKITEMS_NONE verdict.
 func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, tickID string) (items []questWorkItem, summary string, tokens int, errMsg string) {
 	folders := append([]string(nil), q.Folders...)
 	if len(folders) == 0 {

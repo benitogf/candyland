@@ -449,8 +449,9 @@ func (c *Conductor) briefUntilGated(ctx context.Context, id string, cam run.Camp
 
 // emitIntentBrief spawns the intent lead for one attempt and parses its INTENT_BRIEF
 // verdict. The lead runs in the campaign's primary folder with the rest as --add-dir
-// context; its PROMPT instructs it to load core/planning + core/dream via kb_get and
-// APPLY them (no inlined rubric). feedback (non-empty on a route-back) is woven into
+// context, with core/planning + core/dream in context (no inlined rubric) — forked
+// from its session template when one resolves, loaded via kb_get by the cold
+// bootstrap otherwise. feedback (non-empty on a route-back) is woven into
 // the brief so the lead corrects the prior brief.
 func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Campaign, folders []string, feedback string) (run.IntentBrief, int, string) {
 	primary := folders[0]
@@ -791,8 +792,9 @@ func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.
 
 // emitQuests spawns the tech manager for one attempt and parses its QUESTS line. The
 // tech manager runs in the campaign's primary folder with the rest as --add-dir
-// context; its PROMPT tells it to load roles/tech-lead via kb_get and APPLY it (no
-// inlined rubric). feedback (non-empty on a gate-1 route-back) rides the bus brief so
+// context, with roles/tech-lead in context (no inlined rubric) — forked from its
+// session template when one resolves, loaded via kb_get by the cold bootstrap
+// otherwise. feedback (non-empty on a gate-1 route-back) rides the bus brief so
 // the tech manager corrects the prior partition — never on argv.
 //
 // A parsed-but-invalid partition (empty or duplicate quest id) is not a hard error: it
@@ -913,8 +915,9 @@ func (c *Conductor) setCampaignRunning(id string) {
 
 // intentReview spawns the intent reviewer (Stage 6) and parses its per-commitment
 // verdicts. The reviewer runs in the campaign's primary folder against the campaign
-// branch diff; its PROMPT instructs it to load core/intent-review via kb_get and
-// APPLY it — emitting {satisfied|partial|missed} per commitment with cited evidence.
+// branch diff, with core/intent-review in context — forked from its session
+// template when one resolves, loaded via kb_get by the cold bootstrap otherwise —
+// emitting {satisfied|partial|missed} per commitment with cited evidence.
 func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, folders []string) (run.IntentReview, bool) {
 	primary := folders[0]
 	extra := extraDirsFor(primary, folders)
