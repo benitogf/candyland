@@ -70,6 +70,9 @@ func templateConductor(t *testing.T, claudeScript string) (*Conductor, string, s
 	// helper exercise the template feature deliberately.
 	t.Setenv("CANDYLAND_SESSION_REUSE", "1")
 	writeFakeClaude(t, claudeScript)
+	// writeFakeClaude defaults the reuse kill switch OFF for flow stubs; the
+	// registry tests ARE the template machinery, so turn it back on here.
+	t.Setenv("CANDYLAND_SESSION_REUSE", "1")
 	writeFakeDetritus(t)
 	fixture := filepath.Join(t.TempDir(), "template")
 	t.Setenv("CANDYLAND_TEMPLATE_FIXTURE", fixture)

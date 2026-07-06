@@ -26,6 +26,12 @@ func writeFakeClaude(t *testing.T, script string) {
 		t.Fatal(err)
 	}
 	t.Setenv("CANDYLAND_CLAUDE", fake)
+	// Session-template reuse is OFF for stub tests by default: the flow stubs
+	// don't speak the template-creation contract (--version probe, READY spawn),
+	// so a spawn site calling templateFor would feed the stub's coder branch and
+	// pollute the test cwd. Tests that exercise forking opt back in with
+	// t.Setenv("CANDYLAND_SESSION_REUSE", "1") and a template-aware stub.
+	t.Setenv("CANDYLAND_SESSION_REUSE", "0")
 }
 
 // writeFakeGh drops a stub `gh` that prints a PR URL, so the push → PR path is
