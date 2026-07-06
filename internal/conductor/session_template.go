@@ -164,6 +164,11 @@ func (c *Conductor) templateFor(role, repo string) (sessionID string, ok bool) {
 	if !hasDoctrine || c.server == nil {
 		return "", false
 	}
+	// claude (node) resolves its cwd, so a relative, trailing-slash, or
+	// symlinked repo path would make claude write the transcript under a
+	// different escaped project dir than the one we stat/copy — every spawn
+	// would silently miss and recreate. Canonicalize once, up front.
+	repo = canonPath(repo)
 	key := templateKey(role, repo)
 	fk := flightKey{c: c, key: key}
 
@@ -416,16 +421,21 @@ func claudeProjectsRoot() (string, error) {
 }
 
 // projectDirName is claude's project-directory escaping: every non-alphanumeric
-// character of the absolute cwd maps to '-' (so both '/' and '.' become '-').
+// RUNE of the absolute cwd maps to one '-' (so '/', '.', and a multi-byte
+// character each become a single dash — verified against real claude with a
+// non-ASCII cwd: ".../tëst-ünï" → ".../t-st--n-", one dash per rune, not per
+// UTF-8 byte).
 func projectDirName(cwd string) string {
-	b := []byte(cwd)
-	for i, ch := range b {
-		alnum := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
-		if !alnum {
-			b[i] = '-'
+	var b strings.Builder
+	for _, r := range cwd {
+		alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if alnum {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
 		}
 	}
-	return string(b)
+	return b.String()
 }
 
 // copySessionForCwd makes a template session forkable from another working
@@ -453,6 +463,7 @@ func copySessionForCwd(sessionID, fromCwd, toCwd string) error {
 // worktree), copy the session there so the fork resolves. A copy failure logs
 // and returns ok=false — the spawn starts cold, never fails.
 func (c *Conductor) templateForWorkdir(role, repo, workdir string) (string, bool) {
+	repo, workdir = canonPath(repo), canonPath(workdir)
 	id, ok := c.templateFor(role, repo)
 	if !ok {
 		return "", false
@@ -465,4 +476,51 @@ func (c *Conductor) templateForWorkdir(role, repo, workdir string) (string, bool
 		return "", false
 	}
 	return id, true
+}
+
+// canonPath resolves a path the way claude's own cwd resolution will see it
+// (absolute, symlinks resolved, no trailing separator) so the project-dir
+// derivation matches where transcripts actually land. Best-effort: on error
+// the cleaned absolute form is used.
+func canonPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	}
+	return p
+}
+
+// invalidateTemplate drops a role's registry entry after a fork against it
+// failed to resolve — the transcript is gone or unusable in a way the stamp
+// check can't see, so without this every later spawn would pay the same
+// doomed fork + cold rerun until an unrelated stamp change. The next spawn
+// recreates the template.
+func (c *Conductor) invalidateTemplate(role, repo string) {
+	if c.server == nil {
+		return
+	}
+	key := templateKey(role, canonPath(repo))
+	if err := c.server.Storage.Del(key); err != nil {
+		log.Printf("candyland: session template %s: invalidate after unresolved fork: %v", key, err)
+		return
+	}
+	log.Printf("candyland: session template %s: dropped after an unresolved fork (next spawn recreates)", key)
+}
+
+// cleanupTemplateCopy removes the transcript copy a worktree spawn used —
+// worktrees are throwaway, and nothing else ever deletes these files, so
+// leaving them accumulates one orphan jsonl per worktree per run, forever.
+// Only the copied template file is removed; transcripts the forked session
+// itself wrote stay untouched. Best-effort.
+func cleanupTemplateCopy(sessionID, workdir string) {
+	if sessionID == "" {
+		return
+	}
+	root, err := claudeProjectsRoot()
+	if err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(root, projectDirName(canonPath(workdir)), sessionID+".jsonl"))
 }

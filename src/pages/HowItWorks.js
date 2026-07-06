@@ -499,6 +499,14 @@ const DeveloperGuide = () => (
                 Context assembly is the tech lead's job: when it spawns a coder it builds the prompt from that
                 coder's task + the failing test + the artifacts it depends on — nothing else.
             </SpecNote>
+            <SpecNote>
+                Doctrine is pre-paid, not re-read: every agent forks a per-role <em>session template</em> — a
+                persistent claude session that already loaded the role's knowledge docs (coding principles for
+                coders, review rigor for the reviewer, loop doctrine for the quest lead) and stopped at a READY
+                checkpoint. The fork starts there, so no spawn re-fetches doctrine, forks never write back to
+                the template, and any template failure silently degrades to a cold start. Disable with{' '}
+                <code>CANDYLAND_SESSION_REUSE=0</code>.
+            </SpecNote>
         </Section>
 
         {/* 8. Coordination */}

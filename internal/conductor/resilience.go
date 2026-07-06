@@ -150,6 +150,11 @@ type spawnOpts struct {
 	// resolve (the template session is gone). Only meaningful with forkFrom; the
 	// rerun happens ONCE, inside the same attempt (see streamOnce).
 	fallbackPrompt string
+	// onForkUnresolved fires when forkFrom was set and the fork failed to
+	// resolve — the spawn site uses it to drop the registry entry so later
+	// spawns recreate the template instead of re-paying the doomed fork.
+	// Called at most once per streamOnce, before the fallback rerun.
+	onForkUnresolved func()
 }
 
 // claudeArgs builds the argv for one claude spawn. It is a pure, separately
@@ -222,7 +227,13 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	// command line. claudeArgs wires --mcp-config when busCfg is non-empty.
 	busCfg := c.busMCPConfig(id, agentID)
 	out := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(prompt, extraDirs, busCfg, o), workdir, busCfg)
-	if o.forkFrom == "" || o.fallbackPrompt == "" || !forkUnresolved(out) {
+	if o.forkFrom == "" || !forkUnresolved(out) {
+		return out
+	}
+	if o.onForkUnresolved != nil {
+		o.onForkUnresolved()
+	}
+	if o.fallbackPrompt == "" {
 		return out
 	}
 	// ONE-SHOT fallback: the template session didn't resolve, so rerun cold with

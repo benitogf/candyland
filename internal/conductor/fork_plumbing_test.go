@@ -174,12 +174,17 @@ func TestStreamOnceForkFallback(t *testing.T) {
 	c, repo := deliveryConductor(t, forkFallbackClaude)
 	id := c.Create(run.Spec{Prompt: "fork"})
 
+	unresolved := 0
 	out := streamOnce(context.Background(), c, id, "a", "forked prompt", repo, nil,
-		spawnOpts{forkFrom: "sess-tpl", fallbackPrompt: "FULL BOOTSTRAP fallback"})
+		spawnOpts{forkFrom: "sess-tpl", fallbackPrompt: "FULL BOOTSTRAP fallback",
+			onForkUnresolved: func() { unresolved++ }})
 
 	if out.startErr != nil || out.runErr != nil || out.stalled {
 		t.Fatalf("fallback attempt must end clean, got startErr=%v runErr=%v stalled=%v stderr=%q",
 			out.startErr, out.runErr, out.stalled, out.stderr)
+	}
+	if unresolved != 1 {
+		t.Errorf("onForkUnresolved fired %d times, want exactly 1 (the site drops the registry entry)", unresolved)
 	}
 	if !strings.Contains(out.allText, "FULL BOOTSTRAP fallback") {
 		t.Errorf("the rerun must carry the fallback prompt, saw %q", out.allText)

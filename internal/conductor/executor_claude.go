@@ -602,6 +602,8 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 	tlOpts := spawnOpts{model: tlModel, thinking: tlThinking}
 	if tpl, ok := c.templateForWorkdir(RoleTechLead, primary, tlDir); ok {
 		tlOpts.forkFrom, tlOpts.fallbackPrompt = tpl, techLeadBootstrap
+		tlOpts.onForkUnresolved = func() { c.invalidateTemplate(RoleTechLead, primary) }
+		defer cleanupTemplateCopy(tpl, tlDir)
 	}
 	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extraDirsFor(primary, folders), tlOpts)
 	if ctx.Err() != nil {
@@ -865,6 +867,8 @@ func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string,
 			opts := spawnOpts{model: coderModel, thinking: coderThinking}
 			if tpl, ok := c.templateForWorkdir(RoleCoder, repo, wtDir); ok {
 				opts.forkFrom, opts.fallbackPrompt = tpl, coderBootstrap
+				opts.onForkUnresolved = func() { c.invalidateTemplate(RoleCoder, repo) }
+				defer cleanupTemplateCopy(tpl, wtDir)
 			}
 			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra, opts)
 			// Don't commit or claim success for a coder that failed (r.Error) or was
@@ -1059,6 +1063,8 @@ func resolveConflict(ctx context.Context, c *Conductor, id, repo, integDir strin
 	tlOpts := spawnOpts{model: tlModel, thinking: tlThinking}
 	if tpl, ok := c.templateForWorkdir(RoleTechLead, repo, integDir); ok {
 		tlOpts.forkFrom = tpl
+		tlOpts.onForkUnresolved = func() { c.invalidateTemplate(RoleTechLead, repo) }
+		defer cleanupTemplateCopy(tpl, integDir)
 	}
 	c.putBrief("tl", bus.Brief{Role: "tech-lead", Title: "resolve merge conflict in " + t.Title, Files: files})
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -1294,6 +1300,9 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 		// byte-for-byte today's cold spawn: the full kb_get bootstrap, no fork args.
 		// A fork that fails mid-run falls back to the full bootstrap (streamOnce).
 		tpl, tplOK := c.templateForWorkdir(RoleReviewer, repo, integDir)
+		if tplOK {
+			defer cleanupTemplateCopy(tpl, integDir)
+		}
 		// Record which doctrine path this repo's rounds actually take — the event
 		// must never claim a fork the spawn didn't get (kill switch, failed
 		// creation, or failed copy all degrade to the cold kb_get path).
@@ -1319,6 +1328,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 			if tplOK {
 				prompt = reviewBootstrapSlim
 				o.forkFrom, o.fallbackPrompt = tpl, reviewBootstrap
+				o.onForkUnresolved = func() { c.invalidateTemplate(RoleReviewer, repo) }
 			}
 			out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extraDirsForDelivered(repo, folders), o)
 			if ctx.Err() != nil {
@@ -1401,6 +1411,8 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	opts := spawnOpts{maxTurns: reviewFixTurns(), model: fixModel, thinking: fixThinking}
 	if tpl, ok := c.templateForWorkdir(RoleFix, repo, integDir); ok {
 		opts.forkFrom, opts.fallbackPrompt = tpl, prompt
+		opts.onForkUnresolved = func() { c.invalidateTemplate(RoleFix, repo) }
+		defer cleanupTemplateCopy(tpl, integDir)
 	}
 	out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extra, opts)
 	if ctx.Err() != nil {

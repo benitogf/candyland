@@ -436,6 +436,36 @@ func TestProjectDirName(t *testing.T) {
 	if got := projectDirName("/root/go/src/github.com/example/repo"); got != "-root-go-src-github-com-example-repo" {
 		t.Errorf("dot escaping: got %q", got)
 	}
+	// Non-ASCII escapes per RUNE, one dash each — verified against real claude:
+	// a cwd ending in "tëst-ünï" produced a project dir ending in "t-st--n-"
+	// (byte-wise escaping would have produced "t--st---n--").
+	if got := projectDirName("/x/tëst-ünï"); got != "-x-t-st--n-" {
+		t.Errorf("rune escaping: got %q, want %q", got, "-x-t-st--n-")
+	}
+}
+
+// canonPath makes symlinked/relative/trailing-slash spellings of the same repo
+// derive the SAME template key and project dir claude will actually use.
+func TestCanonPath(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	canonReal := canonPath(real) // TempDir itself may sit behind a symlink (e.g. /tmp on macOS)
+	if got := canonPath(link); got != canonReal {
+		t.Errorf("symlink: canonPath(%q) = %q, want %q", link, got, canonReal)
+	}
+	if got := canonPath(real + string(filepath.Separator)); got != canonReal {
+		t.Errorf("trailing separator: got %q, want %q", got, canonReal)
+	}
+	if templateKey(RoleCoder, link) != templateKey(RoleCoder, real) {
+		// templateKey hashes the raw path — callers canonicalize first; this
+		// pins that templateFor's canonPath makes the two spellings collide.
+		if templateKey(RoleCoder, canonPath(link)) != templateKey(RoleCoder, canonReal) {
+			t.Error("canonicalized spellings must share one template key")
+		}
+	}
 }
 
 // copySessionForCwd round-trips a session transcript between two project dirs
@@ -503,6 +533,46 @@ func TestTemplateForWorkdir(t *testing.T) {
 	}
 	if got, ok := c.templateForWorkdir(RoleCoder, repo, blocked); ok || got != "" {
 		t.Fatalf("copy failure = (%q, %v), want (\"\", false)", got, ok)
+	}
+}
+
+// invalidateTemplate drops the entry (an unresolved fork means the transcript
+// is unusable in a way the stamps can't see); the next templateFor recreates.
+// cleanupTemplateCopy removes ONLY the copied transcript from a worktree's
+// project dir — the canonical template file stays.
+func TestInvalidateAndCleanupCopy(t *testing.T) {
+	c, repo, fixture := templateConductor(t, templateStubClaude)
+
+	id, ok := c.templateFor(RoleCoder, repo)
+	if !ok {
+		t.Fatal("creation must succeed")
+	}
+	workdir := filepath.Join(repo, "wt", "a")
+	if _, ok := c.templateForWorkdir(RoleCoder, repo, workdir); !ok {
+		t.Fatal("worktree copy must succeed")
+	}
+	root := os.Getenv("CANDYLAND_CLAUDE_PROJECTS_DIR")
+	copied := filepath.Join(root, projectDirName(canonPath(workdir)), id+".jsonl")
+	canonical := filepath.Join(root, projectDirName(canonPath(repo)), id+".jsonl")
+
+	cleanupTemplateCopy(id, workdir)
+	if _, err := os.Stat(copied); !os.IsNotExist(err) {
+		t.Errorf("copied transcript must be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Errorf("canonical template transcript must survive cleanup: %v", err)
+	}
+
+	c.invalidateTemplate(RoleCoder, repo)
+	if _, err := c.server.Storage.Get(templateKey(RoleCoder, canonPath(repo))); err == nil {
+		t.Error("invalidateTemplate must drop the registry entry")
+	}
+	second, ok := c.templateFor(RoleCoder, repo)
+	if !ok || second == id {
+		t.Errorf("after invalidation the template must be recreated: (%q, %v), first %q", second, ok, id)
+	}
+	if got := spawnCount(t, fixture); got != 2 {
+		t.Errorf("want 2 creation spawns (initial + post-invalidation), got %d", got)
 	}
 }
 

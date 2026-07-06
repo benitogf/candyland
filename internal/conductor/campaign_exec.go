@@ -91,6 +91,7 @@ func (c *Conductor) campaignSpawn(camID, agentID, role, primary, slimBootstrap, 
 	}
 	opts.forkFrom = tpl
 	opts.fallbackPrompt = fullBootstrap
+	opts.onForkUnresolved = func() { c.invalidateTemplate(role, primary) }
 	return slimBootstrap, opts
 }
 

@@ -467,6 +467,7 @@ func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string
 		prompt = questLeadForkBootstrap
 		opts.forkFrom = tpl
 		opts.fallbackPrompt = questLeadBootstrap
+		opts.onForkUnresolved = func() { c.invalidateTemplate(RoleQuestLead, workdir) }
 	}
 	res := streamOnce(ctx, c, questID, questLeadID, prompt, workdir, extra, opts)
 	// allText joins every assistant/result block, so the WORKITEMS verdict is found
