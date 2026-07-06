@@ -56,7 +56,10 @@ type streamLine struct {
 	} `json:"message"`
 	Result string `json:"result"`
 	Usage  struct {
-		OutputTokens int `json:"output_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		InputTokens              int `json:"input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -1562,6 +1565,12 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 		summary := truncate(l.Result, 300)
 		c.updateAgentHost(id, func(agents *[]run.Agent) {
 			appendToAgentIn(agents, agentID, run.Event{T: "result", Text: summary, TextFull: fullWhenTruncated(summary, l.Result)}, l.Usage.OutputTokens/1000)
+			// Raw input-side usage accumulates unscaled alongside the /1000 output
+			// display count above (Tokens keeps its display semantics untouched).
+			a := ensureAgent(agents, agentID)
+			a.InputTokens += l.Usage.InputTokens
+			a.CacheReadTokens += l.Usage.CacheReadInputTokens
+			a.CacheCreationTokens += l.Usage.CacheCreationInputTokens
 		})
 	}
 	return partition, review, sawTool, text

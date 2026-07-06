@@ -16,7 +16,7 @@ func TestReviewFixSpawnCarriesMaxTurns(t *testing.T) {
 	if want != reviewFixCeiling {
 		t.Fatalf("reviewFixTurns must default to the ceiling %d, got %d", reviewFixCeiling, want)
 	}
-	args := claudeArgs("review the diff", nil, "", want, "", "")
+	args := claudeArgs("review the diff", nil, "", spawnOpts{maxTurns: want})
 	i := slices.Index(args, "--max-turns")
 	if i < 0 {
 		t.Fatalf("the review/fix spawn must include --max-turns; argv was %v", args)
@@ -30,7 +30,7 @@ func TestReviewFixSpawnCarriesMaxTurns(t *testing.T) {
 // the tech-lead/coder/conflict spawns pass) must NOT carry --max-turns, preserving
 // today's behavior for every existing caller.
 func TestUncappedSpawnHasNoMaxTurns(t *testing.T) {
-	args := claudeArgs("partition the work", nil, "", 0, "", "")
+	args := claudeArgs("partition the work", nil, "", spawnOpts{})
 	if slices.Contains(args, "--max-turns") {
 		t.Fatalf("an uncapped spawn must NOT carry --max-turns; argv was %v", args)
 	}
@@ -43,7 +43,7 @@ func TestReviewFixMaxTurnsHonorsEnvOverride(t *testing.T) {
 	if got := reviewFixTurns(); got != 7 {
 		t.Fatalf("env override must lower the hard --max-turns cap to 7, got %d", got)
 	}
-	args := claudeArgs("review the diff", nil, "", reviewFixTurns(), "", "")
+	args := claudeArgs("review the diff", nil, "", spawnOpts{maxTurns: reviewFixTurns()})
 	i := slices.Index(args, "--max-turns")
 	if i < 0 || args[i+1] != "7" {
 		t.Fatalf("the lowered cap must reach the argv; argv was %v", args)

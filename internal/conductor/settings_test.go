@@ -78,7 +78,7 @@ func TestValidateSettings(t *testing.T) {
 // per-role selection genuinely drives the process — model → --model, thinking →
 // --effort (the version-verified headless mechanism).
 func TestClaudeArgsCarriesModelAndEffort(t *testing.T) {
-	args := claudeArgs("do the work", nil, "", 0, "claude-sonnet-5", "high")
+	args := claudeArgs("do the work", nil, "", spawnOpts{model: "claude-sonnet-5", thinking: "high"})
 	// -p <prompt> MUST stay first (the stub reads $2).
 	if len(args) < 2 || args[0] != "-p" || args[1] != "do the work" {
 		t.Fatalf("-p <prompt> must be first; argv was %v", args)
@@ -92,7 +92,7 @@ func TestClaudeArgsCarriesModelAndEffort(t *testing.T) {
 		t.Fatalf("--effort must carry the configured thinking; argv was %v", args)
 	}
 	// An empty thinking omits --effort entirely (no no-op flag).
-	if slices.Contains(claudeArgs("x", nil, "", 0, "claude-opus-4-8", ""), "--effort") {
+	if slices.Contains(claudeArgs("x", nil, "", spawnOpts{model: "claude-opus-4-8"}), "--effort") {
 		t.Error("empty thinking must NOT add a --effort flag")
 	}
 }
