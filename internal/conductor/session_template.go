@@ -28,14 +28,16 @@ import (
 // template session pre-loads. A role with no entry (e.g. the escalation
 // decider) gets no template and always starts cold.
 var roleDoctrine = map[string][]string{
-	RoleCoder:          {"flows/principles/coding-style", "flows/principles/line-of-sight"},
-	RoleFix:            {"flows/principles/coding-style", "flows/principles/line-of-sight"},
-	RoleQuestLead:      {"flows/principles/truthseeker", "core/loop", "core/todo-audit", "core/completion"},
-	RoleReviewer:       {"flows/principles/truthseeker", "core/review-rigor"},
-	RoleTechLead:       {"flows/principles/truthseeker", "core/completion", "roles/tech-lead"},
-	RoleIntentLead:     {"flows/principles/truthseeker", "core/planning", "core/dream"},
-	RoleTechManager:    {"flows/principles/truthseeker", "roles/tech-lead", "core/completion"},
-	RoleIntentManager:  {"flows/principles/truthseeker", "core/intent-review"},
+	RoleCoder:       {"flows/principles/coding-style", "flows/principles/line-of-sight"},
+	RoleFix:         {"flows/principles/coding-style", "flows/principles/line-of-sight"},
+	RoleQuestLead:   {"flows/principles/truthseeker", "core/loop", "core/todo-audit", "core/completion"},
+	RoleReviewer:    {"flows/principles/truthseeker", "core/review-rigor"},
+	RoleTechLead:    {"flows/principles/truthseeker", "core/completion", "roles/tech-lead"},
+	RoleIntentLead:  {"flows/principles/truthseeker", "core/planning", "core/dream"},
+	RoleTechManager: {"flows/principles/truthseeker", "roles/tech-lead", "core/completion"},
+	// The intent manager also judges gate 1 (partitionReviewBootstrap applies
+	// core/planning), so its template pre-loads that doctrine too.
+	RoleIntentManager:  {"flows/principles/truthseeker", "core/planning", "core/intent-review"},
 	RoleIntentReviewer: {"flows/principles/truthseeker", "core/intent-review"},
 }
 

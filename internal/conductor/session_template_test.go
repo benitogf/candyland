@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -85,6 +86,32 @@ func spawnCount(t *testing.T, fixture string) int {
 }
 
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// The doctrine map is pinned per role: a template that pre-loads different
+// documents than the role's bootstrap APPLIES would fork the wrong doctrine
+// (e.g. the gate-1 intent manager applies core/planning per
+// partitionReviewBootstrap, so its template must pre-load it).
+func TestRoleDoctrineMap(t *testing.T) {
+	want := map[string][]string{
+		RoleCoder:          {"flows/principles/coding-style", "flows/principles/line-of-sight"},
+		RoleFix:            {"flows/principles/coding-style", "flows/principles/line-of-sight"},
+		RoleQuestLead:      {"flows/principles/truthseeker", "core/loop", "core/todo-audit", "core/completion"},
+		RoleReviewer:       {"flows/principles/truthseeker", "core/review-rigor"},
+		RoleTechLead:       {"flows/principles/truthseeker", "core/completion", "roles/tech-lead"},
+		RoleIntentLead:     {"flows/principles/truthseeker", "core/planning", "core/dream"},
+		RoleTechManager:    {"flows/principles/truthseeker", "roles/tech-lead", "core/completion"},
+		RoleIntentManager:  {"flows/principles/truthseeker", "core/planning", "core/intent-review"},
+		RoleIntentReviewer: {"flows/principles/truthseeker", "core/intent-review"},
+	}
+	if len(roleDoctrine) != len(want) {
+		t.Errorf("roleDoctrine has %d entries, want %d", len(roleDoctrine), len(want))
+	}
+	for role, docs := range want {
+		if !slices.Equal(roleDoctrine[role], docs) {
+			t.Errorf("roleDoctrine[%s]\n got %v\nwant %v", role, roleDoctrine[role], docs)
+		}
+	}
+}
 
 // Creation persists a fully stamped entry and returns the minted UUID; the
 // spawn's argv carries the doctrine bootstrap, the role's model/effort, the
