@@ -68,15 +68,30 @@ const (
 
 // campaignSpawn pre-seeds a coordinating agent's effective model+thinking on the
 // campaign record (L2 telemetry — the self-seeding recorder would leave them empty)
-// and returns the spawnOpts that thread the fresh per-role settings config into the
-// claude process. role is the settings level key (§9); agentID is the bus identity.
-func (c *Conductor) campaignSpawn(camID, agentID, role string) spawnOpts {
+// and returns the prompt plus the spawnOpts that thread the fresh per-role settings
+// config into the claude process. role is the settings level key (§9); agentID is
+// the bus identity; primary is the stage's workdir (the campaign's first folder).
+//
+// When a doctrine template exists for (role, primary) the spawn FORKS it
+// (spawnOpts.forkFrom): the prompt is the slim bootstrap (no kb_get loads — the
+// doctrine is already in the forked session) and the full bootstrap rides as the
+// in-attempt fallbackPrompt for a fork that doesn't resolve. ok=false (kill
+// switch, no entry, creation failure) degrades silently to today's behavior: the
+// full bootstrap as the prompt, no fork args.
+func (c *Conductor) campaignSpawn(camID, agentID, role, primary, slimBootstrap, fullBootstrap string) (string, spawnOpts) {
 	model, thinking := c.agentConfig(role)
 	c.updateAgentHost(camID, func(agents *[]run.Agent) {
 		a := ensureAgent(agents, agentID)
 		a.Model, a.Thinking, a.Role = model, thinking, role
 	})
-	return spawnOpts{model: model, thinking: thinking}
+	opts := spawnOpts{model: model, thinking: thinking}
+	tpl, ok := c.templateForWorkdir(role, primary, primary)
+	if !ok {
+		return fullBootstrap, opts
+	}
+	opts.forkFrom = tpl
+	opts.fallbackPrompt = fullBootstrap
+	return slimBootstrap, opts
 }
 
 // maxPartitionAttempts bounds gate 1 (the partition-convergence gate): how many
@@ -446,7 +461,8 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 		Prompt:   intentLeadBriefPrompt(cam),
 		Feedback: feedback,
 	})
-	res := streamOnce(ctx, c, id, intentLeadID, intentLeadBootstrap, primary, extra, c.campaignSpawn(id, intentLeadID, RoleIntentLead))
+	prompt, opts := c.campaignSpawn(id, intentLeadID, RoleIntentLead, primary, intentLeadBootstrapSlim, intentLeadBootstrap)
+	res := streamOnce(ctx, c, id, intentLeadID, prompt, primary, extra, opts)
 	if ctx.Err() != nil {
 		return run.IntentBrief{}, res.tokens, ""
 	}
@@ -791,7 +807,8 @@ func (c *Conductor) emitQuests(ctx context.Context, id string, cam run.Campaign,
 		Prompt:   techManagerBriefPrompt(cam, brief),
 		Feedback: feedback,
 	})
-	res := streamOnce(ctx, c, id, techManagerID, techManagerBootstrap, primary, extra, c.campaignSpawn(id, techManagerID, RoleTechManager))
+	prompt, opts := c.campaignSpawn(id, techManagerID, RoleTechManager, primary, techManagerBootstrapSlim, techManagerBootstrap)
+	res := streamOnce(ctx, c, id, techManagerID, prompt, primary, extra, opts)
 	if ctx.Err() != nil {
 		return nil, res.tokens, "", ""
 	}
@@ -825,7 +842,8 @@ func (c *Conductor) reviewPartition(ctx context.Context, id string, cam run.Camp
 		Role:   "intent-manager",
 		Prompt: partitionReviewBriefPrompt(cam, brief, quests),
 	})
-	res := streamOnce(ctx, c, id, intentManagerID, partitionReviewBootstrap, primary, extra, c.campaignSpawn(id, intentManagerID, RoleIntentManager))
+	prompt, opts := c.campaignSpawn(id, intentManagerID, RoleIntentManager, primary, partitionReviewBootstrapSlim, partitionReviewBootstrap)
+	res := streamOnce(ctx, c, id, intentManagerID, prompt, primary, extra, opts)
 	if ctx.Err() != nil {
 		return partitionVerdict{}, false
 	}
@@ -859,7 +877,8 @@ func (c *Conductor) techManagerDone(ctx context.Context, id string, cam run.Camp
 		Role:   "tech-manager",
 		Prompt: techDoneBriefPrompt(cam, brief, review, orDefault(base, "main")),
 	})
-	res := streamOnce(ctx, c, id, techManagerID, techDoneBootstrap, primary, extra, c.campaignSpawn(id, techManagerID, RoleTechManager))
+	prompt, opts := c.campaignSpawn(id, techManagerID, RoleTechManager, primary, techDoneBootstrapSlim, techDoneBootstrap)
+	res := streamOnce(ctx, c, id, techManagerID, prompt, primary, extra, opts)
 	c.addCampaignTokens(id, res.tokens)
 	if ctx.Err() != nil {
 		return techDoneVerdict{}, false
@@ -912,7 +931,8 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 		Role:   "intent-reviewer",
 		Prompt: intentReviewerBriefPrompt(cam, brief, orDefault(base, "main")),
 	})
-	res := streamOnce(ctx, c, id, intentReviewerID, intentReviewerBootstrap, primary, extra, c.campaignSpawn(id, intentReviewerID, RoleIntentReviewer))
+	prompt, opts := c.campaignSpawn(id, intentReviewerID, RoleIntentReviewer, primary, intentReviewerBootstrapSlim, intentReviewerBootstrap)
+	res := streamOnce(ctx, c, id, intentReviewerID, prompt, primary, extra, opts)
 	c.addCampaignTokens(id, res.tokens)
 	if ctx.Err() != nil {
 		return run.IntentReview{}, false
@@ -1499,6 +1519,19 @@ const intentLeadBootstrap = "You are the intent lead opening a campaign — the 
 	`{"restatedGoal":"…","scopeByDomain":["…"],"resolvedQuestions":["…"],"openQuestions":["…"],"draftTasks":["…"],"dependencies":["…"],"roughSizing":"…","reviewRouting":["…"],"commitments":[{"id":"c1","statement":"one checkable assertion"}]}` +
 	". Do not ask questions and do not defer."
 
+// intentLeadBootstrapSlim is the fork-path variant of intentLeadBootstrap: a
+// forked template session already carries the role's doctrine, so the kb_get
+// load instructions are dropped. Every behavioral rule and the INTENT_BRIEF
+// verdict contract stay byte-identical to the full bootstrap.
+const intentLeadBootstrapSlim = "You are the intent lead opening a campaign — the program-level intake that turns an immutable original request into a structured, checkable plan. " +
+	"Call the brief_get tool FIRST to read the campaign's ORIGINAL INPUT and any prior-attempt feedback — it is no longer on your command line. " +
+	"APPLY the detritus doctrine already loaded in this session. " +
+	"Do NOT improvise your own rubric — use the doctrine already loaded in this session, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
+	"Restate the goal, split the scope by domain, derive the CHECKABLE COMMITMENTS (each a single assertion intent review can later judge satisfied/partial/missed), draft the task list, list dependencies, and suggest human review-routing. " +
+	"Then emit EXACTLY ONE verdict line and stop: `INTENT_BRIEF ` followed by a JSON object " +
+	`{"restatedGoal":"…","scopeByDomain":["…"],"resolvedQuestions":["…"],"openQuestions":["…"],"draftTasks":["…"],"dependencies":["…"],"roughSizing":"…","reviewRouting":["…"],"commitments":[{"id":"c1","statement":"one checkable assertion"}]}` +
+	". Do not ask questions and do not defer."
+
 // intentLeadBriefPrompt is the per-campaign context the intent lead reads via
 // brief_get: the IMMUTABLE original input it must restate (never rewritten).
 func intentLeadBriefPrompt(cam run.Campaign) string {
@@ -1517,6 +1550,19 @@ func intentLeadBriefPrompt(cam run.Campaign) string {
 const intentReviewerBootstrap = "You are the intent reviewer closing a campaign: judge whether the delivered work satisfies what the campaign COMMITTED to, per commitment, against the ORIGINAL INPUT — not just whether tasks ran. " +
 	"Call the brief_get tool FIRST to read the original input, the commitments to judge, and the diff command for the campaign branch. " +
 	"Load and APPLY the detritus final-review method via the kb_get tool: kb_get name=\"core/intent-review\" (the per-commitment verdict method). If that document is unavailable, fall back to kb_get name=\"core/completion\" (the definition of done) and kb_get name=\"core/review-rigor\"; APPLY the doctrine, do NOT improvise your own rubric. " +
+	"Inspect the delivered work (run the diff command in the brief, read the changed files) and judge EACH commitment: satisfied (fully delivered with evidence), partial (some but not all), or missed (not delivered). Cite concrete evidence for every verdict. " +
+	"Then emit EXACTLY ONE verdict line and stop: `INTENT_REVIEW ` followed by JSON " +
+	`{"verdicts":[{"commitmentId":"c1","verdict":"satisfied|partial|missed","evidence":["file:line or fact backing the verdict"]}]}` +
+	". Judge every commitment; do not ask questions and do not defer."
+
+// intentReviewerBootstrapSlim is the fork-path variant of intentReviewerBootstrap:
+// the kb_get loads (and their unavailable-document fallback chain, which only
+// makes sense when loading) are dropped — the forked session already carries the
+// doctrine. The judging rules and the INTENT_REVIEW verdict contract stay
+// byte-identical to the full bootstrap.
+const intentReviewerBootstrapSlim = "You are the intent reviewer closing a campaign: judge whether the delivered work satisfies what the campaign COMMITTED to, per commitment, against the ORIGINAL INPUT — not just whether tasks ran. " +
+	"Call the brief_get tool FIRST to read the original input, the commitments to judge, and the diff command for the campaign branch. " +
+	"APPLY the detritus final-review method already loaded in this session (the per-commitment verdict method); APPLY the doctrine, do NOT improvise your own rubric. " +
 	"Inspect the delivered work (run the diff command in the brief, read the changed files) and judge EACH commitment: satisfied (fully delivered with evidence), partial (some but not all), or missed (not delivered). Cite concrete evidence for every verdict. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_REVIEW ` followed by JSON " +
 	`{"verdicts":[{"commitmentId":"c1","verdict":"satisfied|partial|missed","evidence":["file:line or fact backing the verdict"]}]}` +
@@ -1547,6 +1593,18 @@ func intentReviewerBriefPrompt(cam run.Campaign, brief run.IntentBrief, base str
 const techManagerBootstrap = "You are the tech manager opening a campaign: you own everything technical — how the Intent Brief is partitioned into concurrent child QUESTS, integration across the shared branch, and remediation targeting. " +
 	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line. " +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (its program-altitude partition rules for a campaign). Do NOT improvise your own rubric — use the doctrine you loaded, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
+	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
+	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
+	`[{"id":"q1","title":"short label","objective":"what this quest delivers","folders":["optional repo subset"],"deps":["ids this quest waits for"]}]` +
+	". The supervisor stamps branch delivery — you only decide the partition. Do not ask questions and do not defer."
+
+// techManagerBootstrapSlim is the fork-path variant of techManagerBootstrap: the
+// kb_get load is dropped — the forked session already carries the doctrine. The
+// partition rules and the QUESTS line contract stay byte-identical to the full
+// bootstrap.
+const techManagerBootstrapSlim = "You are the tech manager opening a campaign: you own everything technical — how the Intent Brief is partitioned into concurrent child QUESTS, integration across the shared branch, and remediation targeting. " +
+	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line. " +
+	"APPLY the detritus doctrine already loaded in this session. Do NOT improvise your own rubric — use the doctrine already loaded in this session, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
 	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
 	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
 	`[{"id":"q1","title":"short label","objective":"what this quest delivers","folders":["optional repo subset"],"deps":["ids this quest waits for"]}]` +
@@ -1588,6 +1646,18 @@ const partitionReviewBootstrap = "You are the intent manager at gate 1 of a camp
 	`{"agree":true|false,"reason":"why the partition does or does not cover the brief"}` +
 	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer."
 
+// partitionReviewBootstrapSlim is the fork-path variant of partitionReviewBootstrap:
+// the kb_get load is dropped — the forked session already carries the doctrine.
+// The coverage judgment and the PARTITION_REVIEW verdict contract stay
+// byte-identical to the full bootstrap.
+const partitionReviewBootstrapSlim = "You are the intent manager at gate 1 of a campaign: judge whether the tech manager's proposed child-quest partition would plausibly deliver the Intent Brief's commitments BEFORE any work launches. This is a partition-convergence gate between two managers, not the final review. " +
+	"Call the brief_get tool FIRST to read the brief's commitments and the tech manager's proposed quests. " +
+	"APPLY the detritus doctrine already loaded in this session. Do NOT improvise your own rubric. " +
+	"Judge coverage: does every commitment map to at least one quest, is the scope right, are the dependencies sane? " +
+	"Then emit EXACTLY ONE line and stop: `PARTITION_REVIEW ` followed by JSON " +
+	`{"agree":true|false,"reason":"why the partition does or does not cover the brief"}` +
+	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer."
+
 // partitionReviewBriefPrompt is the per-campaign context the intent manager reads via
 // brief_get at gate 1: the commitments to cover and the tech manager's proposed quests.
 func partitionReviewBriefPrompt(cam run.Campaign, brief run.IntentBrief, quests []questPartitionItem) string {
@@ -1615,6 +1685,17 @@ func partitionReviewBriefPrompt(cam run.Campaign, brief run.IntentBrief, quests 
 const techDoneBootstrap = "You are the tech manager at gate 2 of a campaign confirming technical sign-off: judge whether the child quests are integrated GREEN on the campaign branch with the review loop clean, before the campaign opens its PRs. " +
 	"Call the brief_get tool FIRST to read the campaign goal, the intent review's per-commitment verdicts, and the branch diff command. " +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (integration/definition-of-done). Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
+	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
+	`{"done":true|false,"reason":"integration/review-loop status"}` +
+	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer."
+
+// techDoneBootstrapSlim is the fork-path variant of techDoneBootstrap: the kb_get
+// load is dropped — the forked session already carries the doctrine. The
+// inspection rule and the TECH_DONE verdict contract stay byte-identical to the
+// full bootstrap.
+const techDoneBootstrapSlim = "You are the tech manager at gate 2 of a campaign confirming technical sign-off: judge whether the child quests are integrated GREEN on the campaign branch with the review loop clean, before the campaign opens its PRs. " +
+	"Call the brief_get tool FIRST to read the campaign goal, the intent review's per-commitment verdicts, and the branch diff command. " +
+	"APPLY the detritus doctrine already loaded in this session. Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
 	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
 	`{"done":true|false,"reason":"integration/review-loop status"}` +
 	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer."
