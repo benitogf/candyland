@@ -1233,6 +1233,37 @@ func negatedAt(lower string, i int) bool {
 	return false
 }
 
+// verdictBearingBlock returns the block of prose that carries the reviewer's verdict:
+// the last verdict line (REVIEW_CLEAN / REVIEW_FINDINGS …) together with the nearest
+// non-empty paragraph before it — the rationale the reviewer offers FOR that verdict.
+// The hedge-word scan is confined here (see cleanVerdictContradictsNarration): a
+// reviewer may legitimately hedge while EXPLORING ("this should be fine, let me
+// check…") and then prove the change and stamp CLEAN. Only a hedge in the block that
+// states the verdict's rationale means the CLEAN itself was guessed rather than
+// proved. When no verdict line is present the whole prose is returned (the caller's
+// scan then behaves as before).
+func verdictBearingBlock(prose string) string {
+	lines := strings.Split(prose, "\n")
+	last := -1
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "REVIEW_CLEAN" || strings.HasPrefix(t, "REVIEW_FINDINGS ") {
+			last = i
+		}
+	}
+	if last < 0 {
+		return prose
+	}
+	start := last - 1
+	for start >= 0 && strings.TrimSpace(lines[start]) == "" {
+		start--
+	}
+	for start >= 0 && strings.TrimSpace(lines[start]) != "" {
+		start--
+	}
+	return strings.Join(lines[start+1:last+1], "\n")
+}
+
 // cleanVerdictContradictsNarration reports whether a REVIEW_CLEAN's own narration
 // undermines it: it contains a blocker-class admission (the reviewer described a
 // real defect) OR a hedge word (the reviewer guessed rather than proved). It is a
@@ -1247,8 +1278,13 @@ func negatedAt(lower string, i int) bool {
 // never clear. An inline-QUOTED occurrence (`dead code` / "dead code") is the
 // reviewer naming the phrase (e.g. reviewing a change that is itself about these
 // admission strings), not admitting the defect, so it is not flagged either.
+// Blocker-class admissions are scanned across the whole prose (they describe a
+// concrete defect wherever they appear), but the hedge-word scan is confined to the
+// verdict-bearing block (see verdictBearingBlock) so exploratory hedging that the
+// reviewer later resolved before stamping CLEAN doesn't bounce a proven verdict.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
-	lower := strings.ToLower(narrationProse(text))
+	prose := narrationProse(text)
+	lower := strings.ToLower(prose)
 	for _, p := range blockerAdmissions {
 		for from := 0; ; {
 			idx := strings.Index(lower[from:], p)
@@ -1262,8 +1298,9 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 			from = at + len(p)
 		}
 	}
+	verdictLower := strings.ToLower(verdictBearingBlock(prose))
 	for _, h := range hedgeWords {
-		if strings.Contains(lower, h) {
+		if strings.Contains(verdictLower, h) {
 			return true, "hedged narration (no proof the change works): " + strconv.Quote(h)
 		}
 	}
