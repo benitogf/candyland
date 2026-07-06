@@ -283,6 +283,9 @@ if [[ "$prompt" == *"reusable session template"* ]]; then
     if [[ "$prev" == "--session-id" ]]; then sid="$a"; fi
     prev="$a"
   done
+  dir="$CANDYLAND_CLAUDE_PROJECTS_DIR/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')"
+  mkdir -p "$dir"
+  echo '{"doctrine":true}' > "$dir/$sid.jsonl"
   echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\"}"
   echo '{"type":"result","subtype":"success","result":"READY","usage":{"output_tokens":1}}'
   exit 0

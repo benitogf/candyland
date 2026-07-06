@@ -183,7 +183,7 @@ func (c *Conductor) templateFor(role, repo string) (sessionID string, ok bool) {
 		close(f.done)
 	}()
 
-	if id, valid := c.storedTemplate(role, key); valid {
+	if id, valid := c.storedTemplate(role, repo, key); valid {
 		f.id, f.ok = id, true
 		return id, true
 	}
@@ -194,7 +194,7 @@ func (c *Conductor) templateFor(role, repo string) (sessionID string, ok bool) {
 // storedTemplate reads the persisted entry and validates every stamped
 // coordinate against the current environment. Any mismatch (or an absent /
 // unreadable entry) is a miss — the caller recreates.
-func (c *Conductor) storedTemplate(role, key string) (string, bool) {
+func (c *Conductor) storedTemplate(role, repo, key string) (string, bool) {
 	obj, err := c.server.Storage.Get(key)
 	if err != nil {
 		return "", false
@@ -210,7 +210,21 @@ func (c *Conductor) storedTemplate(role, key string) (string, bool) {
 		e.Model != model || e.Thinking != thinking {
 		return "", false
 	}
+	// The stamps can all match while the transcript is gone — claude garbage-
+	// collects old session files on its own schedule. Without this check every
+	// spawn would pay a doomed fork + cold rerun forever (the entry never
+	// invalidates in a stable environment); treating a missing transcript as a
+	// miss lets recreation rewrite the file and heal.
+	if root, err := claudeProjectsRoot(); err != nil ||
+		!fileExists(filepath.Join(root, projectDirName(repo), e.SessionID+".jsonl")) {
+		return "", false
+	}
 	return e.SessionID, true
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // createTemplate mints a session id, runs one bounded claude spawn in the repo

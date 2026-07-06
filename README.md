@@ -106,9 +106,12 @@ session itself is never continued in place, so it stays pristine for the next fo
   `templates/<role>/<repoBase>-<pathHash>` (the hash keeps same-basename repos
   from sharing an entry),
   stamped with the claude CLI version, detritus version, and the role's
-  model + thinking at creation. Any stamp mismatch — a CLI upgrade, a doctrine
-  (detritus) upgrade, or a settings change for the role — invalidates the entry
-  and the next spawn creates a fresh template.
+  model + thinking at creation. Any stamp mismatch invalidates the entry and the
+  next spawn creates a fresh template. Model/thinking changes take effect on the
+  next spawn; the two version probes are cached for the process lifetime, so a
+  claude or detritus upgrade under a running candyland invalidates on the next
+  candyland start. A template whose session transcript claude has since
+  garbage-collected is also treated as invalid and recreated.
 - **Worktrees** — claude resolves `--resume` per project directory, so a spawn
   running in a git worktree gets the template's session jsonl copied into the
   worktree's project directory first; the fork then resolves locally.

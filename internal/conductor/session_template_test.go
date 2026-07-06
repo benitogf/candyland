@@ -50,6 +50,9 @@ for a in "$@"; do
   if [[ "$prev" == "--session-id" ]]; then sid="$a"; fi
   prev="$a"
 done
+dir="$CANDYLAND_CLAUDE_PROJECTS_DIR/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')"
+mkdir -p "$dir"
+echo '{"doctrine":true}' > "$dir/$sid.jsonl"
 echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\"}"
 echo '{"type":"result","subtype":"success","result":"READY","usage":{"output_tokens":10}}'
 `
@@ -72,6 +75,9 @@ func templateConductor(t *testing.T, claudeScript string) (*Conductor, string, s
 	// it back on after the harness call.
 	t.Setenv("CANDYLAND_SESSION_REUSE", "1")
 	writeFakeDetritus(t)
+	// Success stubs write the template transcript here — storedTemplate treats
+	// a missing transcript as a miss (claude GCs old session files).
+	t.Setenv("CANDYLAND_CLAUDE_PROJECTS_DIR", t.TempDir())
 	fixture := filepath.Join(t.TempDir(), "template")
 	t.Setenv("CANDYLAND_TEMPLATE_FIXTURE", fixture)
 	repo := filepath.Join(t.TempDir(), "repo")
@@ -382,6 +388,9 @@ for a in "$@"; do
   if [[ "$prev" == "--session-id" ]]; then sid="$a"; fi
   prev="$a"
 done
+dir="$CANDYLAND_CLAUDE_PROJECTS_DIR/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')"
+mkdir -p "$dir"
+echo '{"doctrine":true}' > "$dir/$sid.jsonl"
 echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\"}"
 echo '{"type":"result","subtype":"success","result":"READY"}'
 `
@@ -464,8 +473,7 @@ func TestCopySessionForCwd(t *testing.T) {
 // copied into its project dir; a copy failure degrades to ("", false).
 func TestTemplateForWorkdir(t *testing.T) {
 	c, repo, _ := templateConductor(t, templateStubClaude)
-	root := t.TempDir()
-	t.Setenv("CANDYLAND_CLAUDE_PROJECTS_DIR", root)
+	root := os.Getenv("CANDYLAND_CLAUDE_PROJECTS_DIR")
 
 	id, ok := c.templateFor(RoleCoder, repo)
 	if !ok {
@@ -477,24 +485,53 @@ func TestTemplateForWorkdir(t *testing.T) {
 		t.Fatalf("same-dir = (%q, %v), want (%q, true)", got, ok, id)
 	}
 
-	// The stub writes no transcript, so a worktree copy fails → cold start.
-	if got, ok := c.templateForWorkdir(RoleCoder, repo, filepath.Join(repo, "wt", "a")); ok || got != "" {
-		t.Fatalf("copy failure = (%q, %v), want (\"\", false)", got, ok)
-	}
-
-	// With the transcript in place the worktree path succeeds and delivers it.
-	srcDir := filepath.Join(root, projectDirName(repo))
-	if err := os.MkdirAll(srcDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, id+".jsonl"), []byte("doctrine\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// The worktree path copies the stub-written transcript into the worktree's
+	// project dir.
 	workdir := filepath.Join(repo, "wt", "a")
 	if got, ok := c.templateForWorkdir(RoleCoder, repo, workdir); !ok || got != id {
 		t.Fatalf("worktree = (%q, %v), want (%q, true)", got, ok, id)
 	}
 	if _, err := os.Stat(filepath.Join(root, projectDirName(workdir), id+".jsonl")); err != nil {
 		t.Errorf("transcript not delivered to the worktree's project dir: %v", err)
+	}
+
+	// A destination that can't be created (a FILE squatting on the project-dir
+	// path) fails the copy → cold start, never an error surfaced to the run.
+	blocked := filepath.Join(repo, "wt", "b")
+	if err := os.WriteFile(filepath.Join(root, projectDirName(blocked)), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.templateForWorkdir(RoleCoder, repo, blocked); ok || got != "" {
+		t.Fatalf("copy failure = (%q, %v), want (\"\", false)", got, ok)
+	}
+}
+
+// A stamped-valid entry whose transcript claude has since garbage-collected is
+// a MISS, not a doomed fork forever: recreation rewrites the transcript and
+// heals the registry.
+func TestTemplateForHealsAfterTranscriptGC(t *testing.T) {
+	c, repo, fixture := templateConductor(t, templateStubClaude)
+
+	first, ok := c.templateFor(RoleCoder, repo)
+	if !ok {
+		t.Fatal("creation must succeed")
+	}
+	root := os.Getenv("CANDYLAND_CLAUDE_PROJECTS_DIR")
+	if err := os.Remove(filepath.Join(root, projectDirName(repo), first+".jsonl")); err != nil {
+		t.Fatal(err)
+	}
+
+	second, ok := c.templateFor(RoleCoder, repo)
+	if !ok {
+		t.Fatal("recreation after transcript GC must succeed")
+	}
+	if second == first {
+		t.Error("a GC'd template must be recreated, not returned stale")
+	}
+	if got := spawnCount(t, fixture); got != 2 {
+		t.Errorf("want 2 creation spawns (initial + heal), got %d", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, projectDirName(repo), second+".jsonl")); err != nil {
+		t.Errorf("healed transcript missing: %v", err)
 	}
 }
