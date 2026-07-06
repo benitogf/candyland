@@ -92,6 +92,11 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 	repo := newGitRepo(t)
 	writeFakeClaude(t, claudeScript)
 	writeFakeGh(t)
+	// Session-template forking is opt-in per test: a stub oracle dispatches on the
+	// spawn prompt, and an unsolicited template-creation spawn would hit arbitrary
+	// branches (some sleep, some count invocations). The fork tests re-enable this
+	// (t.Setenv after the harness call wins) and seed a transcript so forks resolve.
+	t.Setenv("CANDYLAND_SESSION_REUSE", "0")
 	// A real ooo server + bus so the conductor writes each agent's brief and the
 	// stub claude can fetch it over HTTP (the brief carries the plan/task that no
 	// longer rides on argv). StartBus registers the bus filters before Start.
@@ -149,6 +154,7 @@ func multiRepoConductor(t *testing.T, claudeScript string, repoNames ...string) 
 		repos[i] = newGitRepoNamed(t, n)
 	}
 	writeFakeClaude(t, claudeScript)
+	t.Setenv("CANDYLAND_SESSION_REUSE", "0") // same opt-in rationale as deliveryConductor
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	c := New(srv)

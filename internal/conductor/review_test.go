@@ -245,20 +245,24 @@ func TestReviewWiringUnprovenBlocksThenFixOpensPR(t *testing.T) {
 	}
 }
 
-// F3: the reviewer loads the review doctrine ONCE per identity per run. The first
-// review (doctrineLoaded=false) instructs the kb_get load; every later round/repo
-// (doctrineLoaded=true) omits it and tells the reviewer to apply what it already
-// loaded — mirroring reviewFixBootstrap's no-reload.
-func TestReviewDoctrineLoadedOncePerRun(t *testing.T) {
-	first := reviewPrompt(false)
-	if !strings.Contains(first, "kb_get") {
-		t.Error("the first review must instruct the kb_get doctrine load")
+// A template-forked reviewer starts with core/review-rigor + truthseeker already
+// in context, so its slim bootstrap must not re-load doctrine (no kb_get) nor
+// assume a prior load in THIS conversation ("ALREADY loaded") — while keeping the
+// role discriminator, the brief fetch, and the verdict-line contract intact. The
+// full reviewBootstrap stays the cold/fallback prompt, kb_get load included.
+func TestReviewerSlimBootstrap(t *testing.T) {
+	if strings.Contains(reviewBootstrapSlim, "kb_get") {
+		t.Error("the slim bootstrap must not instruct a kb_get doctrine load")
 	}
-	later := reviewPrompt(true)
-	if strings.Contains(later, "kb_get") {
-		t.Error("round-2+ review must NOT reload doctrine (no kb_get instruction)")
+	if strings.Contains(reviewBootstrapSlim, "ALREADY loaded") {
+		t.Error("the slim bootstrap must not assume a prior in-conversation load")
 	}
-	if !strings.Contains(later, "ALREADY loaded") {
-		t.Error("round-2+ review must tell the reviewer to apply the already-loaded doctrine")
+	for _, keep := range []string{"code reviewer", "brief_get", "REVIEW_CLEAN", "REVIEW_FINDINGS", "wiring unproven"} {
+		if !strings.Contains(reviewBootstrapSlim, keep) {
+			t.Errorf("the slim bootstrap must keep %q", keep)
+		}
+	}
+	if !strings.Contains(reviewBootstrap, "kb_get") {
+		t.Error("the full (cold/fallback) bootstrap must keep the kb_get doctrine load")
 	}
 }

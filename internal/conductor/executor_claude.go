@@ -596,7 +596,14 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 		return attemptDeliveryResult{}
 	}
 	c.putBrief("tl", bus.Brief{Role: "tech-lead", Prompt: prompt, Feedback: feedback, Attempt: attempt})
-	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extraDirsFor(primary, folders), spawnOpts{model: tlModel, thinking: tlThinking})
+	// Fork the tech-lead doctrine template when one resolves — the template only
+	// ADDS pre-loaded doctrine to the context; the prompt is unchanged. ok=false
+	// degrades silently to today's cold start (no fork args, same bootstrap).
+	tlOpts := spawnOpts{model: tlModel, thinking: tlThinking}
+	if tpl, ok := c.templateForWorkdir(RoleTechLead, primary, tlDir); ok {
+		tlOpts.forkFrom, tlOpts.fallbackPrompt = tpl, techLeadBootstrap
+	}
+	tasks := runAgentResilient(ctx, c, id, "tl", techLeadBootstrap, true, tlDir, extraDirsFor(primary, folders), tlOpts)
 	if ctx.Err() != nil {
 		return attemptDeliveryResult{} // stopped
 	}
@@ -722,7 +729,7 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 			return "", "Merging " + t.ID + " failed: " + err.Error() + " Re-partition so tasks own disjoint files.", false
 		}
 		if conflicted {
-			if err := resolveConflict(ctx, c, id, integDir, t, files, extra); err != nil {
+			if err := resolveConflict(ctx, c, id, repo, integDir, t, files, extra); err != nil {
 				if ctx.Err() != nil {
 					return "", "", false // stopped mid-resolution
 				}
@@ -853,7 +860,13 @@ func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string,
 				return
 			}
 			c.putBrief(t.ID, bus.Brief{Role: t.Role, Title: t.Title, Files: t.Files, Test: t.Test, Deps: t.Deps, Repo: repoBase(repo)})
-			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra, spawnOpts{model: coderModel, thinking: coderThinking})
+			// Fork the coder doctrine template when one resolves (concurrent coders
+			// coalesce into a single creation); ok=false is a silent cold start.
+			opts := spawnOpts{model: coderModel, thinking: coderThinking}
+			if tpl, ok := c.templateForWorkdir(RoleCoder, repo, wtDir); ok {
+				opts.forkFrom, opts.fallbackPrompt = tpl, coderBootstrap
+			}
+			runAgentResilient(ctx, c, id, t.ID, coderBootstrap, false, wtDir, extra, opts)
 			// Don't commit or claim success for a coder that failed (r.Error) or was
 			// killed mid-flight by Stop/Restart (ctx cancelled).
 			cr, _ := c.Get(id)
@@ -1037,10 +1050,16 @@ const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read y
 // the conflict in place, the caller aborts the merge and REASSESSES the split (a
 // re-plan) — only an exhausted re-plan budget fails the run. A real tech lead
 // resolves conflicts, or re-thinks the breakdown — it doesn't abandon the run.
-func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t partitionTask, files, extra []string) error {
+func resolveConflict(ctx context.Context, c *Conductor, id, repo, integDir string, t partitionTask, files, extra []string) error {
 	attempts := maxAttempts()
 	var lastErr error
 	tlModel, tlThinking := c.agentConfig(RoleTechLead)
+	// Conflict resolution is tech-lead work, so it forks the TECH-LEAD doctrine
+	// template (computed once, before any spawn); ok=false is a silent cold start.
+	tlOpts := spawnOpts{model: tlModel, thinking: tlThinking}
+	if tpl, ok := c.templateForWorkdir(RoleTechLead, repo, integDir); ok {
+		tlOpts.forkFrom = tpl
+	}
 	c.putBrief("tl", bus.Brief{Role: "tech-lead", Title: "resolve merge conflict in " + t.Title, Files: files})
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if ctx.Err() != nil {
@@ -1052,7 +1071,12 @@ func resolveConflict(ctx context.Context, c *Conductor, id, integDir string, t p
 				appendToAgent(r, "tl", run.Event{T: "system", Text: "merge conflict in " + strings.Join(files, ", ") + " — tech lead reconciling"}, 0)
 			}
 		})
-		out := streamOnce(ctx, c, id, "tl", reinforce(conflictBootstrap, attempt, false), integDir, extra, spawnOpts{model: tlModel, thinking: tlThinking})
+		prompt := reinforce(conflictBootstrap, attempt, false)
+		o := tlOpts
+		if o.forkFrom != "" {
+			o.fallbackPrompt = prompt // a failed fork reruns cold with this attempt's prompt
+		}
+		out := streamOnce(ctx, c, id, "tl", prompt, integDir, extra, o)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1241,8 +1265,9 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 }
 
 // reviewUntilClean runs a REAL review phase after integration and before any PR:
-// a SEPARATE reviewer agent hard-reviews each repo's integrated diff (loading the
-// detritus review doctrine via kb_get, not an inlined rubric), and any blockers
+// a SEPARATE reviewer agent hard-reviews each repo's integrated diff (forking the
+// reviewer doctrine template — core/review-rigor + truthseeker pre-loaded — or
+// loading that doctrine via kb_get when no template resolves), and any blockers
 // drive a bounded fix→re-review loop in that same integration worktree. It returns
 // true only when every repo reviews clean (so the executor opens a PR), false when
 // the round budget is exhausted with blockers still open (recording an honest run
@@ -1257,17 +1282,19 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 		r.Agents = append(r.Agents, run.Agent{ID: reviewerID, Role: "Reviewer", Emoji: "🔎",
 			Task: "review the integrated diff", State: "working", Activity: "loading review doctrine",
 			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: reviewerModel, Thinking: reviewerThinking,
-			Events: []run.Event{{T: "system", Text: "reviewer · kb_get core/review-rigor + truthseeker"}}})
+			Events: []run.Event{{T: "system", Text: "reviewer · doctrine template fork (core/review-rigor + truthseeker)"}}})
 	})
 	folders := orderedDelivered(delivered)
-	// F3 doctrine-once: the reviewer loads the review doctrine ONCE per identity per
-	// run (round 1 across the first repo). Later rounds/repos reuse the same identity,
-	// so their bootstrap omits the kb_get reload (mirrors reviewFixBootstrap's no-reload).
-	doctrineLoaded := false
 	totalRounds := 0
 	for _, repo := range folders {
 		integDir := delivered[repo]
 		base, _ := currentBranch(ctx, repo)
+		// EVERY round forks the reviewer doctrine template (computed once per repo,
+		// before any spawn) with the slim bootstrap — the template already carries
+		// core/review-rigor + truthseeker. When no template resolves the round is
+		// byte-for-byte today's cold spawn: the full kb_get bootstrap, no fork args.
+		// A fork that fails mid-run falls back to the full bootstrap (streamOnce).
+		tpl, tplOK := c.templateForWorkdir(RoleReviewer, repo, integDir)
 		for round := 1; round <= rounds; round++ {
 			if ctx.Err() != nil {
 				return false // stopped mid-review
@@ -1278,8 +1305,13 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 				setAgentState(r, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
 			})
 			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch})
-			out := streamOnce(ctx, c, id, reviewerID, reviewPrompt(doctrineLoaded), integDir, extraDirsForDelivered(repo, folders), spawnOpts{maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking})
-			doctrineLoaded = true
+			prompt := reviewBootstrap
+			o := spawnOpts{maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking}
+			if tplOK {
+				prompt = reviewBootstrapSlim
+				o.forkFrom, o.fallbackPrompt = tpl, reviewBootstrap
+			}
+			out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extraDirsForDelivered(repo, folders), o)
 			if ctx.Err() != nil {
 				return false // stopped mid-review
 			}
@@ -1354,7 +1386,14 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	c.putBrief(reviewerID, bus.Brief{Role: "fix", Title: "address review findings in " + repoBase(repo), Findings: findingLines(blockers)})
 	// C2 belt-and-suspenders: also carry the cited findings in the prompt text
 	// itself, so they're impossible to miss even if the brief render drops them.
-	out := streamOnce(ctx, c, id, reviewerID, reviewFixPrompt(blockers), integDir, extra, spawnOpts{maxTurns: reviewFixTurns(), model: fixModel, thinking: fixThinking})
+	// The fix identity forks its doctrine template when one resolves; the fallback
+	// keeps the findings-carrying prompt so C2 survives a failed fork too.
+	prompt := reviewFixPrompt(blockers)
+	opts := spawnOpts{maxTurns: reviewFixTurns(), model: fixModel, thinking: fixThinking}
+	if tpl, ok := c.templateForWorkdir(RoleFix, repo, integDir); ok {
+		opts.forkFrom, opts.fallbackPrompt = tpl, prompt
+	}
+	out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extra, opts)
 	if ctx.Err() != nil {
 		return false // stopped mid-fix
 	}
@@ -1440,27 +1479,18 @@ const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST 
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
 	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
 
-// reviewBootstrapNoReload is the round-2+ reviewer bootstrap: the SAME rigor as
-// reviewBootstrap but WITHOUT the kb_get doctrine load — the reviewer identity
-// already loaded core/review-rigor + truthseeker once this run (F3: load once per
-// reviewer identity per run, not every round). Mirrors reviewFixBootstrap's no-reload.
-const reviewBootstrapNoReload = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
-	"Apply the detritus review doctrine you ALREADY loaded this run (core/review-rigor + truthseeker) — do NOT reload it. " +
+// reviewBootstrapSlim is the bootstrap for a reviewer forked from the doctrine
+// template: the forked session already carries core/review-rigor + truthseeker
+// in context, so the kb_get load instruction is dropped — everything else is
+// reviewBootstrap verbatim. A spawn with no template (and a fork that fails to
+// resolve) uses the full reviewBootstrap, whose kb_get load stands on its own.
+const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
 	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
 	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
 	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
 	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
-
-// reviewPrompt picks the reviewer bootstrap: the full doctrine-loading one on the
-// first review of the run, the no-reload variant on every later round/repo (F3).
-func reviewPrompt(doctrineLoaded bool) string {
-	if doctrineLoaded {
-		return reviewBootstrapNoReload
-	}
-	return reviewBootstrap
-}
 
 const reviewFixBootstrap = "You are addressing review findings on an integrated branch before it opens as a pull request. " +
 	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
