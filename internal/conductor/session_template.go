@@ -232,10 +232,16 @@ func (c *Conductor) createTemplate(role, repo, key string, docs []string) (strin
 	if thinking != "" {
 		args = append(args, "--effort", thinking)
 	}
-	if cfg := templateMCPConfig(); cfg != "" {
-		defer os.Remove(cfg)
-		args = append(args, "--mcp-config", cfg)
+	// No kb_get surface → no template. A doctrine-load spawn without the detritus
+	// MCP config cannot load anything; the cold path is strictly better (its
+	// busMCPConfig also layers the origin session's inherited servers).
+	cfg := templateMCPConfig()
+	if cfg == "" {
+		log.Printf("candyland: session template %s: detritus MCP unavailable (spawns start cold)", key)
+		return "", false
 	}
+	defer os.Remove(cfg)
+	args = append(args, "--mcp-config", cfg)
 	if err := runTemplateSpawn(repo, args); err != nil {
 		log.Printf("candyland: session template %s: creation failed (spawns start cold): %v", key, err)
 		return "", false
@@ -338,12 +344,14 @@ func runTemplateSpawn(dir string, args []string) error {
 		}
 	}()
 	sawResult := false
+	resultText := ""
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
 	for sc.Scan() {
 		var line streamLine
 		if json.Unmarshal(sc.Bytes(), &line) == nil && line.Type == "result" {
 			sawResult = true
+			resultText = line.Result
 		}
 	}
 	werr := cmd.Wait()
@@ -355,6 +363,13 @@ func runTemplateSpawn(dir string, args []string) error {
 	}
 	if !sawResult {
 		return errors.New("the stream ended with no result line")
+	}
+	// The doctrine bootstrap ends with "reply with exactly: READY" — anything
+	// else means the doctrine did NOT load (kb_get unavailable, a doc renamed,
+	// the model improvising). Persisting such a session would be worse than
+	// cold: every fork would "APPLY the doctrine already loaded" over nothing.
+	if strings.TrimSpace(resultText) != "READY" {
+		return fmt.Errorf("doctrine load not confirmed: result was %q, want READY", truncate(firstLine(resultText), 120))
 	}
 	return nil
 }

@@ -66,12 +66,10 @@ func templateConductor(t *testing.T, claudeScript string) (*Conductor, string, s
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { srv.Close(os.Interrupt) })
-	// The package default (TestMain) is reuse OFF; the tests built on this
-	// helper exercise the template feature deliberately.
-	t.Setenv("CANDYLAND_SESSION_REUSE", "1")
 	writeFakeClaude(t, claudeScript)
-	// writeFakeClaude defaults the reuse kill switch OFF for flow stubs; the
-	// registry tests ARE the template machinery, so turn it back on here.
+	// The package default (TestMain) and writeFakeClaude both force the reuse
+	// kill switch OFF; the registry tests ARE the template machinery, so turn
+	// it back on after the harness call.
 	t.Setenv("CANDYLAND_SESSION_REUSE", "1")
 	writeFakeDetritus(t)
 	fixture := filepath.Join(t.TempDir(), "template")
@@ -324,6 +322,51 @@ func TestTemplateForCreationFailure(t *testing.T) {
 	}
 	if got := spawnCount(t, fixture); got != 2 {
 		t.Fatalf("each miss retries the creation: want 2 spawns, got %d", got)
+	}
+}
+
+// A stub whose creation spawn ends WITHOUT confirming the doctrine load — the
+// result is chatter, not READY (the shape of a spawn whose kb_get tool was
+// missing or errored mid-load). Persisting it would fork doctrine-less
+// sessions whose slim bootstraps "APPLY the doctrine already loaded" over
+// nothing — strictly worse than cold.
+const templateNotReadyClaude = `#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then echo "9.9.9 (stub)"; exit 0; fi
+echo spawn >> "$CANDYLAND_TEMPLATE_FIXTURE"
+echo '{"type":"system","subtype":"init","session_id":"sess-x"}'
+echo '{"type":"result","subtype":"success","result":"I do not have a kb_get tool available.","usage":{"output_tokens":10}}'
+`
+
+func TestTemplateForRequiresReadyConfirmation(t *testing.T) {
+	c, repo, fixture := templateConductor(t, templateNotReadyClaude)
+
+	if id, ok := c.templateFor(RoleCoder, repo); ok || id != "" {
+		t.Errorf("non-READY creation: got (%q, %v), want (\"\", false)", id, ok)
+	}
+	if _, err := c.server.Storage.Get(templateKey(RoleCoder, repo)); err == nil {
+		t.Error("a creation that never confirmed READY must not persist an entry")
+	}
+	if got := spawnCount(t, fixture); got != 1 {
+		t.Fatalf("want exactly 1 creation spawn, got %d", got)
+	}
+}
+
+// Without a resolvable detritus binary the creation spawn would have no kb_get
+// surface at all — templateFor must refuse to create (cold spawns still get
+// kb_get via busMCPConfig's inherited servers, so cold is strictly better).
+func TestTemplateForRequiresDetritus(t *testing.T) {
+	c, repo, fixture := templateConductor(t, templateStubClaude)
+	t.Setenv("DETRITUS_BIN", "")
+	t.Setenv("PATH", t.TempDir()) // LookPath("detritus") must fail too
+
+	if id, ok := c.templateFor(RoleCoder, repo); ok || id != "" {
+		t.Errorf("no detritus: got (%q, %v), want (\"\", false)", id, ok)
+	}
+	if _, err := c.server.Storage.Get(templateKey(RoleCoder, repo)); err == nil {
+		t.Error("no entry may persist when the doctrine source is unavailable")
+	}
+	if got := spawnCount(t, fixture); got != 0 {
+		t.Fatalf("creation must abort before spawning, got %d spawns", got)
 	}
 }
 

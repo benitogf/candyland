@@ -98,9 +98,8 @@ func TestForkUnresolvedDetection(t *testing.T) {
 	}
 }
 
-// A stub whose stream carries a session id (on the SECOND line — the first has
-// none, pinning first-non-empty capture) and a result line with the full usage
-// block. output_tokens is 4000 so the /1000 display scaling stays observable.
+// A stub whose result line carries the full usage block. output_tokens is 4000
+// so the /1000 display scaling stays observable next to the raw counts.
 const sessionUsageClaude = `#!/usr/bin/env bash
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"warming"}]}}'
 echo '{"type":"system","subtype":"init","session_id":"sess-first"}'
