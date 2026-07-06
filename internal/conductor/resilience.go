@@ -49,7 +49,7 @@ func envDur(key string, defMS int) time.Duration {
 // firstLine returns the first non-empty line of s (claude prints the key error on
 // its own line; the rest is usually a stack/usage dump).
 func firstLine(s string) string {
-	for _, ln := range strings.Split(s, "\n") {
+	for ln := range strings.SplitSeq(s, "\n") {
 		if t := strings.TrimSpace(ln); t != "" {
 			return t
 		}
@@ -119,6 +119,12 @@ type attemptOutcome struct {
 	stderr    string         // the process's stderr (why it exited), surfaced on failure
 	tokens    int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
 	allText   string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
+	// Raw usage totals accumulated from result lines — UNSCALED counts, unlike
+	// tokens above which keeps its /1000 display scaling. Input vs cache-read vs
+	// cache-creation split so cost and cache efficiency are derivable per attempt.
+	inputTokens      int
+	cacheReadTokens  int
+	cacheWriteTokens int
 }
 
 // spawnOpts are optional per-spawn knobs for streamOnce. The zero value is
@@ -135,23 +141,47 @@ type spawnOpts struct {
 	// thinking → claude --effort (the version-verified headless thinking control).
 	model    string
 	thinking string
+	// forkFrom is a template session id: when non-empty the spawn FORKS that
+	// session (claude --resume <id> --fork-session) instead of starting cold, so
+	// the agent begins with the template's context already loaded. Empty is
+	// today's cold-start behavior for every existing caller.
+	forkFrom string
+	// fallbackPrompt is the full bootstrap to rerun with when the fork didn't
+	// resolve (the template session is gone). Only meaningful with forkFrom; the
+	// rerun happens ONCE, inside the same attempt (see streamOnce).
+	fallbackPrompt string
+	// onForkUnresolved fires when forkFrom was set and the fork failed to
+	// resolve — the spawn site uses it to drop the registry entry so later
+	// spawns recreate the template instead of re-paying the doomed fork.
+	// Called at most once per streamOnce, before the fallback rerun.
+	onForkUnresolved func()
 }
 
 // claudeArgs builds the argv for one claude spawn. It is a pure, separately
 // testable function (no process, no I/O) so a test can assert the review/fix
-// identity gets a real --max-turns cap on its argv. busCfg, when non-empty, wires
-// the coordination bus via --mcp-config. maxTurns>0 appends the hard turn cap.
-func claudeArgs(prompt string, extraDirs []string, busCfg string, maxTurns int, model, thinking string) []string {
+// identity gets a real --max-turns cap on its argv, and that a fork spawn
+// carries the paired fork args. busCfg, when non-empty, wires the coordination
+// bus via --mcp-config. o carries the per-spawn knobs (maxTurns>0 appends the
+// hard turn cap; forkFrom forks a template session); a zero o is today's argv
+// byte-for-byte — the fork kill switch depends on that.
+func claudeArgs(prompt string, extraDirs []string, busCfg string, o spawnOpts) []string {
 	// `-p <prompt>` MUST stay first (the stub reads $2); the configured --model is
 	// appended AFTER it, never before. An empty model falls back to the default.
+	model := o.model
 	if model == "" {
 		model = defaultModel
 	}
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose", "--model", model, "--dangerously-skip-permissions"}
 	// thinking maps to claude's --effort (verified against the installed CLI: it
 	// accepts low|medium|high). Empty leaves it to claude's own default.
-	if thinking != "" {
-		args = append(args, "--effort", thinking)
+	if o.thinking != "" {
+		args = append(args, "--effort", o.thinking)
+	}
+	// Fork a doctrine-loaded template session instead of starting cold. The two
+	// flags travel together as an atomic pair: a bare --resume would CONTINUE the
+	// template session in place and corrupt it for every later spawn.
+	if o.forkFrom != "" {
+		args = append(args, "--resume", o.forkFrom, "--fork-session")
 	}
 	for _, d := range extraDirs {
 		args = append(args, "--add-dir", d)
@@ -159,8 +189,8 @@ func claudeArgs(prompt string, extraDirs []string, busCfg string, maxTurns int, 
 	// A real, hard per-pass containment: claude's --max-turns aborts the run after
 	// this many agentic turns. Only set when a caller asks for it (review/fix);
 	// 0 leaves the spawn uncapped, exactly as before.
-	if maxTurns > 0 {
-		args = append(args, "--max-turns", strconv.Itoa(maxTurns))
+	if o.maxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(o.maxTurns))
 	}
 	if busCfg != "" {
 		args = append(args, "--mcp-config", busCfg)
@@ -179,8 +209,9 @@ func claudeArgs(prompt string, extraDirs []string, busCfg string, maxTurns int, 
 // because a headless run has no human to approve tool use — without it a coder
 // can't edit files and silently does nothing.
 //
-// opts carries optional per-spawn knobs (e.g. a hard --max-turns cap); omit it for
-// the historical uncapped behavior used by the tech-lead/coder/conflict spawns.
+// opts carries optional per-spawn knobs (e.g. a hard --max-turns cap, or a
+// template session to fork); omit it for the historical uncapped behavior used
+// by the tech-lead/coder/conflict spawns.
 func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, workdir string, extraDirs []string, opts ...spawnOpts) attemptOutcome {
 	attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
 	defer cancel()
@@ -195,7 +226,54 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	// brief_get rather than from argv — so a large plan can't overflow the
 	// command line. claudeArgs wires --mcp-config when busCfg is non-empty.
 	busCfg := c.busMCPConfig(id, agentID)
-	args := claudeArgs(prompt, extraDirs, busCfg, o.maxTurns, o.model, o.thinking)
+	out := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(prompt, extraDirs, busCfg, o), workdir, busCfg)
+	if o.forkFrom == "" || !forkUnresolved(out) {
+		return out
+	}
+	if o.onForkUnresolved != nil {
+		o.onForkUnresolved()
+	}
+	if o.fallbackPrompt == "" {
+		return out
+	}
+	// ONE-SHOT fallback: the template session didn't resolve, so rerun cold with
+	// the full bootstrap INSIDE this same attempt — runAgentResilient's retry
+	// accounting never sees the fallback as a separate attempt. Never more than
+	// one rerun: the cold spawn carries no forkFrom, so it can't recurse.
+	c.updateAgentHost(id, func(agents *[]run.Agent) {
+		appendToAgentIn(agents, agentID, run.Event{T: "system", Text: "session fork from " + o.forkFrom + " failed — falling back to the full bootstrap"}, 0)
+	})
+	cold := o
+	cold.forkFrom = ""
+	fb := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(cold.fallbackPrompt, extraDirs, busCfg, cold), workdir, busCfg)
+	// The failed fork's (rare) usage still belongs to this attempt's accounting.
+	fb.tokens += out.tokens
+	fb.inputTokens += out.inputTokens
+	fb.cacheReadTokens += out.cacheReadTokens
+	fb.cacheWriteTokens += out.cacheWriteTokens
+	return fb
+}
+
+// forkUnresolved classifies WHY a fork spawn failed: only a start failure or an
+// exit pointing at the missing template conversation means the resume didn't
+// resolve (retry cold via the fallback); any other failure — a stall, a crash on
+// the work itself — is an ordinary run failure the resilience retries own.
+func forkUnresolved(out attemptOutcome) bool {
+	if out.startErr != nil {
+		return true
+	}
+	return out.runErr != nil && strings.Contains(out.stderr, "No conversation found")
+}
+
+// spawnStream runs ONE claude process to completion, streaming its stream-json
+// into the agent's live ooo state, and reports what it produced. It owns the
+// per-process kill watcher, stall timer, and scanner-drain discipline, scoped to
+// a per-process context derived from attemptCtx — so a fallback rerun inside the
+// same attempt re-establishes all three cleanly while still honoring the
+// attempt's wall clock and the parent's stop.
+func spawnStream(attemptCtx, parentCtx context.Context, c *Conductor, id, agentID string, args []string, workdir, busCfg string) attemptOutcome {
+	procCtx, cancel := context.WithCancel(attemptCtx)
+	defer cancel()
 	cmd := exec.Command(claudeBin(), args...)
 	cmd.Dir = workdir
 	cmd.Env = claudeEnv()
@@ -220,9 +298,10 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		return attemptOutcome{startErr: err}
 	}
 	afterStart(cmd) // assign to the Windows job object so killTree drops the whole tree (no-op on Unix)
-	// Kill the whole process tree the moment the attempt ends, for any reason.
+	// Kill the whole process tree the moment this process's run ends, for any
+	// reason (attempt timeout, parent stop, or the loop below finishing).
 	go func() {
-		<-attemptCtx.Done()
+		<-procCtx.Done()
 		killTree(cmd)
 	}()
 
@@ -235,7 +314,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 			b := append([]byte(nil), sc.Bytes()...)
 			select {
 			case lines <- b:
-			case <-attemptCtx.Done():
+			case <-procCtx.Done():
 				return
 			}
 		}
@@ -264,6 +343,9 @@ loop:
 			}
 			if line.Type == "result" {
 				out.tokens += line.Usage.OutputTokens / 1000 // same 1k scaling appendToAgent uses
+				out.inputTokens += line.Usage.InputTokens
+				out.cacheReadTokens += line.Usage.CacheReadInputTokens
+				out.cacheWriteTokens += line.Usage.CacheCreationInputTokens
 			}
 			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {
@@ -282,7 +364,9 @@ loop:
 		case <-stall.C:
 			out.stalled = true
 			break loop
-		case <-attemptCtx.Done():
+		case <-procCtx.Done():
+			// Only the attempt wall clock or a parent stop can fire here — this
+			// function's own cancel runs strictly after the loop exits.
 			if parentCtx.Err() == nil {
 				out.stalled = true // per-attempt wall-clock timeout (not a user stop)
 			}

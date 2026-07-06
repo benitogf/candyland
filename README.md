@@ -91,6 +91,51 @@ inlined rubric. The reviewer emits a structured verdict: `REVIEW_CLEAN` (no
 blockers) or `REVIEW_FINDINGS {…}` with cited blockers, which route back for
 another round. **A PR opens only when the review is clean.**
 
+## Doctrine session templates
+
+Agents load their working doctrine (truthseeker, review rigor, coding style, …)
+from detritus via `kb_get` — and re-reading it cold on every spawn is pure
+repeated cost. So the conductor keeps a **doctrine-loaded session template** per
+(role, repo): one bounded claude spawn loads exactly the role's documents and
+replies `READY`, and every later agent spawn for that role **forks** the template
+at that checkpoint (`claude --resume <session-id> --fork-session`) instead of
+starting cold. The fork starts with the doctrine already in context; the template
+session itself is never continued in place, so it stays pristine for the next fork.
+
+- **Registry** — templates persist in storage under
+  `templates/<role>/<repoBase>-<pathHash>` (the hash keeps same-basename repos
+  from sharing an entry),
+  stamped with the claude CLI version, detritus version, and the role's
+  model + thinking at creation. Any stamp mismatch invalidates the entry and the
+  next spawn creates a fresh template. Model/thinking changes take effect on the
+  next spawn; the two version probes are cached for the process lifetime, so a
+  claude or detritus upgrade under a running candyland invalidates on the next
+  candyland start. A template whose session transcript claude has since
+  garbage-collected is also treated as invalid and recreated.
+- **Worktrees** — claude resolves `--resume` per project directory, so a spawn
+  running in a git worktree gets the template's session jsonl copied into the
+  worktree's project directory first; the fork then resolves locally.
+- **Degradation** — templates are an optimization, never a dependency. Every
+  failure path (no detritus binary, creation timeout, storage miss, copy failure,
+  a fork that doesn't resolve) logs and falls back to a **cold start** with the
+  full bootstrap prompt; a run never fails because of a template.
+
+What each role's template pre-loads (roles without an entry always start cold):
+
+| Role                       | Doctrine documents                                                     |
+| -------------------------- | ---------------------------------------------------------------------- |
+| coder, fix                 | coding-style, line-of-sight                                            |
+| tech-lead                  | truthseeker, core/completion, roles/tech-lead                          |
+| reviewer                   | truthseeker, core/review-rigor                                         |
+| quest-lead                 | truthseeker, core/loop, core/todo-audit, core/completion               |
+| intent-lead                | truthseeker, core/planning, core/dream                                 |
+| tech-manager               | truthseeker, roles/tech-lead, core/completion                          |
+| intent-manager             | truthseeker, core/planning, core/intent-review                         |
+| intent-reviewer            | truthseeker, core/intent-review                                        |
+
+`CANDYLAND_SESSION_REUSE=0` is the kill switch: it disables template creation and
+reuse entirely, so every spawn starts cold (the pre-template behavior).
+
 ## Traces
 
 Every run, quest, and campaign carries a stable id, parent links (a child run's

@@ -49,8 +49,15 @@ type Agent struct {
 	Thinking string `json:"thinking,omitempty"`
 	// ToolCalls counts the tool_use events this agent emitted (L2 telemetry:
 	// tool-call count), stamped as they stream in.
-	ToolCalls int     `json:"toolCalls,omitempty"`
-	Events    []Event `json:"events"`
+	ToolCalls int `json:"toolCalls,omitempty"`
+	// Raw token usage accumulated from the agent's result lines — UNSCALED counts
+	// (Tokens above keeps its /1000 display scaling). The input vs cache-read vs
+	// cache-creation split makes per-agent cost and cache efficiency derivable,
+	// e.g. how much a forked template session saved versus a cold bootstrap.
+	InputTokens         int     `json:"inputTokens,omitempty"`
+	CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
+	CacheCreationTokens int     `json:"cacheCreationTokens,omitempty"`
+	Events              []Event `json:"events"`
 }
 
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last

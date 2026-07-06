@@ -3,6 +3,7 @@ package conductor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func (c *Conductor) escalateDecision(ctx context.Context, hostID, from, deciderI
 	c.putBrief(deciderID, bus.Brief{
 		To:     deciderID,
 		Role:   deciderRole,
-		Prompt: "ESCALATED DECISION (decide autonomously; never ask a human, never stop the flow):\n" + question,
+		Prompt: escalationBriefPrompt(question, c.hostEscalations(hostID)),
 	})
 	out := streamOnce(ctx, c, hostID, deciderID, decisionBootstrap, workdir, extra, spawnOpts{model: model, thinking: thinking})
 	answer, resolved := parseDecision(out.allText)
@@ -84,6 +85,53 @@ func (c *Conductor) escalateDecision(ctx context.Context, hostID, from, deciderI
 	}
 	c.recordEscalation(hostID, esc)
 	return esc, resolved
+}
+
+// maxPriorDecisionLines bounds the PRIOR DECISIONS section of a decider's brief
+// to the most recent entries (oldest dropped first).
+const maxPriorDecisionLines = 10
+
+// escalationBriefPrompt is the decider's whole brief: the escalated question
+// plus the decision memory already recorded on the host record, so a later
+// decider never contradicts a prior ruling unknowingly. Pure function so it is
+// directly unit-testable; with no prior escalations the brief is byte-for-byte
+// the question-only form.
+func escalationBriefPrompt(question string, prior []run.Escalation) string {
+	var b strings.Builder
+	b.WriteString("ESCALATED DECISION (decide autonomously; never ask a human, never stop the flow):\n" + question)
+	if len(prior) == 0 {
+		return b.String()
+	}
+	b.WriteString("\nPRIOR DECISIONS on this record (do not contradict without stating why):\n")
+	if drop := len(prior) - maxPriorDecisionLines; drop > 0 {
+		fmt.Fprintf(&b, "(+%d earlier decisions)\n", drop)
+		prior = prior[drop:]
+	}
+	for _, e := range prior {
+		fmt.Fprintf(&b, "- %s → %s\n", truncate(firstLine(e.Question), 160), truncate(firstLine(e.Answer), 160))
+	}
+	return b.String()
+}
+
+// hostEscalations reads the escalations already recorded on the record that
+// owns hostID, switching on the id-kind prefix exactly as recordEscalation
+// persists them: quest (q<N>), campaign (c<N>), else run.
+func (c *Conductor) hostEscalations(hostID string) []run.Escalation {
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		if q, ok := c.GetQuest(hostID); ok {
+			return q.Escalations
+		}
+	case strings.HasPrefix(hostID, "c"):
+		if cam, ok := c.GetCampaign(hostID); ok {
+			return cam.Escalations
+		}
+	default:
+		if r, ok := c.Get(hostID); ok {
+			return r.Escalations
+		}
+	}
+	return nil
 }
 
 // decisionBlocks reports whether a decider's answer indicates the flow must NOT
