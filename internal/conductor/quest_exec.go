@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -451,7 +452,22 @@ func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string
 		a := ensureAgent(agents, questLeadID)
 		a.Model, a.Thinking, a.Role = model, thinking, "quest-lead"
 	})
-	res := streamOnce(ctx, c, questID, questLeadID, questLeadBootstrap, workdir, extra, spawnOpts{model: model, thinking: thinking})
+	// Fork the quest-lead doctrine template when one is available: the spawn
+	// resumes a session that already loaded the loop/audit/completion doctrine, so
+	// the bootstrap drops the kb_get instructions (questLeadForkBootstrap). The
+	// quest lead runs in the quest's primary repo folder — workdir IS the repo the
+	// template was created in, so no transcript copy is needed. No template
+	// (kill switch off, creation failed, …) → today's cold start, byte-for-byte;
+	// a fork that doesn't resolve falls back to the full bootstrap inside the
+	// same attempt (streamOnce's fallbackPrompt).
+	prompt := questLeadBootstrap
+	opts := spawnOpts{model: model, thinking: thinking}
+	if tpl, ok := c.templateFor(RoleQuestLead, workdir); ok {
+		prompt = questLeadForkBootstrap
+		opts.forkFrom = tpl
+		opts.fallbackPrompt = questLeadBootstrap
+	}
+	res := streamOnce(ctx, c, questID, questLeadID, prompt, workdir, extra, opts)
 	// allText joins every assistant/result block, so the WORKITEMS verdict is found
 	// wherever the quest lead emitted it (not only on the final block).
 	return questLeadOutcome{text: res.allText, tokens: res.tokens, startErr: res.startErr, stalled: res.stalled}
@@ -957,21 +973,36 @@ func seedReviewItem(q run.Quest) (questWorkItem, bool) {
 
 // --- prompts (composition, not inlined rubrics) ---
 
+// questLeadIntro / questLeadDiscoverRules are the two halves every quest-lead
+// bootstrap shares. The full and fork variants below differ ONLY in the doctrine
+// sentence between them, so the shared text can never drift between the two.
+const questLeadIntro = "You are the quest lead driving one tick of an iterative work loop. " +
+	"Call the brief_get tool FIRST to read the quest's objective, scope, safety boundary, and verification — it is no longer on your command line. "
+
+const questLeadDiscoverRules = "Discover the next safe, in-scope work item(s): if the brief names a TARGET PR, that PR IS the subject — you MUST actually fetch and read it (its diff and review comments, e.g. `gh pr diff <n>` / `gh pr view <n>`) and base every finding on what you read; otherwise explore the folder for concrete work. Then TRIAGE each (is it safe? in scope? a single self-contained change?). " +
+	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +
+	"Then emit EXACTLY ONE verdict line and stop: either `WORKITEMS_NONE` (no safe in-scope work remains this tick) " +
+	"OR `WORKITEMS ` followed by a JSON array " + `[{"title":"…","evidence":"why it's needed","classification":"category","decision":"do|skip|block"}]` +
+	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. Do not ask questions and do not defer."
+
 // questLeadBootstrap is the CONSTANT discovery/triage prompt. Like the tech-lead /
 // coder bootstraps it carries no quest context on argv (that rides the brief via
 // brief_get); it tells the quest lead to load the detritus loop/audit/completion
 // doctrine via kb_get and APPLY it, then emit a structured WORKITEMS verdict. It
 // must NOT inline a rubric — the doctrine is the rubric (the Composition Constraint).
-const questLeadBootstrap = "You are the quest lead driving one tick of an iterative work loop. " +
-	"Call the brief_get tool FIRST to read the quest's objective, scope, safety boundary, and verification — it is no longer on your command line. " +
+const questLeadBootstrap = questLeadIntro +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"core/loop\" (loop fundamentals: cadence, skip-streak, durability), " +
 	"kb_get name=\"core/todo-audit\" (how to discover, prioritize, and fork-gate work items), and kb_get name=\"core/completion\" (the three dispositions and the definition of done). " +
 	"Do NOT improvise your own rubric — use the doctrine you loaded. " +
-	"Discover the next safe, in-scope work item(s): if the brief names a TARGET PR, that PR IS the subject — you MUST actually fetch and read it (its diff and review comments, e.g. `gh pr diff <n>` / `gh pr view <n>`) and base every finding on what you read; otherwise explore the folder for concrete work. Then TRIAGE each (is it safe? in scope? a single self-contained change?). " +
-	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +
-	"Then emit EXACTLY ONE verdict line and stop: either `WORKITEMS_NONE` (no safe in-scope work remains this tick) " +
-	"OR `WORKITEMS ` followed by a JSON array " + `[{"title":"…","evidence":"why it's needed","classification":"category","decision":"do|skip|block"}]` +
-	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. Do not ask questions and do not defer."
+	questLeadDiscoverRules
+
+// questLeadForkBootstrap is the slim variant for a spawn that FORKS the quest-lead
+// doctrine template (session_template.go): the template session has already run the
+// kb_get loads, so the bootstrap drops them and points at the loaded doctrine
+// instead. Everything else is questLeadBootstrap verbatim (the shared halves above).
+const questLeadForkBootstrap = questLeadIntro +
+	"Do NOT improvise your own rubric — apply the doctrine already loaded in this session. " +
+	questLeadDiscoverRules
 
 // questBriefPrompt is the per-quest context the quest lead reads via brief_get. It
 // carries the working objective, scope, safety boundary, verification, stop
@@ -1012,7 +1043,145 @@ func questBriefPrompt(q run.Quest, tickID string) string {
 	}
 	b.WriteString("Do NOT surface, reconcile, or supersede your own prior deliveries (the branch/PRs above) — those are your output, not new work.\n")
 	fmt.Fprintf(&b, "TICK: %s\n", tickID)
+	// Decision memory: the durable triage ledger of every prior tick, so this
+	// tick can neither re-surface an item already decided nor contradict the
+	// decision. Empty history renders nothing — a first tick's brief is
+	// byte-identical to one without this section.
+	b.WriteString(priorTicksSection(q))
 	return b.String()
+}
+
+// maxPriorTickLines bounds the PRIOR TICKS section of the tick brief: at most
+// this many work-item lines, oldest dropped first (a long-running quest's brief
+// must stay a brief, not a transcript).
+const maxPriorTickLines = 30
+
+// priorTicksSection renders the quest's work-item ledger — every item prior
+// ticks triaged, one line each: what it was → the triage decision → the launch
+// outcome. Pure function of the record so it is directly unit-testable. Returns
+// "" when no items have been recorded yet.
+func priorTicksSection(q run.Quest) string {
+	if len(q.WorkItems) == 0 {
+		return ""
+	}
+	ticks := make(map[string]run.Tick, len(q.Ticks))
+	for _, t := range q.Ticks {
+		ticks[t.ID] = t
+	}
+	// q.WorkItems is appended per tick in tick order (recordTick), so the slice
+	// is already chronological — the bound drops from the front (oldest).
+	lines := make([]string, 0, len(q.WorkItems))
+	for _, w := range q.WorkItems {
+		lines = append(lines, workItemLine(w, ticks[w.SourceTick]))
+	}
+	var b strings.Builder
+	b.WriteString("PRIOR TICKS (already triaged — do not re-surface, do not contradict):\n")
+	if drop := len(lines) - maxPriorTickLines; drop > 0 {
+		fmt.Fprintf(&b, "(+%d earlier items)\n", drop)
+		lines = lines[drop:]
+	}
+	for _, ln := range lines {
+		b.WriteString("- " + ln + "\n")
+	}
+	return b.String()
+}
+
+// workItemLine is one ledger line: title → decision → outcome.
+func workItemLine(w run.WorkItem, t run.Tick) string {
+	return workItemTitle(w, t) + " → " + orDefault(w.Decision, "do") + " → " + workItemOutcome(w, t)
+}
+
+// workItemOutcome renders the item's recorded end state: the disposition plus,
+// when a child run was launched, its id — and for a blocked item the tick's
+// recorded failure one-liner.
+func workItemOutcome(w run.WorkItem, t run.Tick) string {
+	launched := ""
+	if w.ChildRunID != "" {
+		launched = " (run " + w.ChildRunID + ")"
+	}
+	switch w.Disposition {
+	case "completed":
+		return "done" + launched
+	case "skipped":
+		return "not launched"
+	case "blocked":
+		out := "failed" + launched
+		if why := workItemFailure(t, workItemTitle(w, t)); why != "" {
+			out += ": " + truncate(why, 160)
+		}
+		return out
+	}
+	return orDefault(w.Disposition, "unknown") + launched
+}
+
+// workItemFailure finds the tick's recorded blocker for the item: a launch
+// failure is recorded as "<title>: <err>", a thrash-cap give-up quotes the
+// title (`giving up on "<title>" after N attempts`).
+func workItemFailure(t run.Tick, title string) string {
+	if title == "" {
+		return ""
+	}
+	for _, blk := range t.Blockers {
+		if rest, ok := strings.CutPrefix(blk, title+": "); ok {
+			return rest
+		}
+		if strings.Contains(blk, strconv.Quote(title)) {
+			return blk
+		}
+	}
+	return ""
+}
+
+// workItemTitle recovers the surfaced item's title. A WorkItem stores no title,
+// but its originating tick recorded one triage-decision line per item —
+// "<title>: do now" per accepted item in launch order, "<title>: skip|block"
+// per skipped item in ledger order — and the item id encodes its index within
+// its kind ("<tick>-w<i>" launched, "<tick>-s<n>" skipped; see runQuestTick /
+// skippedWorkItems). When the derivation misses (foreign id shape, rewritten
+// history) it falls back to the item's evidence, classification, then id.
+func workItemTitle(w run.WorkItem, t run.Tick) string {
+	kind, idx := workItemIndex(w.ID, w.SourceTick)
+	var suffixes []string
+	switch kind {
+	case "w":
+		suffixes = []string{": do now"}
+	case "s":
+		suffixes = []string{": skip", ": block"}
+	}
+	seen := 0
+	for _, d := range t.TriageDecisions {
+		for _, suf := range suffixes {
+			if !strings.HasSuffix(d, suf) {
+				continue
+			}
+			if seen == idx {
+				return strings.TrimSuffix(d, suf)
+			}
+			seen++
+			break
+		}
+	}
+	if ev := strings.TrimSpace(w.Evidence); ev != "" {
+		return truncate(ev, 80)
+	}
+	if cl := strings.TrimSpace(w.Classification); cl != "" {
+		return cl
+	}
+	return w.ID
+}
+
+// workItemIndex splits a ledger id "<tick>-w<i>" / "<tick>-s<n>" into its kind
+// and index. ("", -1) for any other shape — the caller falls back.
+func workItemIndex(id, tick string) (kind string, idx int) {
+	rest, ok := strings.CutPrefix(id, tick+"-")
+	if !ok || len(rest) < 2 {
+		return "", -1
+	}
+	n, err := strconv.Atoi(rest[1:])
+	if err != nil || n < 0 {
+		return "", -1
+	}
+	return rest[:1], n
 }
 
 // openedPRURLs collects every PR URL a quest has opened (prior ticks + terminal
