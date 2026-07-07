@@ -1463,7 +1463,7 @@ func campaignPRBody(cam run.Campaign, brief run.IntentBrief, partial []string) s
 			fmt.Fprintf(&b, "- %s\n", n)
 		}
 	}
-	b.WriteString("\n🍬 Opened by [candyland](https://github.com/benitogf/candyland).")
+	b.WriteString("\n" + provenanceFooter("campaign", cam.ID))
 	return b.String()
 }
 

@@ -624,7 +624,7 @@ func questPRTitle(q run.Quest) string {
 func questPRBody(q run.Quest) string {
 	return "Delivered by a candyland quest (bounded — converge to one PR per repo).\n\n## Objective\n\n" +
 		strings.TrimSpace(q.OriginalObjective) +
-		"\n\n🍬 Opened by [candyland](https://github.com/benitogf/candyland)."
+		"\n\n" + provenanceFooter("quest", q.ID)
 }
 
 // questIsNoOp reports whether a terminal quest delivered NOTHING in-scope: zero
