@@ -57,7 +57,7 @@ type Agent struct {
 	InputTokens         int     `json:"inputTokens,omitempty"`
 	CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
 	CacheCreationTokens int     `json:"cacheCreationTokens,omitempty"`
-	Events              []Event `json:"events"`
+	Events              []Event `json:"events,omitempty"`
 }
 
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last
