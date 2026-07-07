@@ -1022,7 +1022,7 @@ func prTitle(r run.Run) string {
 
 func prBody(r run.Run) string {
 	return "Delivered by a candyland run.\n\n## Request\n\n" + strings.TrimSpace(r.Prompt) +
-		"\n\n🍬 Opened by [candyland](https://github.com/benitogf/candyland)."
+		"\n\n" + provenanceFooter("run", r.ID)
 }
 
 // The spawn prompts below are CONSTANT bootstraps. The request, task spec, and
