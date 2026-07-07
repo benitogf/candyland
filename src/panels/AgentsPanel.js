@@ -64,7 +64,9 @@ const AgentCard = ({ agent, selected, onSelect }) => {
     )
 }
 
-const AgentDetail = ({ agent }) => (
+const AgentDetail = ({ agent }) => {
+    const events = agent.events || []
+    return (
     <Card sx={{ height: { md: '100%' }, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <CardContent sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1, '&:last-child': { pb: 2 } }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5, flexShrink: 0 }}>
@@ -79,7 +81,7 @@ const AgentDetail = ({ agent }) => (
             <Divider sx={{ my: 2, flexShrink: 0 }} />
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1, flexShrink: 0 }}>
                 <Typography variant="overline" color="secondary">live output · parsed from stream-json</Typography>
-                <Typography variant="caption" color="text.secondary">{agent.events.length} events</Typography>
+                <Typography variant="caption" color="text.secondary">{events.length} events</Typography>
             </Box>
             <Box
                 sx={{
@@ -95,11 +97,12 @@ const AgentDetail = ({ agent }) => (
                     overflowX: 'hidden',
                 }}
             >
-                {agent.events.map((ev, i) => <EventLine key={i} ev={ev} />)}
+                {events.map((ev, i) => <EventLine key={i} ev={ev} />)}
             </Box>
         </CardContent>
     </Card>
-)
+    )
+}
 
 // The per-agent lens, reused across runs (coder fleet), quests (the quest-lead),
 // and campaigns (intent-lead / intent-reviewer) — every tier records the same
