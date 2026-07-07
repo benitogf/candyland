@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benitogf/candyland/internal/run"
 	"github.com/benitogf/ooo"
@@ -79,6 +80,62 @@ func TestCreateCampaignChildrenMarshalAsArrays(t *testing.T) {
 	body := string(obj.Data)
 	if !strings.Contains(body, `"questIds":[]`) || !strings.Contains(body, `"runIds":[]`) {
 		t.Errorf("children should marshal as [] not null: %s", body)
+	}
+}
+
+// A burst of coordinating-agent writes on a campaign coalesces the same way a
+// quest's do, and the debounce window flushes on its own without an explicit call
+// — the liveness path that keeps the dashboard current between boundaries.
+func TestCoalesceCampaignAgentWrites(t *testing.T) {
+	c, _ := newCampaignServer(t)
+	c.coalesceWindow = time.Hour // hold the debounce open for the deterministic phase
+	id := c.CreateCampaign(run.CampaignSpec{Input: "ship billing redesign"})
+
+	const writes = 20
+	for i := 0; i < writes; i++ {
+		c.recordAgentEvent(id, func(agents *[]run.Agent) {
+			appendToAgentIn(agents, intentLeadID, run.Event{T: "text", Text: "tok"}, 0)
+		})
+	}
+
+	if cam, _ := c.GetCampaign(id); len(cam.Agents) != 0 {
+		t.Fatalf("agent writes reached storage before flush: %d agents", len(cam.Agents))
+	}
+
+	c.flushAgentWrites(id)
+
+	cam, ok := c.GetCampaign(id)
+	if !ok {
+		t.Fatal("campaign gone after flush")
+	}
+	if len(cam.Agents) != 1 || cam.Agents[0].ID != intentLeadID {
+		t.Fatalf("coalesced agent not persisted: %+v", cam.Agents)
+	}
+	if got := len(cam.Agents[0].Events); got != writes {
+		t.Errorf("coalesced events lost: got %d, want %d", got, writes)
+	}
+}
+
+// The debounce window flushes a buffered agent write to storage on its own, with no
+// explicit flush — the liveness guarantee between stream boundaries.
+func TestCoalesceWindowFlushesLive(t *testing.T) {
+	c, _ := newCampaignServer(t)
+	c.coalesceWindow = 10 * time.Millisecond
+	id := c.CreateCampaign(run.CampaignSpec{Input: "x"})
+
+	c.recordAgentEvent(id, func(agents *[]run.Agent) {
+		appendToAgentIn(agents, intentLeadID, run.Event{T: "text", Text: "tok"}, 0)
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if cam, _ := c.GetCampaign(id); len(cam.Agents) == 1 {
+			return // the window fired and persisted on its own
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("coalesce window never flushed to storage")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
