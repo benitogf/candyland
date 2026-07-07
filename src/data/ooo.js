@@ -47,10 +47,17 @@ export const isReviewDelivered = (run) => deliverOf(run) === 'review'
 const withMeta = (e) => (e?.data ? { ...e.data, _created: e.created || 0, _updated: e.updated || e.created || 0 } : null)
 export const recency = (item) => (item?._updated || item?._created || 0)
 
-// Normalize a run for the UI: agents/tasks are always arrays, so panels can
-// .map/.length them safely no matter what the backend (or older persisted data)
-// sent — a null there would otherwise crash the whole view.
-const normalizeRun = (r) => (r ? { ...r, agents: r.agents || [], tasks: r.tasks || [] } : null)
+// Every agent carries an events array (the parsed stream-json stdout the
+// per-worker lens renders). Guarantee it's an array so the panel can
+// .map/.length it — a null/missing events from older data or a still-planning
+// agent would otherwise crash AgentDetail.
+const normalizeAgent = (a) => ({ ...a, events: a.events || [] })
+
+// Normalize a run for the UI: agents/tasks are always arrays, and each agent's
+// events is always an array, so panels can .map/.length them safely no matter
+// what the backend (or older persisted data) sent — a null there would
+// otherwise crash the whole view.
+export const normalizeRun = (r) => (r ? { ...r, agents: (r.agents || []).map(normalizeAgent), tasks: r.tasks || [] } : null)
 
 // All runs (for the dashboard), newest first. ooo lists ascending by key, so we
 // sort by the run's sequence id (r1, r2, …) descending.
