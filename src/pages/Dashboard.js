@@ -18,6 +18,7 @@ import { runLabel, questLabel, campaignLabel } from '../util'
 import { useRuns, useQuests, useCampaigns, recency } from '../data/ooo'
 import { archiveRun, archiveQuest, archiveCampaign } from '../data/api'
 import { useToast } from '../feedback'
+import { PauseChip } from '../components/StatusBits'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
 const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled'
@@ -63,6 +64,7 @@ const RunCard = ({ run, onOpen, onDismiss }) => (
                 <Typography variant="caption" color="secondary" sx={{ fontWeight: 700 }}>{statusLabel(run)}</Typography>
                 <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.tokensUsed}k tok</Typography>
             </Box>
+            {run.status === 'paused' && <Box sx={{ mt: 0.75 }}><PauseChip entity={run} /></Box>}
         </CardContent>
     </Card>
 )
@@ -83,7 +85,9 @@ const ParentCard = ({ parent, kind, title, children, onOpenParent, onDismiss }) 
             <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.25 }}>
                     <Chip size="small" color="secondary" variant="outlined" label={`${kind} · ${parent.id}`} sx={{ height: 20 }} />
-                    <Chip size="small" color={STATUS_COLOR[parent.status] || 'default'} variant="outlined" label={parent.status} sx={{ height: 20 }} />
+                    {parent.status === 'paused'
+                        ? <PauseChip entity={parent} sx={{ height: 20 }} />
+                        : <Chip size="small" color={STATUS_COLOR[parent.status] || 'default'} variant="outlined" label={parent.status} sx={{ height: 20 }} />}
                     <Box sx={{ flexGrow: 1 }} />
                     {!isActive(parent.status) && <DismissButton onDismiss={onDismiss} />}
                 </Box>

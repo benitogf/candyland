@@ -23,6 +23,52 @@ export const STATE_META = {
 
 export const isDone = (state) => STATE_META[state]?.phase === 'done'
 
+// ── Auto-pause presentation ──────────────────────────────────────────────────
+// The conductor now AUTO-PAUSES work (and auto-resumes) instead of failing it on
+// two distinct causes, and the UI must tell them apart — a transient usage/token
+// limit (work resumes when the limit resets) vs a connection/infra death (work
+// retries with backoff). Runs, quests, and campaigns all carry the same fields
+// (status:'paused' + pauseReason + resumeAt + rePauses), so this is uniform.
+export const PAUSE_META = {
+    // Usage/token limit — a scheduled, time-bounded wait; reads with a clock.
+    limit: { key: 'limit', label: 'Usage limit', color: 'warning' },
+    // Connection/infra loss — an open-ended retry; reads as an outage, not a clock.
+    connection: { key: 'connection', label: 'Connection lost', color: 'warning' },
+    // Any other auto-pause the backend introduces — a safe, generic fallback.
+    other: { key: 'other', label: 'Paused', color: 'warning' },
+}
+
+// Classify a pauseReason string into its cause. Keys off the two guaranteed
+// forms ("usage limit — …" / "connection lost — …"), tolerant of wording drift.
+export const pauseCause = (reason) => {
+    const r = String(reason || '').toLowerCase()
+    if (r.includes('usage limit') || r.includes('token')) return 'limit'
+    if (r.includes('connection') || r.includes('network')) return 'connection'
+    return 'other'
+}
+
+// Distill an entity's pause fields into a presentable shape, or null when it is
+// not auto-paused. Callers render the cause differently per `meta`/`cause`.
+export const pauseInfo = (entity) => {
+    if (!entity || entity.status !== 'paused') return null
+    const cause = pauseCause(entity.pauseReason)
+    return {
+        cause,
+        meta: PAUSE_META[cause],
+        reason: entity.pauseReason || PAUSE_META[cause].label,
+        resumeAt: entity.resumeAt || '',
+        rePauses: entity.rePauses || 0,
+    }
+}
+
+// Human resume time: "3:40 PM". Empty when unset/invalid.
+export const resumeAtLabel = (resumeAt) => {
+    if (!resumeAt) return ''
+    const d = new Date(resumeAt)
+    if (Number.isNaN(d.getTime())) return ''
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
 // Find an agent within a run object (run comes from live ooo state).
 export const agentInRun = (run, id) => (run ? (run.agents || []).find((a) => a.id === id) || null : null)
 

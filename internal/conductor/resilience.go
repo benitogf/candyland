@@ -109,22 +109,32 @@ const startFailurePrefix = "Claude Code failed to start: "
 // attemptOutcome is what one claude process run produced — enough to decide
 // whether it actually complied with its instructions.
 type attemptOutcome struct {
-	partition []partitionTask
-	review    *reviewVerdict // the reviewer's structured verdict (review phase only)
-	sawTool   bool           // the model used at least one tool (i.e. did real work)
-	lastText  string         // most recent assistant/result text (for deferral/question detection)
-	stalled   bool           // killed for producing no output, or exceeding the wall clock
-	startErr  error          // process could not be started (binary missing / not authenticated)
-	runErr    error          // process exited non-zero on its own
-	stderr    string         // the process's stderr (why it exited), surfaced on failure
-	tokens    int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
-	allText   string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
+	partition     []partitionTask
+	review        *reviewVerdict // the reviewer's structured verdict (review phase only)
+	sawTool       bool           // the model used at least one tool (i.e. did real work)
+	lastText      string         // most recent assistant/result text (for deferral/question detection)
+	stalled       bool           // killed for producing no output, or exceeding the wall clock
+	startErr      error          // process could not be started (binary missing / not authenticated)
+	runErr        error          // process exited non-zero on its own
+	resultErrored bool           // a result line arrived with a non-success subtype (harness-signaled failure, even on a clean exit)
+	stderr        string         // the process's stderr (why it exited), surfaced on failure
+	tokens        int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
+	allText       string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
 	// Raw usage totals accumulated from result lines — UNSCALED counts, unlike
 	// tokens above which keeps its /1000 display scaling. Input vs cache-read vs
 	// cache-creation split so cost and cache efficiency are derivable per attempt.
 	inputTokens      int
 	cacheReadTokens  int
 	cacheWriteTokens int
+}
+
+// terminalFailed reports that the spawn reached a NON-success terminal: it failed
+// to start, exited non-zero, stalled, or the harness emitted a result line with a
+// non-success subtype. A successful spawn (clean exit, success subtype) is never a
+// death — so the limit/connection classifiers may trust its result text only when
+// this is true, never misreading a completed verdict that merely quotes an error.
+func (out attemptOutcome) terminalFailed() bool {
+	return out.startErr != nil || out.runErr != nil || out.stalled || out.resultErrored
 }
 
 // spawnOpts are optional per-spawn knobs for streamOnce. The zero value is
@@ -155,6 +165,15 @@ type spawnOpts struct {
 	// spawns recreate the template instead of re-paying the doomed fork.
 	// Called at most once per streamOnce, before the fallback rerun.
 	onForkUnresolved func()
+	// sessionID names this fresh spawn's claude session (--session-id) so the
+	// usage-limit gate can resume the SAME session in place after a limit pause.
+	// streamOnce mints one when a caller leaves it empty on a cold (non-fork,
+	// non-resume) spawn; a fork spawn already carries the template's session.
+	sessionID string
+	// resumeFrom continues an existing session in place (claude --resume <id>,
+	// WITHOUT --fork-session — unlike forkFrom, which forks). streamOnce sets it to
+	// resume a limit-interrupted spawn; empty is a fresh spawn.
+	resumeFrom string
 }
 
 // claudeArgs builds the argv for one claude spawn. It is a pure, separately
@@ -182,6 +201,17 @@ func claudeArgs(prompt string, extraDirs []string, busCfg string, o spawnOpts) [
 	// template session in place and corrupt it for every later spawn.
 	if o.forkFrom != "" {
 		args = append(args, "--resume", o.forkFrom, "--fork-session")
+	}
+	// Resume THIS agent's own interrupted session in place after a usage-limit
+	// pause: --resume alone (no --fork-session) continues it. Mutually exclusive
+	// with forkFrom (a resume never also forks).
+	if o.resumeFrom != "" {
+		args = append(args, "--resume", o.resumeFrom)
+	}
+	// Name a fresh session so a later limit pause can resume it. --session-id is
+	// only valid on a new session, so never pair it with a resume/fork.
+	if o.sessionID != "" && o.forkFrom == "" && o.resumeFrom == "" {
+		args = append(args, "--session-id", o.sessionID)
 	}
 	for _, d := range extraDirs {
 		args = append(args, "--add-dir", d)
@@ -213,13 +243,13 @@ func claudeArgs(prompt string, extraDirs []string, busCfg string, o spawnOpts) [
 // template session to fork); omit it for the historical uncapped behavior used
 // by the tech-lead/coder/conflict spawns.
 func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, workdir string, extraDirs []string, opts ...spawnOpts) attemptOutcome {
-	attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
-	defer cancel()
 	// A parent (quest/campaign) host coalesces its coordinating-agent writes; flush
 	// AND evict the buffer when the attempt ends so the stream boundary is durable
 	// regardless of where the coalesce window fell, and no permanent per-id entry
 	// lingers retaining the lead's per-token history for the process lifetime. The
-	// next stream re-seeds from storage. A no-op for run ids.
+	// next stream re-seeds from storage. A no-op for run ids. (The per-attempt
+	// context is created inside the retry loop below, so a limit/connection pause
+	// gets a fresh deadline on resume rather than a stale one.)
 	defer c.flushAndEvictAgentWrites(id)
 
 	var o spawnOpts
@@ -232,25 +262,127 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	// brief_get rather than from argv — so a large plan can't overflow the
 	// command line. claudeArgs wires --mcp-config when busCfg is non-empty.
 	busCfg := c.busMCPConfig(id, agentID)
-	out := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(prompt, extraDirs, busCfg, o), workdir, busCfg)
-	if o.forkFrom == "" || !forkUnresolved(out) {
+	// Mint a session id for a cold (non-fork, non-resume) spawn so a usage-limit
+	// pause can resume THIS exact session in place instead of starting over.
+	if o.sessionID == "" && o.forkFrom == "" && o.resumeFrom == "" {
+		if sid, err := newSessionID(); err == nil {
+			o.sessionID = sid
+		}
+	}
+	// resumeSession is the session a limit-interrupted resume continues in place;
+	// the fork template already carries its own, else it's the minted cold one.
+	resumeSession := firstNonEmpty(o.forkFrom, o.sessionID)
+	repaused := 0    // usage-limit + connection-loss pauses combined (unbounded)
+	infraStreak := 0 // CONSECUTIVE connection-loss deaths (resets on any other outcome)
+	// resumeInPlace switches this spawn to continue the interrupted session next
+	// iteration, keeping the full bootstrap so a cold-boot fallback still has context.
+	resumeInPlace := func() {
+		if resumeSession != "" {
+			o.resumeFrom, o.forkFrom = resumeSession, ""
+			if o.fallbackPrompt != "" {
+				prompt = o.fallbackPrompt
+			}
+		}
+	}
+	for {
+		// Conductor-wide gate: block every spawn until the limit resets (or, for a
+		// sustained outage, until the infra backoff window passes).
+		c.awaitLimit(parentCtx)
+		if parentCtx.Err() != nil {
+			return attemptOutcome{}
+		}
+		if repaused > 0 {
+			c.resumeFromLimit(id) // gate opened — flip this run back to running
+		}
+		// Recreate the attempt deadline AFTER the gate reopens. awaitLimit can block
+		// for the full limit window (hours), so a ctx created before the pause would
+		// already be Done here — killing the resume spawn on arrival.
+		attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
+		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, o)
+		cancel()
+		// A usage-limit death is NOT the agent's fault, so it must not burn an
+		// attempt: arm the conductor-wide gate, then resume this session in place
+		// once it reopens. The re-pause counter is unbounded — a limit can recur.
+		if resetAt, isLimit := classifyUsageLimit(out, time.Now()); isLimit {
+			repaused++
+			infraStreak = 0
+			c.armLimit(id, resetAt)
+			c.updateAgentHost(id, func(agents *[]run.Agent) {
+				appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
+					"usage limit reached (pause %d) — resuming at %s", repaused, resetAt.UTC().Format(time.RFC3339))}, 0)
+			})
+			resumeInPlace()
+			continue
+		}
+		// A connection/infrastructure death is likewise not the agent's fault: pause
+		// with escalating backoff and resume in place rather than misreading it as
+		// "produced no verdict". A single blip pauses only this run; a sustained
+		// outage (>= infraGateThreshold consecutive) arms the fleet-wide gate.
+		if classifyInfra(out) {
+			repaused++
+			infraStreak++
+			backoff := infraBackoff(infraStreak)
+			resumeAt := time.Now().Add(backoff)
+			systemic := infraStreak >= infraGateThreshold
+			if systemic {
+				c.armInfra(id, resumeAt) // gate the whole fleet; top-of-loop awaitLimit waits it out
+			} else {
+				c.pauseInfraLocal(id, resumeAt) // this run only
+			}
+			c.updateAgentHost(id, func(agents *[]run.Agent) {
+				appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
+					"connection lost (pause %d, streak %d) — retrying at %s", repaused, infraStreak, resumeAt.UTC().Format(time.RFC3339))}, 0)
+			})
+			resumeInPlace()
+			if systemic {
+				continue // fleet-gated: the awaitLimit at the top of the loop handles the wait
+			}
+			// Sporadic: no fleet gate, so wait the backoff locally before retrying.
+			if !sleepCtx(parentCtx, backoff) {
+				return attemptOutcome{}
+			}
+			c.resumeFromLimit(id)
+			continue
+		}
 		return out
 	}
-	if o.onForkUnresolved != nil {
+}
+
+// sleepCtx waits for d or until ctx is cancelled. It reports true if the full
+// duration elapsed, false if ctx was cancelled first (the caller should abort).
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// spawnWithForkFallback runs one spawn and, when it forked or resumed a session
+// that didn't resolve (the transcript is gone), reruns ONCE cold with the full
+// fallback bootstrap inside the same attempt — the retry/limit accounting never
+// sees the fallback as a separate attempt. The cold rerun carries no fork/resume,
+// so it can't recurse.
+func (c *Conductor) spawnWithForkFallback(attemptCtx, parentCtx context.Context, id, agentID, prompt, workdir string, extraDirs []string, busCfg string, o spawnOpts) attemptOutcome {
+	out := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(prompt, extraDirs, busCfg, o), workdir, busCfg)
+	resumed := firstNonEmpty(o.forkFrom, o.resumeFrom)
+	if resumed == "" || !forkUnresolved(out) {
+		return out
+	}
+	if o.forkFrom != "" && o.onForkUnresolved != nil {
 		o.onForkUnresolved()
 	}
 	if o.fallbackPrompt == "" {
 		return out
 	}
-	// ONE-SHOT fallback: the template session didn't resolve, so rerun cold with
-	// the full bootstrap INSIDE this same attempt — runAgentResilient's retry
-	// accounting never sees the fallback as a separate attempt. Never more than
-	// one rerun: the cold spawn carries no forkFrom, so it can't recurse.
 	c.updateAgentHost(id, func(agents *[]run.Agent) {
-		appendToAgentIn(agents, agentID, run.Event{T: "system", Text: "session fork from " + o.forkFrom + " failed — falling back to the full bootstrap"}, 0)
+		appendToAgentIn(agents, agentID, run.Event{T: "system", Text: "session resume from " + resumed + " failed — falling back to the full bootstrap"}, 0)
 	})
 	cold := o
-	cold.forkFrom = ""
+	cold.forkFrom, cold.resumeFrom = "", ""
 	fb := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(cold.fallbackPrompt, extraDirs, busCfg, cold), workdir, busCfg)
 	// The failed fork's (rare) usage still belongs to this attempt's accounting.
 	fb.tokens += out.tokens
@@ -352,6 +484,14 @@ loop:
 				out.inputTokens += line.Usage.InputTokens
 				out.cacheReadTokens += line.Usage.CacheReadInputTokens
 				out.cacheWriteTokens += line.Usage.CacheCreationInputTokens
+				// A non-success result subtype (e.g. error_during_execution) is the
+				// harness signalling a failed terminal even when the process then
+				// exits 0 — the honest "this spawn did not succeed" marker the
+				// death classifiers gate on, so a successful spawn's result text is
+				// never misread as a limit/connection death.
+				if line.Subtype != "" && line.Subtype != "success" {
+					out.resultErrored = true
+				}
 			}
 			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {

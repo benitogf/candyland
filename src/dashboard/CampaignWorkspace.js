@@ -29,6 +29,7 @@ import { stopCampaign } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
+import { PauseBanner } from '../components/StatusBits'
 import { CopyPrLink } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
@@ -167,7 +168,10 @@ const CampaignWorkspace = ({ id, onClose }) => {
 
             <Box sx={{ flexGrow: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                 <Box sx={{ maxWidth: 1100, mx: 'auto', px: { xs: 2, sm: 4 }, py: 3 }}>
-                    {campaign.pauseReason && (campaign.status === 'paused' || campaign.status === 'blocked') && (
+                    {/* Auto-paused: distinguish usage-limit from connection-loss. */}
+                    {campaign.status === 'paused' && <PauseBanner entity={campaign} sx={{ mb: 2.5 }} />}
+                    {/* A genuine blocker (not an auto-pause) still reads as one. */}
+                    {campaign.pauseReason && campaign.status === 'blocked' && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {campaign.pauseReason}</Alert>
                     )}
 

@@ -57,7 +57,7 @@ type Agent struct {
 	InputTokens         int     `json:"inputTokens,omitempty"`
 	CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
 	CacheCreationTokens int     `json:"cacheCreationTokens,omitempty"`
-	Events              []Event `json:"events,omitempty"`
+	Events              []Event `json:"events"`
 }
 
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last
@@ -144,17 +144,33 @@ type Run struct {
 	Progress       float64  `json:"progress"`           // 0..1
 	StatusLine     string   `json:"statusLine,omitempty"`
 	Error          string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
-	PrURL          string   `json:"prUrl,omitempty"` // the primary PR (folders[0]); first opened — kept for back-compat
-	PRs            []PR     `json:"prs,omitempty"`   // one per impacted repo (multi-repo runs); PrURL mirrors the first
-	TokensUsed     int      `json:"tokensUsed"`
-	TokensBudget   int      `json:"tokensBudget"`
-	CostUsd        float64  `json:"costUsd"`
-	TasksGreen     int      `json:"tasksGreen"`
-	TasksTotal     int      `json:"tasksTotal"`
-	HasDag         bool     `json:"hasDag"`
-	Agents         []Agent  `json:"agents"`
-	Tasks          []Task   `json:"tasks"`
-	Executor       string   `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
+	// ResumeAt is set when the run auto-paused on a Claude usage limit: the RFC3339
+	// time the limit resets, after which the run re-arms and continues on its own. It
+	// is the marker that distinguishes a NON-TERMINAL limit pause (auto-resumes, no
+	// postmortem) from a user stop (also "paused", but with no ResumeAt). Cleared the
+	// moment the run resumes. Persisted so a restart can re-arm the conductor-wide gate
+	// from a paused run's reset time (see conductor.tracked).
+	ResumeAt string `json:"resumeAt,omitempty"`
+	// PauseReason is the human-readable cause of a non-terminal auto-pause, mirroring
+	// Quest/Campaign. Two forms the UI distinguishes: "usage limit — auto-resume at <t>"
+	// (a usage/session limit) and "connection lost — retrying" (a network/infra death).
+	// Cleared when the run resumes. Empty for a user stop.
+	PauseReason string `json:"pauseReason,omitempty"`
+	// RePauses counts how many times this run auto-paused on a usage limit OR a
+	// connection loss. Such a pause is UNBOUNDED — it never counts against an agent's
+	// bounded attempt budget — so this is telemetry, not a cap.
+	RePauses     int     `json:"rePauses,omitempty"`
+	PrURL        string  `json:"prUrl,omitempty"` // the primary PR (folders[0]); first opened — kept for back-compat
+	PRs          []PR    `json:"prs,omitempty"`   // one per impacted repo (multi-repo runs); PrURL mirrors the first
+	TokensUsed   int     `json:"tokensUsed"`
+	TokensBudget int     `json:"tokensBudget"`
+	CostUsd      float64 `json:"costUsd"`
+	TasksGreen   int     `json:"tasksGreen"`
+	TasksTotal   int     `json:"tasksTotal"`
+	HasDag       bool    `json:"hasDag"`
+	Agents       []Agent `json:"agents"`
+	Tasks        []Task  `json:"tasks"`
+	Executor     string  `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
 	// L2 telemetry (persisted, API-readable so /learn mines structure not logs):
 	// ReviewRounds is how many review→fix→re-review rounds the run ran; Escalations
 	// is the recorded upward decision-escalation audit trail; Postmortem is the

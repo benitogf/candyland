@@ -96,6 +96,13 @@ type Conductor struct {
 	mergePR          func(ctx context.Context, repo string, n int) error
 	dispatchFeedback func(parentID, repo string, prNum int) string
 	watchInterval    time.Duration
+	// limitUntil is the conductor-wide usage-limit gate: while it is in the future
+	// every spawn (streamOnce) blocks until it passes, so a limit hit by one agent
+	// pauses them all (one account, one limit). Guarded by its own mutex — held only
+	// for the brief read/write, never across the wait — so it never nests with mu.
+	// Re-armed after a restart from a paused run's persisted resumeAt (see tracked).
+	limitMu    sync.Mutex
+	limitUntil time.Time
 }
 
 // New builds a conductor bound to an ooo server. Every run is driven by the real
@@ -200,6 +207,16 @@ func (c *Conductor) tracked(id string) *runtime {
 		return nil
 	}
 	rt = &runtime{r: r, control: newControl(), cancelled: r.Status == "cancelled"}
+	// Re-arm the conductor-wide usage-limit gate from a paused run's persisted
+	// resumeAt: the in-memory gate is lost on restart, so without this a run that
+	// was mid-limit-wait would let post-restart spawns fire straight into the
+	// still-closed window. A past/absent resumeAt is a no-op (reArmLimit never pulls
+	// the gate earlier).
+	if r.Status == "paused" && r.ResumeAt != "" {
+		if reset, err := time.Parse(time.RFC3339, r.ResumeAt); err == nil {
+			c.reArmLimit(reset)
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if existing := c.runs[id]; existing != nil {
