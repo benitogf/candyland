@@ -26,6 +26,7 @@ import { stopQuest } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
+import { PauseBanner } from '../components/StatusBits'
 import { CopyPrLink } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import { Stat, StatGrid, RepoDelivery, AgentActivity, isFinished, shortTime } from './rollup'
@@ -143,7 +144,10 @@ const QuestWorkspace = ({ id, onClose }) => {
 
             <Box sx={{ flexGrow: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                 <Box sx={{ maxWidth: 1100, mx: 'auto', px: { xs: 2, sm: 4 }, py: 3 }}>
-                    {quest.pauseReason && (quest.status === 'paused' || quest.status === 'blocked') && (
+                    {/* Auto-paused: distinguish usage-limit from connection-loss. */}
+                    {quest.status === 'paused' && <PauseBanner entity={quest} sx={{ mb: 2.5 }} />}
+                    {/* A genuine blocker (not an auto-pause) still reads as one. */}
+                    {quest.pauseReason && quest.status === 'blocked' && (
                         <Alert severity="warning" variant="outlined" sx={{ mb: 2.5 }}>Blocker: {quest.pauseReason}</Alert>
                     )}
 

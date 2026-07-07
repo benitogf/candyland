@@ -23,6 +23,7 @@ import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
 import CopyReference from '../components/CopyReference'
 import { CopyPrLink } from '../components/CopyPr'
+import { PauseChip } from '../components/StatusBits'
 
 // ── The one work/history section ─────────────────────────────────────────────
 // A single section that PIVOTS by level — Runs/Tasks · Quests · Campaigns —
@@ -47,8 +48,13 @@ const statusText = (r) => {
 // can carry a huge objective; the full text stays in the detail views.
 const clamp2 = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', maxWidth: 480 }
 
-const StatusChip = ({ status, text }) => (
-    <Chip size="small" variant="outlined" color={STATUS_COLOR[status] || 'default'} label={text} sx={{ height: 22 }} />
+// The status cell. For an auto-paused item, render the cause-distinguishing
+// PauseChip (usage-limit vs connection-loss) in place of the generic chip; every
+// other status keeps the plain colored chip.
+const StatusChip = ({ item, status, text }) => (
+    item && item.status === 'paused'
+        ? <PauseChip entity={item} />
+        : <Chip size="small" variant="outlined" color={STATUS_COLOR[status] || 'default'} label={text} sx={{ height: 22 }} />
 )
 
 // A per-row open-details button. Row clicks DRILL into children (pivot the
@@ -159,7 +165,7 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                         </Box>
                     </TableCell>
                     <TableCell>
-                        <StatusChip status={r.status} text={statusText(r)} />
+                        <StatusChip item={r} status={r.status} text={statusText(r)} />
                         <SummaryText summary={r.summary} />
                     </TableCell>
                     <TableCell>
@@ -202,7 +208,7 @@ const QuestsTable = ({ rows, onDrill, onPivot, onOpen }) => (
                         <FolderText folder={folderOf(q)} />
                     </TableCell>
                     <TableCell>
-                        <StatusChip status={q.status} text={statusText(q)} />
+                        <StatusChip item={q} status={q.status} text={statusText(q)} />
                         <SummaryText summary={q.summary} />
                     </TableCell>
                     <TableCell>
@@ -242,7 +248,7 @@ const CampaignsTable = ({ rows, onDrill, onOpen }) => (
                             <OpenDetailButton kind="campaign" id={c.id} onOpen={onOpen} />
                         </Box>
                     </TableCell>
-                    <TableCell><StatusChip status={c.status} text={statusText(c)} /></TableCell>
+                    <TableCell><StatusChip item={c} status={c.status} text={statusText(c)} /></TableCell>
                     <TableCell>
                         <Typography variant="caption" color="text.secondary">{(c.questIds || []).length} quests · {(c.runIds || []).length} runs</Typography>
                     </TableCell>

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/benitogf/candyland/internal/run"
 	"github.com/benitogf/ko"
@@ -53,6 +54,47 @@ func TestTrackedRehydratesFromStorage(t *testing.T) {
 	// …and an unknown run is still nil (not in memory, not in storage).
 	if c.tracked("nope") != nil {
 		t.Error("tracked should return nil for a run that's neither tracked nor stored")
+	}
+}
+
+// The conductor-wide usage-limit gate lives only in memory, so a restart loses
+// it. When tracked rehydrates a run that was paused mid-limit-wait (status
+// "paused" with a future resumeAt), it must re-arm the gate from that persisted
+// resumeAt — otherwise post-restart spawns would fire into the still-closed limit
+// window. A past resumeAt is a no-op (the gate is never pulled earlier).
+func TestRehydrateReArmsLimitGate(t *testing.T) {
+	dir := t.TempDir()
+	st := storage.New(storage.LayeredConfig{
+		Memory:   storage.NewMemoryLayer(),
+		Embedded: ko.NewEmbeddedStorage(filepath.Join(dir, "data")),
+	})
+	srv := &ooo.Server{Storage: st}
+	monotonic.Init()
+	if err := st.Start(storage.Options{}); err != nil {
+		t.Fatalf("storage start: %v", err)
+	}
+	defer st.Close()
+
+	c := New(srv)
+
+	future := time.Now().Add(2 * time.Hour).UTC().Round(time.Second)
+	r := run.Run{ID: "r7", Status: "paused", ResumeAt: future.Format(time.RFC3339), Prompt: "x", Agents: []run.Agent{}, Tasks: []run.Task{}}
+	b, _ := json.Marshal(r)
+	if _, err := st.Set("runs/r7", b); err != nil {
+		t.Fatalf("persist run: %v", err)
+	}
+
+	// Precondition: a fresh conductor's gate is unarmed.
+	if !c.limitDeadline().IsZero() {
+		t.Fatal("precondition: a fresh conductor must have an unarmed limit gate")
+	}
+
+	if rt := c.tracked("r7"); rt == nil {
+		t.Fatal("tracked should rehydrate the paused run")
+	}
+	got := c.limitDeadline()
+	if !got.Equal(future) {
+		t.Errorf("rehydrate must re-arm the gate to the persisted resumeAt: got %v want %v", got, future)
 	}
 }
 

@@ -24,7 +24,7 @@ import CallMergeIcon from '@mui/icons-material/CallMerge'
 import { PHASES } from '../meta/run'
 import { runLabel } from '../util'
 import { deliverOf } from '../data/ooo'
-import { StateChip, LegendButton } from '../components/StatusBits'
+import { StateChip, LegendButton, PauseChip, PauseBanner } from '../components/StatusBits'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
 import { CopyPrButton } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
@@ -199,7 +199,7 @@ const RunControls = ({ run, controls, done }) => {
         )
     }
     if (controls.status === 'paused') {
-        return <Chip label="stopped" size="small" color="warning" variant="outlined" sx={{ flexShrink: 0 }} />
+        return <PauseChip entity={{ ...run, status: 'paused' }} sx={{ flexShrink: 0 }} />
     }
     return (
         <Tooltip title={offline ? 'Server unreachable — start ./candyland to control this run' : ''} disableHoverListener={!offline}>
@@ -302,6 +302,16 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
                     )}
                 </Box>
             </Box>
+
+            {/* Auto-pause advisory — visible across tabs, distinguishes a
+                usage-limit wait from a connection-loss retry. */}
+            {run.status === 'paused' && (
+                <Box sx={{ px: { xs: 2, sm: 4 }, pt: 1.5 }}>
+                    <Box sx={{ maxWidth: 1180, mx: 'auto' }}>
+                        <PauseBanner entity={run} />
+                    </Box>
+                </Box>
+            )}
 
             {/* Run-level error advisory — visible across tabs */}
             {run.error && (

@@ -1,6 +1,8 @@
 package conductor
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,6 +206,141 @@ func waitFor(t *testing.T, c *Conductor, id string, until func(run.Run) bool, d 
 	}
 	r, _ := c.Get(id)
 	return r
+}
+
+// A usage-limit death must be classified as a limit (so it pauses+resumes rather
+// than burning a retry) across the ways claude phrases it, and must NOT fire on an
+// ordinary crash. The reset time comes from the message; an unparseable one still
+// classifies as a limit and defaults to a backoff window.
+func TestClassifyUsageLimitVariants(t *testing.T) {
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	epoch := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC).Unix()
+	cases := []struct {
+		name  string
+		out   attemptOutcome
+		want  bool
+		reset time.Time
+	}{
+		{"stderr epoch", attemptOutcome{runErr: errStub, stderr: fmt.Sprintf("Claude AI usage limit reached|%d", epoch)}, true, time.Unix(epoch, 0).In(time.UTC)},
+		{"text clock pm", attemptOutcome{runErr: errStub, lastText: "Claude usage limit reached. Your limit will reset at 3pm."}, true, time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)},
+		{"rate limited", attemptOutcome{runErr: errStub, stderr: "rate limited, try again later"}, true, now.Add(defaultLimitBackoff)},
+		{"429", attemptOutcome{runErr: errStub, stderr: "server returned 429 Too Many Requests"}, true, now.Add(defaultLimitBackoff)},
+		{"stalled limit", attemptOutcome{stalled: true, lastText: "usage limit reached"}, true, now.Add(defaultLimitBackoff)},
+		{"ordinary crash", attemptOutcome{stderr: "panic: nil pointer", runErr: errStub}, false, time.Time{}},
+		{"clean success", attemptOutcome{sawTool: true}, false, time.Time{}},
+		{"success mentions limit in transcript", attemptOutcome{sawTool: true, lastText: "I reviewed the usage limit reached handling and 429 path", allText: "usage limit reached rate limit 429"}, false, time.Time{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reset, ok := classifyUsageLimit(tc.out, now)
+			if ok != tc.want {
+				t.Fatalf("classifyUsageLimit ok=%v want %v", ok, tc.want)
+			}
+			if ok && !reset.Equal(tc.reset) {
+				t.Errorf("reset=%v want %v", reset, tc.reset)
+			}
+		})
+	}
+}
+
+var errStub = fmt.Errorf("stub")
+
+// parseResetTime reads the reset moment out of the many shapes a limit message
+// takes, relative to now, and rejects an unparseable one.
+func TestParseResetTimeTable(t *testing.T) {
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in   string
+		want time.Time
+		ok   bool
+	}{
+		{"limit reached|1751900400", time.Unix(1751900400, 0).In(time.UTC), true},
+		{"your limit will reset at 3pm", time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC), true},
+		{"resets at 15:30 today", time.Date(2026, 7, 7, 15, 30, 0, 0, time.UTC), true},
+		{"resets 9am", time.Date(2026, 7, 8, 9, 0, 0, 0, time.UTC), true}, // 9am already passed → tomorrow
+		{"limit will reset at 12am", time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC), true},
+		{"no time here", time.Time{}, false},
+		{"resets at 99:99", time.Time{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, ok := parseResetTime(tc.in, now)
+			if ok != tc.ok {
+				t.Fatalf("ok=%v want %v", ok, tc.ok)
+			}
+			if ok && !got.Equal(tc.want) {
+				t.Errorf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A limit-interrupted resume spawn carries `--resume <session-id>` WITHOUT
+// --fork-session (a fork, not a resume) and never a --session-id (only valid on a
+// fresh session) — so the interrupted session is continued in place.
+func TestResumeArgsCarrySessionID(t *testing.T) {
+	args := claudeArgs("go on", nil, "", spawnOpts{resumeFrom: "sess-123"})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--resume sess-123") {
+		t.Errorf("resume spawn must carry --resume <session-id>, got: %v", args)
+	}
+	if strings.Contains(joined, "--fork-session") {
+		t.Errorf("a resume is not a fork — must not carry --fork-session, got: %v", args)
+	}
+	if strings.Contains(joined, "--session-id") {
+		t.Errorf("a resume must not mint a new --session-id, got: %v", args)
+	}
+	// A fresh spawn names its session so a later limit pause can resume it.
+	fresh := claudeArgs("start", nil, "", spawnOpts{sessionID: "sess-new"})
+	if !strings.Contains(strings.Join(fresh, " "), "--session-id sess-new") {
+		t.Errorf("a fresh spawn must carry --session-id, got: %v", fresh)
+	}
+}
+
+// The conductor-wide limit gate blocks every spawn's awaitLimit until the armed
+// window passes — a limit hit by one agent pauses them all (one account, one
+// limit). An unarmed gate never blocks.
+func TestLimitGateBlocksAllSpawns(t *testing.T) {
+	c := New(nil)
+	// Unarmed: awaitLimit returns immediately.
+	done := make(chan struct{})
+	go func() { c.awaitLimit(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("awaitLimit blocked with no limit armed")
+	}
+
+	// Arm a short window; N concurrent waiters must all block until it passes.
+	c.reArmLimit(time.Now().Add(150 * time.Millisecond))
+	const n = 5
+	released := make(chan time.Time, n)
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		go func() { c.awaitLimit(context.Background()); released <- time.Now() }()
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case at := <-released:
+			if waited := at.Sub(start); waited < 100*time.Millisecond {
+				t.Errorf("waiter released after %v — the gate did not block it", waited)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("a waiter never released after the limit window passed")
+		}
+	}
+
+	// A cancelled context unblocks a waiter even while the gate is still closed.
+	c.reArmLimit(time.Now().Add(time.Hour))
+	ctx, cancel := context.WithCancel(context.Background())
+	unblocked := make(chan struct{})
+	go func() { c.awaitLimit(ctx); close(unblocked) }()
+	cancel()
+	select {
+	case <-unblocked:
+	case <-time.After(time.Second):
+		t.Fatal("awaitLimit ignored context cancellation")
+	}
 }
 
 // A single atomic task is a VALID partition — not a failure. The only tech-lead
@@ -457,5 +594,77 @@ func TestStopHaltsWithoutFalseGreen(t *testing.T) {
 	}
 	if r.PrURL != "" {
 		t.Errorf("a stopped run must not have opened a PR, got %q", r.PrURL)
+	}
+}
+
+// A usage-limit pause must not consume the resume spawn's attempt budget. The
+// first spawn dies with a limit whose window (~1s) outlasts the per-attempt wall
+// clock (300ms); streamOnce arms the gate, waits it out, then resumes. The resume
+// must run under a FRESH attempt deadline — a deadline created before the pause
+// would already be elapsed, so spawnStream's procCtx would be Done on arrival and
+// killTree would kill the resume on spawn. Guards the shared-attemptCtx regression.
+func TestResumeAfterLimitPauseGetsFreshDeadline(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "limit-hit")
+	stub := "#!/usr/bin/env bash\n" +
+		"prompt=\"$2\"\n" +
+		"if [[ ! -f \"" + marker + "\" ]]; then\n" +
+		"  touch \"" + marker + "\"\n" +
+		"  echo \"Claude AI usage limit reached|$(( $(date +%s) + 1 ))\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"x\"}}]}}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"resumed green\",\"usage\":{\"output_tokens\":3}}'\n"
+	writeFakeClaude(t, stub)
+	// The per-attempt wall clock is far shorter than the ~1s limit window, so a
+	// deadline shared across the pause would be dead by the time the resume runs.
+	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "300")
+	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
+
+	c := New(nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan attemptOutcome, 1)
+	go func() {
+		done <- streamOnce(ctx, c, id, "a", "go on", t.TempDir(), nil)
+	}()
+
+	var out attemptOutcome
+	select {
+	case out = <-done:
+	case <-ctx.Done():
+		t.Fatal("streamOnce never returned — the resume spawn was likely killed by a stale attempt deadline")
+	}
+
+	if out.startErr != nil || out.runErr != nil {
+		t.Fatalf("resume spawn failed instead of completing green: startErr=%v runErr=%v stderr=%q", out.startErr, out.runErr, out.stderr)
+	}
+	if out.stalled {
+		t.Fatal("resume spawn was killed (stalled) — its attempt deadline elapsed during the limit pause")
+	}
+	if !out.sawTool {
+		t.Errorf("resume spawn did no work (sawTool=false) — expected the resumed session to run green")
+	}
+
+	// The pause+resume must be visible in the run: a paused status/resumeAt was
+	// armed and then cleared, and the agent stream records the pause.
+	r, _ := c.Get(id)
+	paused := false
+	for _, a := range r.Agents {
+		if a.ID != "a" {
+			continue
+		}
+		for _, e := range a.Events {
+			if strings.Contains(e.Text, "usage limit reached (pause") {
+				paused = true
+			}
+		}
+	}
+	if !paused {
+		t.Error("expected a usage-limit pause event in the agent's stream (resume-after-pause path not exercised)")
+	}
+	if r.ResumeAt != "" {
+		t.Errorf("resumeAt should be cleared once the run resumed, got %q", r.ResumeAt)
 	}
 }

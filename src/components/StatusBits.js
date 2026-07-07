@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
@@ -17,9 +18,60 @@ import CallMergeIcon from '@mui/icons-material/CallMerge'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import TaskAltIcon from '@mui/icons-material/TaskAlt'
 import StopCircleIcon from '@mui/icons-material/StopCircle'
+import ScheduleIcon from '@mui/icons-material/Schedule'
+import CloudOffIcon from '@mui/icons-material/CloudOff'
+import PauseCircleOutlineIcon from '@mui/icons-material/PauseCircleOutline'
 
 import { candy } from '../config'
-import { STATE_META } from '../meta/run'
+import { STATE_META, pauseInfo, resumeAtLabel } from '../meta/run'
+
+// ── Auto-pause indicators ────────────────────────────────────────────────────
+// A distinct icon per cause so the two auto-pause reasons are separable without
+// reading text: a clock for a time-bounded usage-limit wait, a struck-out cloud
+// for a connection/infra outage that's retrying.
+const PAUSE_ICON = { limit: ScheduleIcon, connection: CloudOffIcon, other: PauseCircleOutlineIcon }
+
+// The trailing "· resumes at 3:40 PM · paused 2×" detail shared by both surfaces.
+const pauseTail = (info) => {
+    const at = resumeAtLabel(info.resumeAt)
+    const bits = []
+    if (at) bits.push(`resumes at ${at}`)
+    if (info.rePauses > 0) bits.push(`paused ${info.rePauses}×`)
+    return bits.length ? ` · ${bits.join(' · ')}` : ''
+}
+
+// Compact paused indicator for list rows / dashboard cards. Renders null unless
+// the entity is auto-paused, so callers can drop it in unconditionally. The
+// cause label (Usage limit / Connection lost) plus its icon carry the
+// distinction; the full backend reason is the tooltip.
+export const PauseChip = ({ entity, sx }) => {
+    const info = pauseInfo(entity)
+    if (!info) return null
+    const Icon = PAUSE_ICON[info.cause]
+    const at = resumeAtLabel(info.resumeAt)
+    const label = at ? `${info.meta.label} · ${at}` : info.meta.label
+    return (
+        <Chip
+            size="small" variant="outlined" color={info.meta.color}
+            icon={<Icon />} label={label} title={info.reason}
+            sx={{ height: 22, ...sx }}
+        />
+    )
+}
+
+// Full paused banner for the workspace views. Leads with the bold cause label +
+// its icon (the visual distinction), then the backend's own pauseReason sentence,
+// then the resume time / re-pause count. Null unless auto-paused.
+export const PauseBanner = ({ entity, sx }) => {
+    const info = pauseInfo(entity)
+    if (!info) return null
+    const Icon = PAUSE_ICON[info.cause]
+    return (
+        <Alert severity={info.meta.color} variant="outlined" icon={<Icon />} sx={sx}>
+            <b>{info.meta.label}</b> — {info.reason}{pauseTail(info)}
+        </Alert>
+    )
+}
 
 // A distinct shape per state, so the rainbow is readable without relying on
 // color alone: queued/working/blocked/integrating read as "in progress",
