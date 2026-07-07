@@ -1713,7 +1713,7 @@ func ensureAgent(agents *[]run.Agent, agentID string) *run.Agent {
 			return &(*agents)[i]
 		}
 	}
-	*agents = append(*agents, run.Agent{ID: agentID})
+	*agents = append(*agents, run.Agent{ID: agentID, Events: []run.Event{}})
 	return &(*agents)[len(*agents)-1]
 }
 
