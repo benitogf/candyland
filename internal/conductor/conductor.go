@@ -359,6 +359,36 @@ func (c *Conductor) flushAgentWrites(id string) {
 	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Agents = agents })
 }
 
+// flushAndEvictAgentWrites persists a parent's buffered agent slice (if dirty) and
+// then removes the buffer entirely, so a completed stream leaves no permanent
+// agentWrites[id] retaining the lead's per-token history. Called on the stream
+// boundary; the next stream re-seeds from storage via coalesceAgentUpdate. A no-op
+// for an id with no buffer (runs never buffer).
+func (c *Conductor) flushAndEvictAgentWrites(id string) {
+	c.agentWriteMu.Lock()
+	w := c.agentWrites[id]
+	if w == nil {
+		c.agentWriteMu.Unlock()
+		return
+	}
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	delete(c.agentWrites, id)
+	if !w.dirty {
+		c.agentWriteMu.Unlock()
+		return
+	}
+	agents := cloneAgents(w.agents)
+	c.agentWriteMu.Unlock()
+
+	if strings.HasPrefix(id, "q") {
+		c.UpdateQuest(id, func(q *run.Quest) { q.Agents = agents })
+		return
+	}
+	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Agents = agents })
+}
+
 // dropAgentBuffer discards a parent's coalescing buffer (stopping any armed flush)
 // so the next stream event re-seeds it from storage. Called after an immediate
 // updateAgentHost write, whose mutation the buffer's snapshot does not reflect.
