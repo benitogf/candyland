@@ -215,6 +215,10 @@ func claudeArgs(prompt string, extraDirs []string, busCfg string, o spawnOpts) [
 func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, workdir string, extraDirs []string, opts ...spawnOpts) attemptOutcome {
 	attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
 	defer cancel()
+	// A parent (quest/campaign) host coalesces its coordinating-agent writes; flush
+	// the buffer when the attempt ends so the stream boundary is durable regardless
+	// of where the coalesce window fell. A no-op for run ids and clean buffers.
+	defer c.flushAgentWrites(id)
 
 	var o spawnOpts
 	if len(opts) > 0 {

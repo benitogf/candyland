@@ -51,6 +51,18 @@ type Conductor struct {
 	// status write clobbering StopQuest's "stopped"). Held only inside those two
 	// Update funcs, so it never nests with mu.
 	storeMu sync.Mutex
+	// agentWriteMu guards agentWrites, the per-parent coalescing buffers for a
+	// quest/campaign's own coordinating-agent slice. A chatty quest-lead/intent-lead
+	// emits a text event per token block, and each one used to drive a full storage
+	// Get+unmarshal+marshal+publish through UpdateQuest/UpdateCampaign. The buffer
+	// applies those mutations in memory and a single debounced flush persists the
+	// whole slice, so the storage write rate is bounded by coalesceWindow, not by
+	// the token rate. Held only inside the coalesce helpers; never nests with mu.
+	agentWriteMu sync.Mutex
+	agentWrites  map[string]*coalescedAgentWrite
+	// coalesceWindow bounds how long a parent-agent mutation waits in the buffer
+	// before it is flushed to storage — the coalescing horizon, not the token rate.
+	coalesceWindow time.Duration
 	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
 	// highest persisted quest id by reconcileQuestSeq after a restart.
 	questSeq int
@@ -91,8 +103,10 @@ type Conductor struct {
 // run fails honestly (see resilience.go) rather than falling back to a demo.
 func New(server *ooo.Server) *Conductor {
 	c := &Conductor{
-		server: server,
-		runs:   map[string]*runtime{},
+		server:         server,
+		runs:           map[string]*runtime{},
+		agentWrites:    map[string]*coalescedAgentWrite{},
+		coalesceWindow: 250 * time.Millisecond,
 	}
 	c.folders = runFolders
 	c.prReview = ghPRReview
@@ -243,12 +257,122 @@ func cloneAgents(in []run.Agent) []run.Agent {
 func (c *Conductor) updateAgentHost(id string, mutate func(*[]run.Agent)) {
 	switch {
 	case strings.HasPrefix(id, "q"):
+		// Flush any buffered stream events first so the immediate write builds on
+		// them, then drop the buffer so the next stream event re-seeds from the
+		// now-current record — an immediate write must never be clobbered by a
+		// later coalesced flush carrying a stale snapshot.
+		c.flushAgentWrites(id)
 		c.UpdateQuest(id, func(q *run.Quest) { mutate(&q.Agents) })
+		c.dropAgentBuffer(id)
 	case strings.HasPrefix(id, "c"):
+		c.flushAgentWrites(id)
 		c.UpdateCampaign(id, func(cam *run.Campaign) { mutate(&cam.Agents) })
+		c.dropAgentBuffer(id)
 	default:
 		c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
 	}
+}
+
+// recordAgentEvent lands a coordinating-agent stream event on the record that owns
+// id. It is the coalescing sibling of updateAgentHost, used only by the per-token
+// stream recorder (mapAgentLine): a chatty parent's events buffer in memory and a
+// single debounced flush persists them, whereas run ids keep the in-memory Update
+// path. Non-stream writes (pre-seeds, retries, fork fallbacks) go through
+// updateAgentHost and stay immediately durable.
+func (c *Conductor) recordAgentEvent(id string, mutate func(*[]run.Agent)) {
+	switch {
+	case strings.HasPrefix(id, "q"), strings.HasPrefix(id, "c"):
+		c.coalesceAgentUpdate(id, mutate)
+	default:
+		c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
+	}
+}
+
+// coalescedAgentWrite buffers a parent's (quest/campaign) coordinating-agent slice
+// in memory. Mutations apply to agents immediately so the buffer is the live truth;
+// a single debounced flush persists the whole slice. dirty tracks whether the
+// buffer diverges from storage; timer is the pending flush (nil when none armed).
+type coalescedAgentWrite struct {
+	agents []run.Agent
+	timer  *time.Timer
+	dirty  bool
+}
+
+// coalesceAgentUpdate applies a coordinating-agent mutation to the parent's
+// in-memory buffer (seeding it from storage on first touch) and arms a single
+// debounced flush, so a burst of per-token events collapses into one storage write.
+func (c *Conductor) coalesceAgentUpdate(id string, mutate func(*[]run.Agent)) {
+	c.agentWriteMu.Lock()
+	defer c.agentWriteMu.Unlock()
+	w := c.agentWrites[id]
+	if w == nil {
+		w = &coalescedAgentWrite{agents: c.hostAgents(id)}
+		c.agentWrites[id] = w
+	}
+	mutate(&w.agents)
+	w.dirty = true
+	if w.timer == nil {
+		w.timer = time.AfterFunc(c.coalesceWindow, func() { c.flushAgentWrites(id) })
+	}
+}
+
+// hostAgents reads the parent record's current agent slice from storage so a fresh
+// buffer starts consistent with what earlier ticks persisted. Prefix routes the read.
+func (c *Conductor) hostAgents(id string) []run.Agent {
+	if strings.HasPrefix(id, "q") {
+		if q, ok := c.GetQuest(id); ok {
+			return q.Agents
+		}
+		return nil
+	}
+	if cam, ok := c.GetCampaign(id); ok {
+		return cam.Agents
+	}
+	return nil
+}
+
+// flushAgentWrites persists a parent's buffered agent slice to storage in one write
+// and disarms the pending flush. A no-op for an id with no buffer (runs never buffer)
+// or a clean buffer. Called on the coalesce window and on the stream boundary.
+func (c *Conductor) flushAgentWrites(id string) {
+	c.agentWriteMu.Lock()
+	w := c.agentWrites[id]
+	if w == nil || !w.dirty {
+		if w != nil {
+			w.timer = nil
+		}
+		c.agentWriteMu.Unlock()
+		return
+	}
+	agents := cloneAgents(w.agents)
+	w.dirty = false
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+	c.agentWriteMu.Unlock()
+
+	if strings.HasPrefix(id, "q") {
+		c.UpdateQuest(id, func(q *run.Quest) { q.Agents = agents })
+		return
+	}
+	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Agents = agents })
+}
+
+// dropAgentBuffer discards a parent's coalescing buffer (stopping any armed flush)
+// so the next stream event re-seeds it from storage. Called after an immediate
+// updateAgentHost write, whose mutation the buffer's snapshot does not reflect.
+func (c *Conductor) dropAgentBuffer(id string) {
+	c.agentWriteMu.Lock()
+	defer c.agentWriteMu.Unlock()
+	w := c.agentWrites[id]
+	if w == nil {
+		return
+	}
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	delete(c.agentWrites, id)
 }
 
 // ReconcileOrphans marks any persisted run left non-terminal by a previous
