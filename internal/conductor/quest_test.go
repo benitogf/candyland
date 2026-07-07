@@ -3,6 +3,7 @@ package conductor
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/benitogf/candyland/internal/run"
 	"github.com/benitogf/ooo"
@@ -125,6 +126,40 @@ func TestUpdateQuestDurable(t *testing.T) {
 
 	if c.UpdateQuest("nope", func(*run.Quest) {}) {
 		t.Error("UpdateQuest on an unknown quest should return false")
+	}
+}
+
+// A burst of coordinating-agent writes on a quest coalesces: with the flush window
+// held open, none reach storage; a single boundary flush persists all of them at
+// once, and the in-memory buffer never loses an event.
+func TestCoalesceQuestAgentWrites(t *testing.T) {
+	c, _ := newQuestServer(t)
+	c.coalesceWindow = time.Hour // hold the debounce open so only the explicit flush writes
+	id := c.CreateQuest(run.QuestSpec{Objective: "keep lint clean"})
+
+	const writes = 25
+	for i := 0; i < writes; i++ {
+		c.recordAgentEvent(id, func(agents *[]run.Agent) {
+			appendToAgentIn(agents, questLeadID, run.Event{T: "text", Text: "tok"}, 0)
+		})
+	}
+
+	// Still buffered: the durable record has not seen any of the per-token writes.
+	if q, _ := c.GetQuest(id); len(q.Agents) != 0 {
+		t.Fatalf("agent writes reached storage before flush: %d agents", len(q.Agents))
+	}
+
+	c.flushAgentWrites(id)
+
+	q, ok := c.GetQuest(id)
+	if !ok {
+		t.Fatal("quest gone after flush")
+	}
+	if len(q.Agents) != 1 || q.Agents[0].ID != questLeadID {
+		t.Fatalf("coalesced agent not persisted: %+v", q.Agents)
+	}
+	if got := len(q.Agents[0].Events); got != writes {
+		t.Errorf("coalesced events lost: got %d, want %d", got, writes)
 	}
 }
 

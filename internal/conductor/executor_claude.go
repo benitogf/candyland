@@ -1626,12 +1626,12 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 					review = &vv
 				}
 				if pass, fail, ok := parseTest(b.Text); ok {
-					c.updateAgentHost(id, func(agents *[]run.Agent) {
+					c.recordAgentEvent(id, func(agents *[]run.Agent) {
 						appendToAgentIn(agents, agentID, run.Event{T: "test", Pass: pass, Fail: fail}, 0)
 					})
 				}
 				text = b.Text
-				c.updateAgentHost(id, func(agents *[]run.Agent) {
+				c.recordAgentEvent(id, func(agents *[]run.Agent) {
 					appendToAgentIn(agents, agentID, run.Event{T: "text", Text: b.Text}, 0)
 				})
 			}
@@ -1639,7 +1639,7 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 				sawTool = true
 				in := string(b.Input)
 				summary := truncate(in, 200)
-				c.updateAgentHost(id, func(agents *[]run.Agent) {
+				c.recordAgentEvent(id, func(agents *[]run.Agent) {
 					appendToAgentIn(agents, agentID, run.Event{T: "tool", Name: b.Name, Input: summary, InputFull: fullWhenTruncated(summary, in)}, 0)
 					ensureAgent(agents, agentID).ToolCalls++ // L2 telemetry: tool-call count
 				})
@@ -1651,7 +1651,7 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			text = l.Result
 		}
 		summary := truncate(l.Result, 300)
-		c.updateAgentHost(id, func(agents *[]run.Agent) {
+		c.recordAgentEvent(id, func(agents *[]run.Agent) {
 			appendToAgentIn(agents, agentID, run.Event{T: "result", Text: summary, TextFull: fullWhenTruncated(summary, l.Result)}, l.Usage.OutputTokens/1000)
 			// Raw input-side usage accumulates unscaled alongside the /1000 output
 			// display count above (Tokens keeps its display semantics untouched).
