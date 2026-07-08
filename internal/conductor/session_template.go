@@ -32,7 +32,7 @@ var roleDoctrine = map[string][]string{
 	RoleCoder:       {"flows/principles/coding-style", "flows/principles/line-of-sight"},
 	RoleFix:         {"flows/principles/coding-style", "flows/principles/line-of-sight"},
 	RoleQuestLead:   {"flows/principles/truthseeker", "core/loop", "core/todo-audit", "core/completion"},
-	RoleReviewer:    {"flows/principles/truthseeker", "core/review-rigor"},
+	RoleReviewer:    {"flows/principles/truthseeker", "core/review-rigor", "roles/reviewer"},
 	RoleTechLead:    {"flows/principles/truthseeker", "core/completion", "roles/tech-lead"},
 	RoleIntentLead:  {"flows/principles/truthseeker", "core/planning", "core/dream"},
 	RoleTechManager: {"flows/principles/truthseeker", "roles/tech-lead", "core/completion"},
@@ -63,6 +63,7 @@ type sessionTemplate struct {
 	DetritusVersion string `json:"detritusVersion"`
 	Model           string `json:"model"`
 	Thinking        string `json:"thinking"`
+	Docs            string `json:"docs"`
 	CreatedAt       string `json:"createdAt"`
 }
 
@@ -212,7 +213,8 @@ func (c *Conductor) storedTemplate(role, repo, key string) (string, bool) {
 	if e.SessionID == "" ||
 		e.ClaudeVersion != claudeVersion() ||
 		e.DetritusVersion != detritusVersion() ||
-		e.Model != model || e.Thinking != thinking {
+		e.Model != model || e.Thinking != thinking ||
+		e.Docs != strings.Join(roleDoctrine[role], ",") {
 		return "", false
 	}
 	// The stamps can all match while the transcript is gone — claude garbage-
@@ -271,6 +273,7 @@ func (c *Conductor) createTemplate(role, repo, key string, docs []string) (strin
 		DetritusVersion: detritusVersion(),
 		Model:           model,
 		Thinking:        thinking,
+		Docs:            strings.Join(docs, ","),
 		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	b, err := json.Marshal(entry)

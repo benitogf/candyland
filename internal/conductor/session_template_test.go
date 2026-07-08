@@ -119,7 +119,7 @@ func TestRoleDoctrineMap(t *testing.T) {
 		RoleCoder:          {"flows/principles/coding-style", "flows/principles/line-of-sight"},
 		RoleFix:            {"flows/principles/coding-style", "flows/principles/line-of-sight"},
 		RoleQuestLead:      {"flows/principles/truthseeker", "core/loop", "core/todo-audit", "core/completion"},
-		RoleReviewer:       {"flows/principles/truthseeker", "core/review-rigor"},
+		RoleReviewer:       {"flows/principles/truthseeker", "core/review-rigor", "roles/reviewer"},
 		RoleTechLead:       {"flows/principles/truthseeker", "core/completion", "roles/tech-lead"},
 		RoleIntentLead:     {"flows/principles/truthseeker", "core/planning", "core/dream"},
 		RoleTechManager:    {"flows/principles/truthseeker", "roles/tech-lead", "core/completion"},
@@ -268,6 +268,61 @@ func TestTemplateForInvalidation(t *testing.T) {
 			t.Fatalf("%s mismatch: want %d spawns, got %d", tc.name, spawns, got)
 		}
 		prev = id
+	}
+}
+
+// The doctrine docs list is a template validity coordinate: an entry whose
+// stamped Docs differs from the role's current roleDoctrine join is invalid
+// (a doctrine-list change must force a fresh template), while an entry whose
+// Docs matches — all else matching — is reused with no new spawn.
+func TestTemplateForDocsInvalidation(t *testing.T) {
+	c, repo, fixture := templateConductor(t, templateStubClaude)
+	key := templateKey(RoleReviewer, repo)
+
+	prev, ok := c.templateFor(RoleReviewer, repo)
+	if !ok {
+		t.Fatal("creation must succeed")
+	}
+
+	// The freshly created entry stamps the current doctrine list, so a second
+	// call is a cache hit: matching Docs is reused, no new spawn.
+	obj, err := c.server.Storage.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e sessionTemplate
+	if err := json.Unmarshal(obj.Data, &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Docs != strings.Join(roleDoctrine[RoleReviewer], ",") {
+		t.Errorf("Docs = %q, want the current roleDoctrine join", e.Docs)
+	}
+	if same, ok := c.templateFor(RoleReviewer, repo); !ok || same != prev {
+		t.Fatalf("matching Docs must be reused: got (%q, %v), want (%q, true)", same, ok, prev)
+	}
+	if got := spawnCount(t, fixture); got != 1 {
+		t.Fatalf("matching Docs is a cache hit: want 1 spawn, got %d", got)
+	}
+
+	// Tamper the stamped Docs to a stale list — the entry must invalidate and
+	// force a fresh template with a new session id.
+	e.Docs = "flows/principles/truthseeker,core/review-rigor"
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.server.Storage.Set(key, json.RawMessage(b)); err != nil {
+		t.Fatal(err)
+	}
+	id, ok := c.templateFor(RoleReviewer, repo)
+	if !ok {
+		t.Fatal("Docs mismatch: re-creation must succeed")
+	}
+	if id == prev {
+		t.Errorf("Docs mismatch must mint a NEW session, still %q", id)
+	}
+	if got := spawnCount(t, fixture); got != 2 {
+		t.Fatalf("Docs mismatch: want 2 spawns, got %d", got)
 	}
 }
 
