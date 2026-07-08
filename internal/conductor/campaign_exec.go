@@ -491,7 +491,7 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 // pre-PR pause that strands with no PR). It returns false only when stopped, or when
 // nothing landed at all (blocked).
 func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem) bool {
-	quests = dedupOverlappingQuests(c, id, quests)
+	quests = dedupOverlappingQuests(c, id, folders, quests)
 	quests = sanitizeDeps(c, id, quests)
 	tokenCap := effectiveTokenCap(cam)
 	// One done-channel per quest id, closed when that quest reaches terminal — a
@@ -579,12 +579,12 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 // group and drops the rest, repointing any dependency on a dropped quest to the kept
 // one so the DAG stays intact. Exact-id duplicates are a strict subset (same objective,
 // same folders) and are caught here too.
-func dedupOverlappingQuests(c *Conductor, id string, quests []questPartitionItem) []questPartitionItem {
+func dedupOverlappingQuests(c *Conductor, id string, campaignFolders []string, quests []questPartitionItem) []questPartitionItem {
 	kept := make([]questPartitionItem, 0, len(quests))
 	// dropped id -> the kept id that subsumes it, so deps can be repointed.
 	replacedBy := map[string]string{}
 	for _, q := range quests {
-		owner, overlaps := firstOverlapping(kept, q)
+		owner, overlaps := firstOverlapping(kept, q, campaignFolders)
 		if overlaps {
 			replacedBy[q.ID] = owner
 			if c != nil && id != "" {
@@ -604,16 +604,18 @@ func dedupOverlappingQuests(c *Conductor, id string, quests []questPartitionItem
 }
 
 // firstOverlapping returns the id of the first kept quest that q overlaps, if any. Two
-// quests overlap when they share the same normalized objective AND their folder scopes
-// intersect (an empty folder list inherits the campaign folders, so it overlaps any
-// same-objective quest).
-func firstOverlapping(kept []questPartitionItem, q questPartitionItem) (string, bool) {
+// quests overlap when they share the same normalized objective AND their RESOLVED folder
+// scopes intersect. Scopes are resolved token→campaign-folder via resolveQuestFolders
+// (full-path or basename match, empty/unmatched tokens mapping to all campaign folders)
+// before intersecting, so the dedup sees the same folder sets the runtime scopes each
+// quest onto rather than the tech manager's raw tokens.
+func firstOverlapping(kept []questPartitionItem, q questPartitionItem, campaignFolders []string) (string, bool) {
 	obj := normalizeObjective(q.Objective)
 	for _, k := range kept {
 		if normalizeObjective(k.Objective) != obj {
 			continue
 		}
-		if foldersIntersect(k.Folders, q.Folders) {
+		if foldersIntersect(resolveQuestFolders(k.Folders, campaignFolders), resolveQuestFolders(q.Folders, campaignFolders)) {
 			return k.ID, true
 		}
 	}
