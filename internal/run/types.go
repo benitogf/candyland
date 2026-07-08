@@ -88,6 +88,22 @@ type Escalation struct {
 	At       string `json:"at,omitempty"` // RFC3339 when resolved
 }
 
+// IncidentNote is one self-acknowledged incident an agent voluntarily reported
+// during its run: something that went wrong and was recovered from or worked around
+// (a flaky dependency, a retried external call, a surprising state it had to repair)
+// — distinct from a terminal Postmortem (a capability failure that stops the flow)
+// and from an Escalation (a decision handed up a tier). It is a NON-TERMINAL
+// self-report: the agent emits a `INCIDENT <json>` line and keeps working. It is
+// persisted on the run/quest/campaign record and retrievable via the same
+// data-access path /learn mines (see conductor.captureIncidents).
+type IncidentNote struct {
+	Agent    string `json:"agent,omitempty"`    // the agent id that self-reported the incident
+	Summary  string `json:"summary"`            // one-line what happened
+	Detail   string `json:"detail,omitempty"`   // fuller description / what was done about it
+	Severity string `json:"severity,omitempty"` // the agent's own severity call (info|warn|error)
+	At       string `json:"at,omitempty"`       // RFC3339 when recorded
+}
+
 // Task is one fork-safe slice of the partition.
 type Task struct {
 	ID    string   `json:"id"`
@@ -178,6 +194,10 @@ type Run struct {
 	ReviewRounds int          `json:"reviewRounds,omitempty"`
 	Escalations  []Escalation `json:"escalations,omitempty"`
 	Postmortem   *Postmortem  `json:"postmortem,omitempty"`
+	// Incidents is the self-acknowledged-incident audit trail: the non-terminal
+	// incidents this run's agents voluntarily reported (INCIDENT lines). Persisted so
+	// the mining data-access path surfaces them alongside escalations/postmortems.
+	Incidents []IncidentNote `json:"incidents,omitempty"`
 	// Watch is the babysit post-delivery watch-phase state, present only on a
 	// "babysit"-delivery run and only once its PR is open. It carries the watched
 	// PR, the watch lifecycle state, the terminal outcome, and the tick log.
@@ -497,6 +517,9 @@ type Quest struct {
 	// schema-valid postmortem attached when the quest terminates blocked (§3).
 	Escalations []Escalation `json:"escalations,omitempty"`
 	Postmortem  *Postmortem  `json:"postmortem,omitempty"`
+	// Incidents is the self-acknowledged-incident audit trail this quest's agents
+	// (its quest-lead and, routed by host id, its child runs) voluntarily reported.
+	Incidents []IncidentNote `json:"incidents,omitempty"`
 	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
 	// exported trace carries TraceVersion so a future store can detect/migrate.
 	TraceVersion int `json:"traceVersion"`
@@ -683,6 +706,9 @@ type Campaign struct {
 	// schema-valid postmortem attached when the campaign terminates blocked (§3).
 	Escalations []Escalation `json:"escalations,omitempty"`
 	Postmortem  *Postmortem  `json:"postmortem,omitempty"`
+	// Incidents is the self-acknowledged-incident audit trail the campaign's own
+	// coordinating agents voluntarily reported (INCIDENT lines).
+	Incidents []IncidentNote `json:"incidents,omitempty"`
 	// TraceVersion is the schema version of this Campaign record, mirroring how a
 	// Run's exported trace and a Quest carry TraceVersion for future migration.
 	TraceVersion int `json:"traceVersion"`
