@@ -630,13 +630,43 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 			return // a concurrent Stop is authoritative
 		}
 		if prs != nil {
-			q.PRs = prs
+			q.PRs = mergeTerminalPRs(q.PRs, prs)
 			recomputeQuestRollups(q) // fold the terminal PRs into PRsOpened
 		}
 		q.Status = questTerminalStatus(q)
 		q.Summary = questTerminalSummary(q)
 		q.LastProgress = time.Now().UTC().Format(time.RFC3339)
 	})
+}
+
+// mergeTerminalPRs overlays freshly-opened terminal PRs onto any already on the
+// quest, but never replaces a recorded successful PR (URL set) with an errored
+// re-attempt for the same repo — an idempotent re-finish that hit a transient gh
+// error must not erase a real PR URL. New successful entries and new repos win.
+func mergeTerminalPRs(existing, fresh []run.PR) []run.PR {
+	byRepo := map[string]run.PR{}
+	order := []string{}
+	for _, p := range existing {
+		if _, seen := byRepo[p.Repo]; !seen {
+			order = append(order, p.Repo)
+		}
+		byRepo[p.Repo] = p
+	}
+	for _, p := range fresh {
+		prev, seen := byRepo[p.Repo]
+		if seen && prev.URL != "" && p.URL == "" {
+			continue // keep the good record; don't overwrite with an errored re-attempt
+		}
+		if !seen {
+			order = append(order, p.Repo)
+		}
+		byRepo[p.Repo] = p
+	}
+	out := make([]run.PR, 0, len(order))
+	for _, repo := range order {
+		out = append(out, byRepo[repo])
+	}
+	return out
 }
 
 // questPRTitle is the title of a converge quest's terminal PR: its display Title,
