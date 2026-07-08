@@ -1359,7 +1359,11 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 		}
 	}
 	if len(taskTitles) > 0 {
-		intent += "\n\nPartitioned tasks (what the loop set out to build):\n- " + strings.Join(taskTitles, "\n- ")
+		lead := ""
+		if intent != "" {
+			lead = "\n\n" // separate from the intent prose; skip the blank lines when there is none
+		}
+		intent += lead + "Partitioned tasks (what the loop set out to build):\n- " + strings.Join(taskTitles, "\n- ")
 	}
 	totalRounds := 0
 	for _, repo := range folders {

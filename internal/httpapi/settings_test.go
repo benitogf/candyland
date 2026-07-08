@@ -28,9 +28,6 @@ func TestSettingsEndpoint(t *testing.T) {
 	if got.Levels[conductor.RoleReviewer].Model != "claude-fable-5" || got.Levels[conductor.RoleReviewer].Thinking != "high" {
 		t.Fatalf("default reviewer level = %+v", got.Levels[conductor.RoleReviewer])
 	}
-	if got.Levels[conductor.RoleReviewer].Thinking != "high" {
-		t.Fatalf("default reviewer thinking = %q, want high", got.Levels[conductor.RoleReviewer].Thinking)
-	}
 
 	// POST a valid change.
 	resp = post(t, base+"/api/settings", conductor.Settings{Levels: map[string]conductor.LevelConfig{
