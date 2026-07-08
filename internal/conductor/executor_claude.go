@@ -1033,6 +1033,17 @@ func prBody(r run.Run) string {
 // keeps the role discriminators ("tech lead", "git merge conflict", the TEST /
 // PARTITION lines) the resilience layer and the stub tests rely on.
 
+// incidentDoctrine is the shared self-report clause appended to EVERY agent
+// bootstrap (run/quest/campaign, full and fork-slim). A non-terminal problem an
+// agent works around — a flaky dependency, a stale lockfile, a substitutable
+// missing env var — is knowledge a future run should have but is NOT a reason to
+// stop. So the agent voluntarily emits an `INCIDENT <json>` line and keeps going;
+// captureIncidents funnels every such self-report onto the host record's audit
+// trail (run.Incidents / quest / campaign), which /learn later mines.
+const incidentDoctrine = " If you hit a non-terminal problem you work around (a flaky dependency, a stale lockfile, a missing env var you can substitute) — anything a future run should know but that does NOT stop you — self-report it as one line beginning with `INCIDENT ` followed by JSON " +
+	`{"summary":<one line>,"detail":<optional>,"severity":"info"|"warn"}` +
+	" and keep working. Never stop for an incident; a genuine blocker is a different thing."
+
 const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line. " +
 	"Then emit exactly one line beginning with `PARTITION ` followed by a JSON array of fork-safe tasks: " +
 	`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
@@ -1040,14 +1051,14 @@ const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST 
 	"A single atomic task is a valid partition — when the work doesn't decompose, emit exactly one task (never treat \"one task\" as a failure). " +
 	"For small, tightly-coupled backend+frontend work, emit one task with role \"fullstack\"; split large cross-domain work into separate tasks sequenced with \"deps\". " +
 	"If the work spans more than one of the run's folders/repos, set each task's \"repo\" to the target folder's name (omit it for the primary repo); each impacted repo gets its own pull request. " +
-	"Then stop."
+	"Then stop." + incidentDoctrine
 
 const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role. " +
 	"Implement the task until its defining test is green: make the changes with your tools — do not just describe them. " +
 	"If your role is \"fullstack\", implement BOTH the server side and the client side of the slice and keep the API contract consistent between them. " +
 	"When you run the defining test, report the result as one line beginning with `TEST ` " +
 	`followed by JSON {"pass":<count>,"fail":<count>} (e.g. ` + "`TEST {\"pass\":3,\"fail\":0}`" +
-	"), so the run records real verification counts."
+	"), so the run records real verification counts." + incidentDoctrine
 
 // resolveConflict has the tech lead reconcile a merge git couldn't auto-merge.
 // The conflict markers are left in the integration worktree; the tech lead edits
@@ -1537,7 +1548,7 @@ const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST 
 	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
-	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
+	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions." + incidentDoctrine
 
 // reviewBootstrapSlim is the bootstrap for a reviewer forked from the doctrine
 // template: the forked session already carries core/review-rigor + truthseeker
@@ -1550,12 +1561,12 @@ const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FI
 	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
-	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions."
+	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions." + incidentDoctrine
 
 const reviewFixBootstrap = "You are addressing review findings on an integrated branch before it opens as a pull request. " +
 	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
 	"Fix every cited blocker with your editing tools — make the changes, do not just describe them — and keep the existing tests green. " +
-	"Do not ask questions and do not defer; resolve all the findings in this run."
+	"Do not ask questions and do not defer; resolve all the findings in this run." + incidentDoctrine
 
 // reviewFixCeiling is the hard per-pass turn ceiling for the review/fix identity
 // (C3). A context-blind fix agent left uncapped can blow up — the incident saw
@@ -1608,7 +1619,7 @@ const conflictBootstrap = "You are the tech lead resolving a git merge conflict 
 	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
 	"Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
 	"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
-	"Do not ask questions and do not leave any conflict unresolved."
+	"Do not ask questions and do not leave any conflict unresolved." + incidentDoctrine
 
 // mapAgentLine streams one stream-json line into the agent's live ooo state and
 // returns the signals the resilience layer uses to judge compliance: any parsed
