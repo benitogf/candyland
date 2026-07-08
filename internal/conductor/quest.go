@@ -65,6 +65,7 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 		ID:                id,
 		Title:             title,
 		CampaignID:        spec.CampaignID,
+		PartitionItemID:   spec.PartitionItemID,
 		OriginalObjective: spec.Objective,
 		Objective:         spec.Objective,
 		Folders:           spec.Folders,

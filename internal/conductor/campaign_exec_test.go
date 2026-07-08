@@ -654,7 +654,7 @@ func TestExecuteChildQuestsNoPanicOnDuplicateIDs(t *testing.T) {
 		{ID: "dup", Title: "b"},
 		{ID: "", Title: "c"},
 	}
-	if got := c.executeChildQuests(ctx, id, cam, []string{repo}, quests); got {
+	if got := c.executeChildQuests(ctx, id, cam, []string{repo}, quests, true); got {
 		t.Errorf("executeChildQuests on a cancelled ctx must report false, got true")
 	}
 }
@@ -739,5 +739,99 @@ func TestCampaignRelaunchReusesSettledGates(t *testing.T) {
 	}
 	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
 		t.Fatalf("reused-gate campaign must deliver one PR, got %+v", cam.PRs)
+	}
+}
+
+func TestReuseChildQuestAction(t *testing.T) {
+	q := func(status string) run.Quest { return run.Quest{Status: status} }
+	// remediation (reuse=false) never reuses, whatever exists.
+	for _, s := range []string{"done", "paused", "running", "blocked", "stopped", "delivery-failed"} {
+		if got := reuseChildQuestAction(false, q(s), true); got != "" {
+			t.Errorf("reuse=false must never reuse (status %q), got %q", s, got)
+		}
+	}
+	// nothing found → fresh.
+	if got := reuseChildQuestAction(true, run.Quest{}, false); got != "" {
+		t.Errorf("no existing quest → fresh, got %q", got)
+	}
+	cases := map[string]string{
+		"done": "reuse-terminal", "reviewed": "reuse-terminal", "surfaced-only": "reuse-terminal",
+		"paused": "resume", "running": "wait",
+		"blocked": "", "stopped": "", "delivery-failed": "",
+	}
+	for status, want := range cases {
+		if got := reuseChildQuestAction(true, q(status), true); got != want {
+			t.Errorf("reuse=true status %q → %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestLatestChildQuestForItem(t *testing.T) {
+	c, repo := deliveryConductor(t, stubClaude())
+	camID := c.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{repo}})
+	// Two generations for item "a" (later id wins) and one for item "b".
+	first := c.CreateQuest(run.QuestSpec{CampaignID: camID, PartitionItemID: "a", Objective: "a1", Folders: []string{repo}})
+	_ = c.CreateQuest(run.QuestSpec{CampaignID: camID, PartitionItemID: "b", Objective: "b1", Folders: []string{repo}})
+	second := c.CreateQuest(run.QuestSpec{CampaignID: camID, PartitionItemID: "a", Objective: "a2", Folders: []string{repo}})
+
+	got, ok := c.latestChildQuestForItem(camID, "a")
+	if !ok || got.ID != second {
+		t.Fatalf("latest for item a must be the higher-id quest %q, got %q (ok=%v)", second, got.ID, ok)
+	}
+	if got.ID == first {
+		t.Errorf("must not return the older generation %q", first)
+	}
+	if _, ok := c.latestChildQuestForItem(camID, "zzz"); ok {
+		t.Error("unknown item must return found=false")
+	}
+	if _, ok := c.latestChildQuestForItem(camID, ""); ok {
+		t.Error("empty item id must return found=false")
+	}
+}
+
+// A campaign RELAUNCH reuses a child quest that already delivered for a partition
+// item instead of minting a duplicate. Seeds a delivered child quest on the
+// campaign branch (as a prior drive left it) plus the reused gates/partition, then
+// BeginCampaign must deliver WITHOUT creating a second quest for that item.
+func TestCampaignRelaunchReusesTerminalChildQuest(t *testing.T) {
+	c, repo := deliveryConductor(t, relaunchReuseClaude)
+	setCampaignFixtures(t, "satisfied")
+	t.Setenv("CANDYLAND_LEAD_TRIP", filepath.Join(t.TempDir(), "lead"))
+	t.Setenv("CANDYLAND_TECH_TRIP", filepath.Join(t.TempDir(), "tech"))
+
+	id := c.CreateCampaign(run.CampaignSpec{Input: "add CSV export", Folders: []string{repo}})
+	if _, err := git(context.Background(), repo, "branch", "campaign/"+id); err != nil {
+		t.Fatalf("seed campaign branch: %v", err)
+	}
+	childID := c.CreateQuest(run.QuestSpec{CampaignID: id, PartitionItemID: "q1", Title: "csv export", Objective: "implement csv export end to end", Folders: []string{repo}})
+	c.UpdateQuest(childID, func(q *run.Quest) {
+		q.Status = "done"
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		cam.IntentBrief = run.IntentBrief{RestatedGoal: "add csv export", Commitments: []run.Commitment{{ID: "c1", Statement: "endpoint"}, {ID: "c2", Statement: "totals"}}}
+		cam.BriefGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.PlanGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.Partition = []run.QuestPartitionItem{{ID: "q1", Title: "csv export", Objective: "implement csv export end to end"}}
+		cam.Status = "blocked"
+	})
+
+	if !c.BeginCampaign(id) {
+		t.Fatal("BeginCampaign returned false")
+	}
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool { return cam.Status == "done" || cam.Status == "blocked" }, 120*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("relaunch did not deliver: status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	n := 0
+	for _, q := range c.CampaignChildQuests(id) {
+		if q.PartitionItemID == "q1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("relaunch must reuse the delivered child quest for item q1, not duplicate it — got %d quests for q1", n)
 	}
 }

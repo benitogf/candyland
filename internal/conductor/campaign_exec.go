@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -336,7 +337,7 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 
 	// ── Stage 5: EXECUTE the child quests concurrently on the shared campaign branch
 	//    (deps sequence dependents; independent quests run in parallel). ──
-	if !c.executeChildQuests(ctx, id, cam, folders, quests) {
+	if !c.executeChildQuests(ctx, id, cam, folders, quests, true) {
 		return // stopped, or every quest failed and there is nothing to review — recorded
 	}
 	if ctx.Err() != nil {
@@ -404,7 +405,7 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 			return
 		}
 		c.appendCampaignNote(id, fmt.Sprintf("remediation round %d/%d: the tech manager spawns %d quest(s) to close %s", round+1, rounds, len(remediation), gaps))
-		if !c.executeChildQuests(ctx, id, cam, folders, remediation) {
+		if !c.executeChildQuests(ctx, id, cam, folders, remediation, false) {
 			// executeChildQuests blocked with a generic "no quest delivered work"
 			// reason (or ctx was cancelled). When it's the former, replace it with the
 			// actionable gap context so the operator sees WHICH commitments are stuck.
@@ -507,7 +508,7 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 // token cap, once exceeded, skips the remaining quests (deliver-partial, never a
 // pre-PR pause that strands with no PR). It returns false only when stopped, or when
 // nothing landed at all (blocked).
-func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem) bool {
+func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem, reuse bool) bool {
 	quests = dedupOverlappingQuests(c, id, folders, quests)
 	quests = sanitizeDeps(c, id, quests)
 	tokenCap := effectiveTokenCap(cam)
@@ -566,7 +567,7 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 			}
 			defer func() { <-sem }()
 
-			questID := c.launchCampaignChildQuest(ctx, id, cam, folders, q)
+			questID := c.launchCampaignChildQuest(ctx, id, cam, folders, q, reuse)
 			if cq, ok := c.GetQuest(questID); ok {
 				c.addCampaignTokens(id, cq.TokensUsed)
 				if questDelivered(cq) {
@@ -797,22 +798,86 @@ func campaignTargetsPR(cam run.Campaign) bool {
 // instead hands the child quest the campaign's Deliver + TargetPR so it works the
 // existing PR. Its Title comes from the tech manager's QUESTS emission. It blocks
 // until the quest reaches a terminal (non-running) state or the campaign is stopped.
-func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem) string {
+func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem, reuse bool) string {
+	existing, found := c.latestChildQuestForItem(id, item.ID)
+	switch reuseChildQuestAction(reuse, existing, found) {
+	case "reuse-terminal":
+		c.appendCampaignNote(id, fmt.Sprintf("relaunch: partition item %q already delivered by quest %q (%s) — reusing it, not re-creating", item.ID, existing.ID, existing.Status))
+		return existing.ID
+	case "resume":
+		c.appendCampaignNote(id, fmt.Sprintf("relaunch: resuming paused quest %q for partition item %q", existing.ID, item.ID))
+		c.BeginQuest(existing.ID)
+		return c.waitForChildQuestTerminal(ctx, existing.ID)
+	case "wait":
+		return c.waitForChildQuestTerminal(ctx, existing.ID)
+	}
 	spec := run.QuestSpec{
-		CampaignID: id,
-		Objective:  campaignChildQuestObjective(cam, item),
-		Title:      strings.TrimSpace(item.Title),
-		Folders:    resolveQuestFolders(item.Folders, folders),
+		CampaignID:      id,
+		Objective:       campaignChildQuestObjective(cam, item),
+		Title:           strings.TrimSpace(item.Title),
+		Folders:         resolveQuestFolders(item.Folders, folders),
+		PartitionItemID: item.ID,
 	}
 	if campaignTargetsPR(cam) {
-		// feedback/review campaign: the child quest works the EXISTING PR (feedback
-		// updates it in place, review reports) instead of the campaign branch.
 		spec.Deliver = cam.Deliver
 		spec.TargetPR = cam.TargetPR
 	}
 	questID := c.CreateQuest(spec)
 	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.QuestIDs = append(cam.QuestIDs, questID) })
 	c.BeginQuest(questID)
+	return c.waitForChildQuestTerminal(ctx, questID)
+}
+
+// reuseChildQuestAction decides how a campaign RELAUNCH should treat an existing
+// child quest found for a partition item. reuse is false for remediation rounds
+// (their ids repeat across rounds and must always spawn fresh). Returns:
+//
+//	"reuse-terminal" — done/reviewed/surfaced-only: count its delivery, don't re-create;
+//	"resume"         — paused: BeginQuest it and wait;
+//	"wait"           — running: another driver owns it, just wait;
+//	""               — none found, or blocked/stopped/delivery-failed (spawn a fresh generation),
+//	                   or reuse disabled (remediation).
+func reuseChildQuestAction(reuse bool, existing run.Quest, found bool) string {
+	if !reuse || !found {
+		return ""
+	}
+	switch existing.Status {
+	case "done", "reviewed", "surfaced-only":
+		return "reuse-terminal"
+	case "paused":
+		return "resume"
+	case "running":
+		return "wait"
+	default: // blocked, stopped, delivery-failed, "" → fresh generation
+		return ""
+	}
+}
+
+// latestChildQuestForItem returns the most recent child quest of campaign `id`
+// launched for partition item `itemID` (highest numeric quest id — the latest
+// generation), so relaunch reuses/resumes it rather than duplicating it.
+func (c *Conductor) latestChildQuestForItem(id, itemID string) (run.Quest, bool) {
+	if itemID == "" {
+		return run.Quest{}, false
+	}
+	var latest run.Quest
+	best := -1
+	for _, q := range c.CampaignChildQuests(id) {
+		if q.PartitionItemID != itemID {
+			continue
+		}
+		n, _ := strconv.Atoi(strings.TrimPrefix(q.ID, "q"))
+		if n > best {
+			best, latest = n, q
+		}
+	}
+	return latest, best >= 0
+}
+
+// waitForChildQuestTerminal blocks until the child quest leaves "running" (a
+// terminal/paused/blocked/stopped state) or the campaign ctx is cancelled (which
+// stops the quest), then returns its id.
+func (c *Conductor) waitForChildQuestTerminal(ctx context.Context, questID string) string {
 	for {
 		select {
 		case <-ctx.Done():
@@ -825,7 +890,7 @@ func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam
 			return questID
 		}
 		if q.Status != "running" {
-			return questID // terminal (done/surfaced-only/reviewed) or paused/blocked/stopped
+			return questID
 		}
 	}
 }

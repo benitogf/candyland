@@ -384,6 +384,8 @@ type QuestSpec struct {
 	// CampaignID is the parent campaign link, set when this quest is launched under a
 	// campaign. Empty for a standalone quest.
 	CampaignID string `json:"campaignId,omitempty"`
+	// the campaign partition item this quest was launched for (relaunch reuse); empty for standalone quests
+	PartitionItemID string `json:"partitionItemId,omitempty"`
 }
 
 // WorkItem is one unit of work a quest's discovery surfaced and triage decided on.
@@ -429,6 +431,8 @@ type Quest struct {
 	// Stamped at creation (spec.Title, else derived from the objective).
 	Title      string `json:"title,omitempty"`
 	CampaignID string `json:"campaignId,omitempty"` // parent campaign link; empty for a standalone quest
+	// the campaign partition item this quest was launched for (relaunch reuse); empty for standalone quests
+	PartitionItemID string `json:"partitionItemId,omitempty"`
 	// OriginalObjective is the launch objective, set ONCE at creation and never
 	// rewritten — the quest analogue of Run.OriginalIntent. Final review compares
 	// the quest's output against this, not against a mutated objective.
