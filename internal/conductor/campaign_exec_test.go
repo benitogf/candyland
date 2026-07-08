@@ -789,15 +789,22 @@ func TestLatestChildQuestForItem(t *testing.T) {
 	}
 }
 
-// A campaign RELAUNCH reuses a child quest that already delivered for a partition
-// item instead of minting a duplicate. Seeds a delivered child quest on the
-// campaign branch (as a prior drive left it) plus the reused gates/partition, then
-// BeginCampaign must deliver WITHOUT creating a second quest for that item.
-func TestCampaignRelaunchReusesTerminalChildQuest(t *testing.T) {
+// Keystone: the 2026-07-07 incident shape end-to-end. A campaign RELAUNCH must not
+// repeat work a prior drive already delivered. Seeds the campaign as a blocked prior
+// drive left it — settled gates, persisted partition, and one child quest already
+// delivered on the campaign branch — then BeginCampaign must deliver while (i) NOT
+// re-spawning the intent lead / tech manager (tripwires stay absent — change A),
+// (ii) NOT minting a second-generation quest for the delivered item (change B), and
+// (iii) launching ZERO new child runs (the delivered work is reused, not re-executed
+// — changes B/C). This is the failure #46 describes: re-paid brief+partition and the
+// same objective re-run across relaunched quests.
+func TestCampaignRelaunchDoesNotRepeatDeliveredWork(t *testing.T) {
 	c, repo := deliveryConductor(t, relaunchReuseClaude)
 	setCampaignFixtures(t, "satisfied")
-	t.Setenv("CANDYLAND_LEAD_TRIP", filepath.Join(t.TempDir(), "lead"))
-	t.Setenv("CANDYLAND_TECH_TRIP", filepath.Join(t.TempDir(), "tech"))
+	leadTrip := filepath.Join(t.TempDir(), "lead")
+	techTrip := filepath.Join(t.TempDir(), "tech")
+	t.Setenv("CANDYLAND_LEAD_TRIP", leadTrip)
+	t.Setenv("CANDYLAND_TECH_TRIP", techTrip)
 
 	id := c.CreateCampaign(run.CampaignSpec{Input: "add CSV export", Folders: []string{repo}})
 	if _, err := git(context.Background(), repo, "branch", "campaign/"+id); err != nil {
@@ -825,6 +832,14 @@ func TestCampaignRelaunchReusesTerminalChildQuest(t *testing.T) {
 	if cam.Status != "done" {
 		t.Fatalf("relaunch did not deliver: status=%q reason=%q", cam.Status, cam.PauseReason)
 	}
+	// (i) the pre-launch managers were NOT re-spawned — brief + partition were reused.
+	if _, err := os.Stat(leadTrip); err == nil {
+		t.Error("intent lead was re-spawned on relaunch — the settled brief must be reused")
+	}
+	if _, err := os.Stat(techTrip); err == nil {
+		t.Error("tech manager was re-spawned on relaunch — the settled partition must be reused")
+	}
+	// (ii) no second-generation quest for the already-delivered partition item.
 	n := 0
 	for _, q := range c.CampaignChildQuests(id) {
 		if q.PartitionItemID == "q1" {
@@ -833,5 +848,9 @@ func TestCampaignRelaunchReusesTerminalChildQuest(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("relaunch must reuse the delivered child quest for item q1, not duplicate it — got %d quests for q1", n)
+	}
+	// (iii) ZERO new child runs — the delivered work was reused, not re-executed.
+	if runs := c.CampaignChildRuns(id); len(runs) != 0 {
+		t.Fatalf("relaunch must launch no new child runs for already-delivered work, got %d", len(runs))
 	}
 }
