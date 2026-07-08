@@ -93,10 +93,12 @@ func maxReplans() int { return envInt("CANDYLAND_REPLAN_ATTEMPTS", 3) }
 
 // maxReviewRounds bounds the review→fix→re-review loop run AFTER integration and
 // BEFORE any PR opens: the initial review plus every fix-then-re-review cycle. The
-// default 3 means one review and up to two fix passes before the run fails
-// honestly with the findings still open (no PR on un-reviewed work). Tunable via
-// CANDYLAND_REVIEW_ROUNDS.
-func maxReviewRounds() int { return envInt("CANDYLAND_REVIEW_ROUNDS", 3) }
+// default 10 means one review and up to nine fix-then-re-review cycles before the
+// run fails honestly with the findings still open (no PR on un-reviewed work).
+// Tunable via CANDYLAND_REVIEW_ROUNDS. The ceiling exists to stop a malfunctioning
+// loop (thrash, non-convergence); it does not bound legitimate convergence — a
+// rigorous review legitimately consumes several rounds.
+func maxReviewRounds() int { return envInt("CANDYLAND_REVIEW_ROUNDS", 10) }
 
 // startFailurePrefix marks the one run error that is ENVIRONMENTAL rather than a
 // fault of the tech lead's plan: the claude binary couldn't even start (missing or

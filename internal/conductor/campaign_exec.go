@@ -100,8 +100,10 @@ func (c *Conductor) campaignSpawn(camID, agentID, role, primary, slimBootstrap, 
 // times a disagreement between the tech manager's quest partition and the intent
 // manager's review routes back to the tech manager before the campaign blocks. It
 // is the partition-phase sibling of maxBriefAttempts. Tunable via
-// CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS.
-func maxPartitionAttempts() int { return envInt("CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS", 2) }
+// CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS. The ceiling exists to stop a
+// malfunctioning loop (thrash, non-convergence); it does not bound legitimate
+// convergence — a rigorous review legitimately consumes several rounds.
+func maxPartitionAttempts() int { return envInt("CANDYLAND_CAMPAIGN_PARTITION_ATTEMPTS", 5) }
 
 // campaignConcurrency caps how many independent child quests execute at once (the
 // dep DAG still sequences dependents behind their dependencies). Tunable via
@@ -111,8 +113,10 @@ func campaignConcurrency() int { return envInt("CANDYLAND_CONCURRENCY", 4) }
 
 // maxBriefAttempts bounds how many times a failed BRIEF GATE routes back to the
 // intent lead before the campaign blocks — the brief-phase analogue of maxReplans.
-// Tunable via CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS.
-func maxBriefAttempts() int { return envInt("CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS", 2) }
+// Tunable via CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS. The ceiling exists to stop a
+// malfunctioning loop (thrash, non-convergence); it does not bound legitimate
+// convergence — a rigorous review legitimately consumes several rounds.
+func maxBriefAttempts() int { return envInt("CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS", 5) }
 
 // maxRemediationRounds bounds how many times the DELIVERY GATE spawns remediation
 // child runs to close commitments the intent review judged unmet before it blocks.
@@ -120,8 +124,11 @@ func maxBriefAttempts() int { return envInt("CANDYLAND_CAMPAIGN_BRIEF_ATTEMPTS",
 // authority to finish the work: an unmet commitment routes back into a fresh child
 // run targeting exactly that commitment, then re-reviews — bounded here so a
 // genuinely un-closeable gap eventually blocks (a real hard blocker) instead of
-// looping forever. Tunable via CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS.
-func maxRemediationRounds() int { return envInt("CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS", 2) }
+// looping forever. Tunable via CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS. The ceiling
+// exists to stop a malfunctioning loop (thrash, non-convergence); it does not
+// bound legitimate convergence — a rigorous review legitimately consumes several
+// rounds.
+func maxRemediationRounds() int { return envInt("CANDYLAND_CAMPAIGN_REMEDIATION_ROUNDS", 5) }
 
 // campaignTokenCap is the global token cap across the whole campaign. A campaign's
 // own TokenBudget (from the spec) takes precedence when set; otherwise this env cap

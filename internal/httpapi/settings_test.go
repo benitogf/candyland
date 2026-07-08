@@ -25,6 +25,9 @@ func TestSettingsEndpoint(t *testing.T) {
 	if got.Levels[conductor.RoleCoder].Model != "claude-opus-4-8" || got.Levels[conductor.RoleCoder].Thinking != "low" {
 		t.Fatalf("default coder level = %+v", got.Levels[conductor.RoleCoder])
 	}
+	if got.Levels[conductor.RoleReviewer].Model != "claude-fable-5" || got.Levels[conductor.RoleReviewer].Thinking != "high" {
+		t.Fatalf("default reviewer level = %+v", got.Levels[conductor.RoleReviewer])
+	}
 	if got.Levels[conductor.RoleReviewer].Thinking != "high" {
 		t.Fatalf("default reviewer thinking = %q, want high", got.Levels[conductor.RoleReviewer].Thinking)
 	}
