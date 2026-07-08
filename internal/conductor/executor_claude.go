@@ -1343,6 +1343,24 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: reviewerModel, Thinking: reviewerThinking})
 	})
 	folders := orderedDelivered(delivered)
+	// The reviewer judges intent fidelity, so its brief carries the run's driving
+	// intent — OriginalIntent is the launch prompt captured once at creation
+	// (types.go); Prompt is the fallback for records that predate it. Task titles
+	// name what the partition set out to build.
+	intent := ""
+	var taskTitles []string
+	if r, ok := c.Get(id); ok {
+		intent = r.OriginalIntent
+		if intent == "" {
+			intent = r.Prompt
+		}
+		for _, t := range r.Tasks {
+			taskTitles = append(taskTitles, t.Title)
+		}
+	}
+	if len(taskTitles) > 0 {
+		intent += "\n\nPartitioned tasks (what the loop set out to build):\n- " + strings.Join(taskTitles, "\n- ")
+	}
 	totalRounds := 0
 	for _, repo := range folders {
 		integDir := delivered[repo]
@@ -1375,7 +1393,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 				r.StatusLine = fmt.Sprintf("Reviewing %s (round %d/%d)…", repoBase(repo), round, rounds)
 				setAgentState(r, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
 			})
-			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch})
+			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch, Intent: intent})
 			prompt := reviewBootstrap
 			o := spawnOpts{maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking}
 			if tplOK {
@@ -1425,7 +1443,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 			// Blockers remain and rounds are left: re-engage a fix agent in this repo's
 			// integration worktree to address the cited findings, commit onto the run
 			// branch, then re-review.
-			if !c.fixReviewFindings(ctx, id, repo, integDir, branch, verdict.Blockers, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking) {
+			if !c.fixReviewFindings(ctx, id, repo, integDir, branch, verdict.Blockers, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking, intent) {
 				return false // fix pass failed/stopped — error already recorded (or stopped)
 			}
 		}
@@ -1442,7 +1460,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered m
 // the reviewer's cited blockers and commits the fixes onto the run branch. It
 // returns true when the fixes were made and committed, false when the agent failed
 // to act (error recorded) or the run was stopped.
-func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking string) bool {
+func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking, intent string) bool {
 	// C2 fail-fast: a fix pass with NO findings has nothing to act on. Never let it
 	// run and silently re-derive its own task list (a context-blind agent then
 	// explores the whole tree); record an explicit error and abort the pass.
@@ -1455,7 +1473,7 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 		setAgentState(r, reviewerID, "working", "fixing review findings in "+repoBase(repo))
 		appendToAgent(r, reviewerID, run.Event{T: "system", Text: fmt.Sprintf("round %d: %d blocker(s) — fixing: %s", round, len(blockers), firstFinding(blockers))}, 0)
 	})
-	c.putBrief(reviewerID, bus.Brief{Role: "fix", Title: "address review findings in " + repoBase(repo), Findings: findingLines(blockers)})
+	c.putBrief(reviewerID, bus.Brief{Role: "fix", Title: "address review findings in " + repoBase(repo), Findings: findingLines(blockers), Intent: intent})
 	// C2 belt-and-suspenders: also carry the cited findings in the prompt text
 	// itself, so they're impossible to miss even if the brief render drops them.
 	// The fix identity forks its doctrine template when one resolves; the fallback
@@ -1545,9 +1563,10 @@ func findingLines(blockers []reviewFinding) []string {
 const reviewerID = "review"
 
 const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
-	"Load the detritus review doctrine via the kb_get tool: kb_get name=\"core/review-rigor\" AND kb_get name=\"flows/principles/truthseeker\"; apply that rubric, do NOT improvise your own. " +
+	"Load the detritus review doctrine via the kb_get tool: kb_get name=\"roles/reviewer\" AND kb_get name=\"core/review-rigor\" AND kb_get name=\"flows/principles/truthseeker\"; apply that rubric, do NOT improvise your own. " +
 	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
 	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
+	"The brief also carries the run's driving INTENT — what was asked for. Verify the diff SATISFIES it: an intent commitment that is missing, only partially delivered, or contradicted is a BLOCKER (issue: \"intent unmet: <commitment>\"); REVIEW_CLEAN asserts intent fidelity as well as defect absence. " +
 	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
@@ -1561,6 +1580,7 @@ const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST 
 const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
 	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
 	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
+	"The brief also carries the run's driving INTENT — what was asked for. Verify the diff SATISFIES it: an intent commitment that is missing, only partially delivered, or contradicted is a BLOCKER (issue: \"intent unmet: <commitment>\"); REVIEW_CLEAN asserts intent fidelity as well as defect absence. " +
 	"If you cannot PROVE the feature is actually wired in and reachable from the entrypoint, that is a BLOCKER — emit it as a finding (issue: \"wiring unproven: <feature> not shown reachable from entrypoint\"); do NOT emit REVIEW_CLEAN on unproven wiring. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `REVIEW_CLEAN` (no blockers) " +
 	"OR `REVIEW_FINDINGS ` followed by JSON " + `{"blockers":[{"file":"path","line":12,"issue":"…"}]}` +
@@ -1569,6 +1589,7 @@ const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FI
 const reviewFixBootstrap = "You are addressing review findings on an integrated branch before it opens as a pull request. " +
 	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
 	"Fix every cited blocker with your editing tools — make the changes, do not just describe them — and keep the existing tests green. " +
+	"The brief also carries the run's driving intent — address the findings in service of it, not just to the letter. " +
 	"Do not ask questions and do not defer; resolve all the findings in this run." + incidentDoctrine
 
 // reviewFixCeiling is the hard per-pass turn ceiling for the review/fix identity
