@@ -327,6 +327,87 @@ func TestCaptureIntentConflictsPersists(t *testing.T) {
 	}
 }
 
+// === Task 5: INTENT_CONFLICT routing — pause, rule one tier up, resume =====
+
+// questConflictClaude drives a converge quest whose GATE reviewer flags a root-intent
+// contradiction (INTENT_CONFLICT) alongside REVIEW_CLEAN. The escalated decider (one
+// tier up) answers `proceed`, so the gate ships the diff as-is.
+var questConflictClaude = stubClaude(
+	role("quest lead", `if [[ -f "$CANDYLAND_QUEST_FIXTURE" ]]; then
+  `+emitText("WORKITEMS_NONE")+`  `+emitResult("WORKITEMS_NONE", 1)+`else
+  touch "$CANDYLAND_QUEST_FIXTURE"
+  `+emitText(`WORKITEMS [{\"title\":\"tidy the lint\",\"evidence\":\"a stale import\",\"classification\":\"cleanup\",\"decision\":\"do\"}]`)+`  `+emitResult("done", 2)+`fi
+`),
+	role("escalated up to you", emitText(`DECISION {\"answer\":\"proceed\"}`)+emitResult("decided", 1)),
+	role("code reviewer",
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git diff\"}}]}}'\n"+
+			emitText(`INTENT_CONFLICT {\"issue\":\"the diff drops the audit log the root intent requires\"}`)+
+			emitText("REVIEW_CLEAN")+emitResult("reviewed", 1)),
+	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
+	coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
+)
+
+// A reviewer-flagged root-intent contradiction at the quest gate PAUSES the unit,
+// asks the tier above for a ruling, and — on `proceed` — resumes to delivery. The
+// conflict is persisted with Ruling "proceed" and the escalation is recorded.
+func TestQuestGateIntentConflictProceedsOnRuling(t *testing.T) {
+	c, repo := deliveryConductor(t, questConflictClaude)
+	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
+
+	id := c.CreateQuest(run.QuestSpec{Objective: "keep it tidy", Folders: []string{repo}})
+	if !c.BeginQuest(id) {
+		t.Fatal("BeginQuest returned false")
+	}
+	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "done" }, 60*time.Second)
+	if q.Status != "done" {
+		t.Fatalf("quest did not deliver on a `proceed` ruling: status=%q reason=%q", q.Status, q.PauseReason)
+	}
+	// The conflict paused the unit (an escalation was recorded) and was ruled `proceed`.
+	if len(q.Escalations) == 0 {
+		t.Error("a flagged conflict must pause and record an escalation (ruling one tier up)")
+	}
+	if len(q.IntentConflicts) == 0 {
+		t.Fatalf("the reviewer's INTENT_CONFLICT must persist on the quest, got none")
+	}
+	for _, cf := range q.IntentConflicts {
+		if cf.Ruling != "proceed" {
+			t.Errorf("conflict ruling = %q, want proceed", cf.Ruling)
+		}
+	}
+	// `proceed` ships the diff: a terminal PR opened.
+	if len(q.PRs) != 1 || q.PRs[0].URL == "" {
+		t.Errorf("a `proceed` ruling must deliver the PR, got %+v", q.PRs)
+	}
+}
+
+// A `fix` ruling converts each contradiction into work and stamps Ruling "fix". This
+// exercises routeQuestIntentConflicts directly (a full re-gate loop with an always-
+// conflicting reviewer never converges; the routing decision is the unit under test).
+func TestRouteQuestIntentConflictsFixRuling(t *testing.T) {
+	c, repo := deliveryConductor(t, stubClaude(
+		role("escalated up to you", emitText(`DECISION {\"answer\":\"fix it — reconcile the contradiction\"}`)+emitResult("decided", 1)),
+		coder(emitResult("noop", 1)), // fallback so stubClaude emits a valid else branch
+	))
+	id := c.CreateQuest(run.QuestSpec{Objective: "migrate", Folders: []string{repo}})
+	c.UpdateQuest(id, func(q *run.Quest) {
+		q.IntentConflicts = append(q.IntentConflicts, run.IntentConflictNote{Agent: "review", Issue: "drops auth the root requires"})
+	})
+	proceed, issues := c.routeQuestIntentConflicts(context.Background(), id, "quest/"+id)
+	if proceed {
+		t.Fatal("a `fix` ruling must NOT proceed to delivery")
+	}
+	if len(issues) != 1 || issues[0] != "drops auth the root requires" {
+		t.Fatalf("fix issues = %+v, want the one conflict issue", issues)
+	}
+	q, _ := c.GetQuest(id)
+	if len(q.IntentConflicts) != 1 || q.IntentConflicts[0].Ruling != "fix" {
+		t.Fatalf("conflict must be stamped Ruling=fix, got %+v", q.IntentConflicts)
+	}
+	if len(q.Escalations) == 0 {
+		t.Error("routing must record the escalation (it paused and asked)")
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func writeExec(t *testing.T, script string) {

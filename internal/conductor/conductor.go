@@ -757,6 +757,46 @@ func (c *Conductor) recordIncidents(hostID string, notes []run.IncidentNote) {
 	}
 }
 
+// unruledConflictIssues returns the Issue text of every conflict not yet ruled on
+// (Ruling == "") — the ones raised this gate round that need a ruling one tier up.
+func unruledConflictIssues(notes []run.IntentConflictNote) []string {
+	var out []string
+	for _, n := range notes {
+		if n.Ruling == "" {
+			out = append(out, n.Issue)
+		}
+	}
+	return out
+}
+
+// stampConflictRulings records the decider's ruling on every not-yet-ruled conflict.
+func stampConflictRulings(notes []run.IntentConflictNote, ruling string) {
+	for i := range notes {
+		if notes[i].Ruling == "" {
+			notes[i].Ruling = ruling
+		}
+	}
+}
+
+// rulingFromAnswer maps a decider's DECISION answer to a conflict ruling: an explicit
+// "fix" converts the contradiction into work; anything else (or an unresolved decider)
+// defaults to "proceed" — never block delivery on a decider that did not rule
+// (mirrors decisionBlocks' "absent an explicit signal, proceed" semantics).
+func rulingFromAnswer(resolved bool, answer string) string {
+	if resolved && strings.Contains(strings.ToLower(answer), "fix") {
+		return "fix"
+	}
+	return "proceed"
+}
+
+// intentConflictQuestion frames the ruling-one-tier-up question for a set of
+// reviewer-flagged root-intent contradictions on branch.
+func intentConflictQuestion(issues []string, branch string) string {
+	return "Reviewer flagged root-intent contradiction(s): " + strings.Join(issues, "; ") +
+		" — for the diff on " + branch + " vs base. Answer `proceed` to ship the diff as-is " +
+		"(the contradiction is acceptable/intended) or `fix` to convert each contradiction into a work item to reconcile it."
+}
+
 // rootIntentFor resolves the verbatim IMMUTABLE top-level intent the unit at hostID
 // serves (two-layer intent briefing): a campaign → its OriginalInput; a campaign-
 // child quest → that campaign's OriginalInput, else the quest's OriginalObjective; a

@@ -731,6 +731,23 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 		if !clean && len(structural) == 0 {
 			return false // reviewUntilClean already blocked the quest
 		}
+		// Two-layer intent routing (Task 5): any root-intent contradiction the reviewer
+		// flagged this round (captured onto the quest by reviewUntilClean) pauses the
+		// unit and asks for a ruling one tier up. `proceed` ships as-is; `fix` converts
+		// each contradiction into a pre-accepted review-gap item and re-gates.
+		proceed, fixIssues := c.routeQuestIntentConflicts(ctx, id, branch)
+		if ctx.Err() != nil {
+			return false
+		}
+		if !proceed {
+			if !c.launchReviewGapItems(ctx, q, issuesToFindings(fixIssues), fmt.Sprintf("conflict%d", attempt+1)) {
+				if ctx.Err() == nil {
+					c.failReview(ctx, id, reviewerID, "quest gate: intent-conflict remediation delivered no work")
+				}
+				return false
+			}
+			continue // re-gate after reconciling the contradiction(s)
+		}
 		if len(structural) == 0 {
 			return true // clean gate — proceed to delivery
 		}
@@ -745,6 +762,48 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 	}
 	c.failReview(ctx, id, reviewerID, "quest delivery gate did not converge within the round budget")
 	return false
+}
+
+// routeQuestIntentConflicts handles any root-intent contradictions the gate reviewer
+// flagged (Task 5 routing): it re-fetches the quest, collects the conflicts not yet
+// ruled on, and — if any — pauses the unit to ask the quest-lead's tier for a ruling
+// (escalateQuestDecision). The ruling is stamped on each conflict. Returns whether to
+// PROCEED to delivery, and (when the ruling is `fix`) the conflict issues to reconcile.
+func (c *Conductor) routeQuestIntentConflicts(ctx context.Context, id, branch string) (bool, []string) {
+	q, ok := c.GetQuest(id)
+	if !ok {
+		return true, nil
+	}
+	issues := unruledConflictIssues(q.IntentConflicts)
+	if len(issues) == 0 {
+		return true, nil // no conflict raised — proceed exactly as today
+	}
+	folders := append([]string(nil), q.Folders...)
+	for i := range folders {
+		folders[i] = expandHome(folders[i])
+	}
+	var workdir string
+	var extra []string
+	if len(folders) > 0 {
+		workdir, extra = folders[0], extraDirsFor(folders[0], folders)
+	}
+	esc, resolved := c.escalateQuestDecision(ctx, q, intentConflictQuestion(issues, branch), workdir, extra)
+	ruling := rulingFromAnswer(resolved, esc.Answer)
+	c.UpdateQuest(id, func(q *run.Quest) { stampConflictRulings(q.IntentConflicts, ruling) })
+	if ruling == "fix" {
+		return false, issues
+	}
+	return true, nil
+}
+
+// issuesToFindings wraps conflict issue strings as reviewFindings (title = issue) so
+// they feed the same review-gap remediation path structural findings use.
+func issuesToFindings(issues []string) []reviewFinding {
+	out := make([]reviewFinding, 0, len(issues))
+	for _, iss := range issues {
+		out = append(out, reviewFinding{Issue: iss})
+	}
+	return out
 }
 
 // questGateTaskIntent renders the quest's objective + scope/safety/verify as the

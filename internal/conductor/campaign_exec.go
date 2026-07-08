@@ -1132,7 +1132,42 @@ func (c *Conductor) campaignGate2Review(ctx context.Context, id string, cam run.
 	if !clean && len(structural) == 0 {
 		return false, nil, false // reviewUntilClean already blocked the campaign
 	}
+	// Two-layer intent routing (Task 5): a root-intent contradiction the reviewer
+	// flagged this round pauses the campaign for a ruling one tier up (the intent
+	// manager). `proceed` ships as-is; `fix` folds each contradiction into the
+	// structural set so the gate-2 loop routes it into a remediation quest and re-gates.
+	for _, iss := range c.routeCampaignIntentConflicts(ctx, id, branch) {
+		structural = append(structural, reviewFinding{Issue: iss})
+	}
 	return clean, structural, true
+}
+
+// routeCampaignIntentConflicts asks the intent manager (one tier up) to rule on any
+// root-intent contradictions the gate-2 reviewer flagged this round, stamps the
+// ruling, and returns the issues that must be reconciled (ruling `fix`) so the caller
+// folds them into the remediation set. `proceed` (the default) returns nothing.
+func (c *Conductor) routeCampaignIntentConflicts(ctx context.Context, id, branch string) []string {
+	cam, ok := c.GetCampaign(id)
+	if !ok {
+		return nil
+	}
+	issues := unruledConflictIssues(cam.IntentConflicts)
+	if len(issues) == 0 {
+		return nil
+	}
+	folders := campaignFolders(cam)
+	var workdir string
+	var extra []string
+	if len(folders) > 0 {
+		workdir, extra = folders[0], extraDirsFor(folders[0], folders)
+	}
+	esc, resolved := c.escalateCampaignDecision(ctx, cam, intentConflictQuestion(issues, branch), workdir, extra)
+	ruling := rulingFromAnswer(resolved, esc.Answer)
+	c.UpdateCampaign(id, func(cam *run.Campaign) { stampConflictRulings(cam.IntentConflicts, ruling) })
+	if ruling == "fix" {
+		return issues
+	}
+	return nil
 }
 
 // gate2TaskIntent renders the campaign's commitments as the task-layer intent the
