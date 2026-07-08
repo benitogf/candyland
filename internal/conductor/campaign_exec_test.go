@@ -548,9 +548,9 @@ func TestCampaignBriefGate(t *testing.T) {
 	}
 }
 
-// parseIntentBrief / parseIntentReview / parseQuests / parsePartitionVerdict /
-// parseTechDone are the fenced agent-verdict conventions. Pin them so the contract the
-// stub and a real agent share can't drift silently.
+// parseIntentBrief / parseIntentReview / parseQuests / parsePartitionVerdict are the
+// fenced agent-verdict conventions. Pin them so the contract the stub and a real agent
+// share can't drift silently.
 func TestParseCampaignVerdicts(t *testing.T) {
 	brief, ok := parseIntentBrief(`preamble
 INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
@@ -577,11 +577,6 @@ INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
 	pv, ok := parsePartitionVerdict(`PARTITION_REVIEW {"agree":false,"reason":"gap"}`)
 	if !ok || pv.Agree || pv.Reason != "gap" {
 		t.Fatalf("PARTITION_REVIEW must parse: ok=%v pv=%+v", ok, pv)
-	}
-
-	td, ok := parseTechDone(`TECH_DONE {"done":true,"reason":"green"}`)
-	if !ok || !td.Done || td.Reason != "green" {
-		t.Fatalf("TECH_DONE must parse: ok=%v td=%+v", ok, td)
 	}
 }
 

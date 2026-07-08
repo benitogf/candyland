@@ -721,6 +721,20 @@ func (c *Conductor) captureIncidents(hostID, agentID, text string) {
 	if len(notes) == 0 {
 		return
 	}
+	// Dedup notes identical in (Summary, Detail, Severity) within this single call:
+	// the allText result-echo double-parse (r121) surfaces the same INCIDENT line
+	// twice, which must record once, not twice.
+	seen := make(map[string]bool, len(notes))
+	deduped := notes[:0]
+	for _, n := range notes {
+		k := n.Summary + "\x00" + n.Detail + "\x00" + n.Severity
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		deduped = append(deduped, n)
+	}
+	notes = deduped
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range notes {
 		notes[i].Agent = agentID
@@ -740,5 +754,82 @@ func (c *Conductor) recordIncidents(hostID string, notes []run.IncidentNote) {
 		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.Incidents = append(cam.Incidents, notes...) })
 	default:
 		c.Update(hostID, func(r *run.Run) { r.Incidents = append(r.Incidents, notes...) })
+	}
+}
+
+// rootIntentFor resolves the verbatim IMMUTABLE top-level intent the unit at hostID
+// serves (two-layer intent briefing): a campaign → its OriginalInput; a campaign-
+// child quest → that campaign's OriginalInput, else the quest's OriginalObjective; a
+// run → its owning quest's root (recursing), else the run's own OriginalIntent. A
+// standalone run returns its own intent, so its task and root layers coincide and the
+// render rule disarms the conflict channel.
+func (c *Conductor) rootIntentFor(hostID string) string {
+	switch {
+	case strings.HasPrefix(hostID, "c"):
+		if cam, ok := c.GetCampaign(hostID); ok {
+			return cam.OriginalInput
+		}
+	case strings.HasPrefix(hostID, "q"):
+		if q, ok := c.GetQuest(hostID); ok {
+			if q.CampaignID != "" {
+				if cam, ok := c.GetCampaign(q.CampaignID); ok {
+					return cam.OriginalInput
+				}
+			}
+			return q.OriginalObjective
+		}
+	default:
+		if r, ok := c.Get(hostID); ok {
+			if r.QuestID != "" {
+				return c.rootIntentFor(r.QuestID)
+			}
+			return firstNonEmpty(r.OriginalIntent, r.Prompt)
+		}
+	}
+	return ""
+}
+
+// parseIntentConflicts extracts every `INTENT_CONFLICT <json>` line a reviewer
+// flagged (contradictions with the root intent). Like INCIDENT lines, several may
+// appear; all parseable ones with a non-empty issue are collected in order.
+func parseIntentConflicts(text string) []run.IntentConflictNote {
+	var notes []run.IntentConflictNote
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "INTENT_CONFLICT ") {
+			continue
+		}
+		var n run.IntentConflictNote
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "INTENT_CONFLICT ")), &n) != nil {
+			continue
+		}
+		if strings.TrimSpace(n.Issue) == "" {
+			continue
+		}
+		notes = append(notes, n)
+	}
+	return notes
+}
+
+// captureIntentConflicts parses any reviewer-flagged root-intent conflicts from a
+// transcript and records them on the host record (stamping the agent and time), the
+// intent-layer sibling of captureIncidents. A no-op when none are present.
+func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
+	notes := parseIntentConflicts(text)
+	if len(notes) == 0 {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range notes {
+		notes[i].Agent = agentID
+		notes[i].At = now
+	}
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.UpdateQuest(hostID, func(q *run.Quest) { q.IntentConflicts = append(q.IntentConflicts, notes...) })
+	case strings.HasPrefix(hostID, "c"):
+		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.IntentConflicts = append(cam.IntentConflicts, notes...) })
+	default:
+		c.Update(hostID, func(r *run.Run) { r.IntentConflicts = append(r.IntentConflicts, notes...) })
 	}
 }

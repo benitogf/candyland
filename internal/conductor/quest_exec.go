@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -464,7 +466,17 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 	}
 	parsed, none, ok := parseWorkItems(out.text)
 	if !ok {
-		return nil, "no verdict", out.tokens, "the quest lead produced no WORKITEMS verdict"
+		// One bounded resume-and-re-ask before giving up on a missing verdict (Task 6).
+		model, thinking := c.agentConfig(RoleQuestLead)
+		if rep, did := c.repairVerdict(ctx, id, questLeadID, out.sessionID, "WORKITEMS", primary, extra, model, thinking); did {
+			if p, n, ok2 := parseWorkItems(rep.allText); ok2 {
+				parsed, none, ok = p, n, ok2
+			} else {
+				return nil, "no verdict", out.tokens + rep.tokens, "the quest lead " + noVerdictReason(rep, questLeadID, "WORKITEMS")
+			}
+		} else {
+			return nil, "no verdict", out.tokens, "the quest lead " + noVerdictReason(out.full, questLeadID, "WORKITEMS")
+		}
 	}
 	if none {
 		return nil, "no work items surfaced", out.tokens, ""
@@ -474,10 +486,12 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 
 // questLeadOutcome is the slice of streamOnce a discovery pass needs.
 type questLeadOutcome struct {
-	text     string
-	tokens   int
-	startErr error
-	stalled  bool
+	text      string
+	tokens    int
+	startErr  error
+	stalled   bool
+	sessionID string         // the quest lead's session, for a bounded verdict repair
+	full      attemptOutcome // the raw outcome, for truthful limit-vs-clean postmortem classification
 }
 
 // streamQuestLead runs the quest lead as a single claude process and returns its
@@ -515,7 +529,7 @@ func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string
 	res := streamOnce(ctx, c, questID, questLeadID, prompt, workdir, extra, opts)
 	// allText joins every assistant/result block, so the WORKITEMS verdict is found
 	// wherever the quest lead emitted it (not only on the final block).
-	return questLeadOutcome{text: res.allText, tokens: res.tokens, startErr: res.startErr, stalled: res.stalled}
+	return questLeadOutcome{text: res.allText, tokens: res.tokens, startErr: res.startErr, stalled: res.stalled, sessionID: res.sessionID, full: res}
 }
 
 // launchChildRun creates and drives ONE child run for an accepted work item using
@@ -625,6 +639,18 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 	if !ok {
 		return
 	}
+	// Quest DELIVERY GATE (Task 7): before any PR opens (standalone) or the campaign
+	// collects the branch (campaign-owned), hard-review the quest's shared branch with
+	// the same review→fix→re-review primitive the run gate uses. A clean gate proceeds;
+	// a non-convergent citable review blocks; structural findings requeue as pre-
+	// accepted review-gap child runs and the gate re-runs. Only runs for a quest that
+	// delivered work onto a shared branch (converge / campaign-owned).
+	if branch := QuestBranch(q); branch != "" && (q.ItemsCompleted > 0 || q.ItemsDeduped > 0) {
+		if !c.questDeliveryGate(ctx, id) {
+			return // gate blocked/requeued (recorded) — never deliver un-reviewed work
+		}
+		q, _ = c.GetQuest(id) // refresh: the gate may have consumed rounds / added items
+	}
 	// The terminal per-repo PR open is I/O (git push + gh) — do it OUTSIDE the
 	// UpdateQuest write lock, then persist the result in a single mutation.
 	var prs []run.PR
@@ -651,6 +677,127 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 		q.Summary = questTerminalSummary(q)
 		q.LastProgress = time.Now().UTC().Format(time.RFC3339)
 	})
+}
+
+// questDeliveryGate runs the quest's delivery gate: a bounded review→fix→re-review
+// of the shared branch (Task 7). Returns true to proceed to delivery; false when the
+// gate blocked the quest (recorded) or its structural-remediation could not converge.
+func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
+	for attempt := range maxReviewRounds() {
+		if ctx.Err() != nil {
+			return false
+		}
+		q, ok := c.GetQuest(id)
+		if !ok {
+			return false
+		}
+		branch := QuestBranch(q)
+		if branch == "" || (q.ItemsCompleted == 0 && q.ItemsDeduped == 0) {
+			return true
+		}
+		wtRoot := filepath.Join(os.TempDir(), "candyland-gate", id)
+		delivered := map[string]string{}
+		for _, repo := range q.Folders {
+			repo = expandHome(repo)
+			if !isGitRepo(ctx, repo) {
+				continue
+			}
+			sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch)
+			if err != nil || strings.TrimSpace(sha) == "" {
+				continue // the branch carries no work in this repo
+			}
+			base, _ := currentBranch(ctx, repo)
+			if !branchHasDiff(ctx, repo, orDefault(base, "HEAD"), branch) {
+				continue // no divergence from base — nothing to review
+			}
+			wt := filepath.Join(wtRoot, repoBase(repo))
+			if err := addDetachedWorktree(ctx, repo, wt, strings.TrimSpace(sha)); err != nil {
+				os.RemoveAll(wtRoot)
+				c.failReview(ctx, id, reviewerID, "quest gate: couldn't create the review worktree for "+repoBase(repo)+": "+err.Error())
+				return false
+			}
+			delivered[repo] = wt
+		}
+		if len(delivered) == 0 {
+			os.RemoveAll(wtRoot)
+			return true
+		}
+		fixModel, fixThinking := c.agentConfig(RoleFix)
+		clean, structural := c.reviewUntilClean(ctx, q.ID, delivered, branch, questGateTaskIntent(q), c.rootIntentFor(q.ID), fixModel, fixThinking)
+		os.RemoveAll(wtRoot)
+		if ctx.Err() != nil {
+			return false
+		}
+		if !clean && len(structural) == 0 {
+			return false // reviewUntilClean already blocked the quest
+		}
+		if len(structural) == 0 {
+			return true // clean gate — proceed to delivery
+		}
+		// Structural findings need decomposition: requeue as pre-accepted review-gap
+		// child runs onto the branch, then re-run the gate.
+		if !c.launchReviewGapItems(ctx, q, structural, fmt.Sprintf("gate%d", attempt+1)) {
+			if ctx.Err() == nil {
+				c.failReview(ctx, id, reviewerID, "quest gate: review-gap remediation delivered no work")
+			}
+			return false
+		}
+	}
+	c.failReview(ctx, id, reviewerID, "quest delivery gate did not converge within the round budget")
+	return false
+}
+
+// questGateTaskIntent renders the quest's objective + scope/safety/verify as the
+// task-layer intent the gate reviewer verifies the branch against (mirrors
+// childRunPrompt's rendering).
+func questGateTaskIntent(q run.Quest) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", q.OriginalObjective)
+	if q.Scope != "" {
+		fmt.Fprintf(&b, "Scope: %s\n", q.Scope)
+	}
+	if q.Safety != "" {
+		fmt.Fprintf(&b, "Never touch: %s\n", q.Safety)
+	}
+	if len(q.Verify) > 0 {
+		fmt.Fprintf(&b, "Every change must pass: %s\n", strings.Join(q.Verify, " && "))
+	}
+	return b.String()
+}
+
+// launchReviewGapItems turns each structural gate finding into a pre-accepted
+// review-gap work item, launches a child run for it onto the shared branch, and
+// records the ledger. Returns whether at least one child delivered.
+func (c *Conductor) launchReviewGapItems(ctx context.Context, q run.Quest, structural []reviewFinding, tickID string) bool {
+	rec := run.Tick{ID: tickID, StartedAt: time.Now().UTC().Format(time.RFC3339),
+		DiscoverySummary: fmt.Sprintf("delivery gate: %d structural review finding(s) requeued as review-gap items", len(structural))}
+	var ledger []run.WorkItem
+	launchedAny := false
+	for i, f := range structural {
+		it := questWorkItem{Title: f.Issue, Evidence: f.Issue, Classification: "review-gap", Decision: "do"}
+		w := run.WorkItem{ID: fmt.Sprintf("%s-w%d", tickID, i), SourceTick: tickID,
+			Evidence: it.Evidence, Classification: it.Classification, Decision: "do"}
+		rec.TriageDecisions = append(rec.TriageDecisions, it.Title+": do now")
+		childID, childPRs, childErr := c.launchChildRun(ctx, q, it, tickID)
+		if ctx.Err() != nil {
+			return false
+		}
+		w.ChildRunID = childID
+		if childID != "" {
+			rec.LaunchedRunIDs = append(rec.LaunchedRunIDs, childID)
+		}
+		rec.PRs = append(rec.PRs, childPRs...)
+		if childErr != "" {
+			rec.Blockers = append(rec.Blockers, it.Title+": "+childErr)
+			w.Disposition = "blocked"
+		} else {
+			w.Disposition = "completed"
+			launchedAny = true
+		}
+		ledger = append(ledger, w)
+	}
+	c.recordTick(q.ID, rec, 0, ledger)
+	return launchedAny
 }
 
 // mergeTerminalPRs overlays freshly-opened terminal PRs onto any already on the
@@ -1139,7 +1286,7 @@ func seedReviewItem(q run.Quest) (questWorkItem, bool) {
 // bootstrap shares. The full and fork variants below differ ONLY in the doctrine
 // sentence between them, so the shared text can never drift between the two.
 const questLeadIntro = "You are the quest lead driving one tick of an iterative work loop. " +
-	"Call the brief_get tool FIRST to read the quest's objective, scope, safety boundary, and verification — it is no longer on your command line. "
+	"Call the brief_get tool FIRST to read the quest's objective, scope, safety boundary, and verification — it is no longer on your command line." + briefGetToolHint + ". "
 
 const questLeadDiscoverRules = "Discover the next safe, in-scope work item(s): if the brief names a TARGET PR, that PR IS the subject — you MUST actually fetch and read it (its diff and review comments, e.g. `gh pr diff <n>` / `gh pr view <n>`) and base every finding on what you read; otherwise explore the folder for concrete work. Then TRIAGE each (is it safe? in scope? a single self-contained change?). " +
 	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +

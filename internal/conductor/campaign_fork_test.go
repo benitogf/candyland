@@ -28,7 +28,6 @@ var campaignStageSites = []struct {
 	{"intent-lead brief", intentLeadID, RoleIntentLead, intentLeadBootstrapSlim, intentLeadBootstrap, "`INTENT_BRIEF `"},
 	{"tech-manager decompose", techManagerID, RoleTechManager, techManagerBootstrapSlim, techManagerBootstrap, "`QUESTS `"},
 	{"intent-manager gate 1", intentManagerID, RoleIntentManager, partitionReviewBootstrapSlim, partitionReviewBootstrap, "`PARTITION_REVIEW `"},
-	{"tech-manager gate 2", techManagerID, RoleTechManager, techDoneBootstrapSlim, techDoneBootstrap, "`TECH_DONE `"},
 	{"intent-reviewer gate 2", intentReviewerID, RoleIntentReviewer, intentReviewerBootstrapSlim, intentReviewerBootstrap, "`INTENT_REVIEW `"},
 }
 

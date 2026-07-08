@@ -103,6 +103,11 @@ func TestQuestConvergeOpensOnePRAtTerminal(t *testing.T) {
 		t.Errorf("a converge child run must open NO PR, got %q", child.PrURL)
 	}
 
+	// The delivery gate ran before the PR opened (Task 7): a converge delivery is
+	// preceded by a recorded review gate (GateRounds ≥ 1).
+	if q.GateRounds < 1 {
+		t.Errorf("converge delivery must record a delivery gate (GateRounds ≥ 1), got %d", q.GateRounds)
+	}
 	// The quest opened exactly ONE terminal PR per impacted repo (one repo here).
 	if len(q.PRs) != 1 || q.PRs[0].URL == "" {
 		t.Fatalf("converge quest must open one terminal PR, got %+v", q.PRs)
