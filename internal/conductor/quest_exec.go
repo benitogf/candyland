@@ -327,7 +327,14 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	//    executor. Each item gets a durable WorkItem with the real disposition (no
 	//    positional guessing — the disposition is the launch outcome). The skip/block
 	//    triage ledger is carried alongside the launched items. ──
+	// Objective-met dedup on relaunch: a prior drive's completed items live in the
+	// quest's durable ledger. On a shared-branch quest their delivery accumulated on
+	// that branch (no per-finding PR), so re-surfacing one on a later drive would re-do
+	// work already delivered. Close such items from the ledger evidence — no re-spawn
+	// (core/completion objective-met dedup).
+	delivered := deliveredTitles(q)
 	ledger := skipLedger
+	deduped := 0
 	for i, it := range accepted {
 		w := run.WorkItem{
 			ID:             fmt.Sprintf("%s-w%d", tickID, i),
@@ -340,6 +347,13 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 			return false
 		}
 		rec.TriageDecisions = append(rec.TriageDecisions, it.Title+": do now")
+		if delivered[dedupKey(it.Title)] {
+			deduped++
+			w.Disposition = "completed"
+			ledger = append(ledger, w)
+			delete(blocked, it.Title) // a prior drive already delivered it — stop tracking
+			continue
+		}
 		if itemAttempts[it.Title] >= maxItemAttempts() {
 			rec.Blockers = append(rec.Blockers, fmt.Sprintf("giving up on %q after %d attempts", it.Title, maxItemAttempts()))
 			w.Disposition = "blocked"
@@ -375,7 +389,22 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		ledger = append(ledger, w)
 		delete(blocked, it.Title) // a prior transient block converged on retry
 	}
-	rec.NextAction = "launched child runs — continue next tick"
+
+	// A dedup-only tick did no new work: everything accepted was already delivered on
+	// the shared branch by a prior drive (nothing launched, nothing blocked). Continuing
+	// would re-surface the same delivered items forever, so finish instead — the quest
+	// has converged (core/completion objective-met dedup).
+	if deduped > 0 && len(rec.LaunchedRunIDs) == 0 && len(rec.Blockers) == 0 {
+		rec.NextAction = fmt.Sprintf("all %d surfaced item(s) already delivered on the shared branch — deduped, nothing to launch — stopping", deduped)
+		c.recordTick(id, rec, tokens, ledger)
+		c.finishQuest(ctx, id)
+		return false
+	}
+	if deduped > 0 {
+		rec.NextAction = fmt.Sprintf("launched child runs (%d already-delivered item(s) deduped) — continue next tick", deduped)
+	} else {
+		rec.NextAction = "launched child runs — continue next tick"
+	}
 
 	c.recordTick(id, rec, tokens, ledger)
 	return true
@@ -831,6 +860,39 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 		out = append(out, it)
 	}
 	return out
+}
+
+// dedupKey normalizes a work-item title for objective-met dedup matching (case-
+// and surrounding-whitespace-insensitive), so a re-surfaced item matches its prior
+// completed ledger entry regardless of incidental casing/spacing differences.
+func dedupKey(title string) string {
+	return strings.ToLower(strings.TrimSpace(title))
+}
+
+// deliveredTitles is the set of work-item titles the quest has ALREADY completed,
+// recovered from its durable ledger — the evidence a relaunch uses to skip work a
+// prior drive delivered on the shared branch (core/completion objective-met dedup).
+// It is empty for a quest with no shared branch (a per-finding/PR quest opens a PR
+// per finding and guards re-surfacing via dropOwnArtifacts, so ledger dedup does not
+// apply), keyed by dedupKey so matching is stable across casing/spacing.
+func deliveredTitles(q run.Quest) map[string]bool {
+	if QuestBranch(q) == "" {
+		return nil // no shared branch — nothing accumulates across drives to dedup against
+	}
+	ticks := make(map[string]run.Tick, len(q.Ticks))
+	for _, t := range q.Ticks {
+		ticks[t.ID] = t
+	}
+	done := map[string]bool{}
+	for _, w := range q.WorkItems {
+		if w.Disposition != "completed" {
+			continue
+		}
+		if title := dedupKey(workItemTitle(w, ticks[w.SourceTick])); title != "" {
+			done[title] = true
+		}
+	}
+	return done
 }
 
 // resurfaceBlocked returns the transiently-blocked items held for a convergence
