@@ -1034,14 +1034,17 @@ func prBody(r run.Run) string {
 // PARTITION lines) the resilience layer and the stub tests rely on.
 
 // incidentDoctrine is the shared self-report clause appended to EVERY agent
-// bootstrap (run/quest/campaign, full and fork-slim). A non-terminal problem an
-// agent works around — a flaky dependency, a stale lockfile, a substitutable
-// missing env var — is knowledge a future run should have but is NOT a reason to
-// stop. So the agent voluntarily emits an `INCIDENT <json>` line and keeps going;
-// captureIncidents funnels every such self-report onto the host record's audit
-// trail (run.Incidents / quest / campaign), which /learn later mines.
-const incidentDoctrine = " If you hit a non-terminal problem you work around (a flaky dependency, a stale lockfile, a missing env var you can substitute) — anything a future run should know but that does NOT stop you — self-report it as one line beginning with `INCIDENT ` followed by JSON " +
-	`{"summary":<one line>,"detail":<optional>,"severity":"info"|"warn"}` +
+// bootstrap (run/quest/campaign, full and fork-slim). It covers TWO classes of
+// non-terminal event a future run should learn from: (1) a self-acknowledged
+// mistake or doctrine violation — the agent did something wrong, skipped a step,
+// or ignored a rule it was given; and (2) a worked-around problem — a flaky
+// dependency, a stale lockfile, a substitutable missing env var. Neither stops
+// the run, so the agent voluntarily emits an `INCIDENT <json>` line (severity
+// info|warn|error) and keeps going; captureIncidents funnels every such
+// self-report onto the host record's audit trail (run.Incidents / quest /
+// campaign), which /learn later mines.
+const incidentDoctrine = " Separate from and additional to any protocol/verdict line you must emit: if at any point you catch yourself in a mistake or doctrine violation (you did something wrong, skipped a step, ignored a rule you were given), OR you work around a non-terminal problem (a flaky dependency, a stale lockfile, a missing env var you can substitute) — anything a future run should learn from but that does NOT stop you — self-report it as one line beginning with `INCIDENT ` followed by JSON " +
+	`{"summary":<one line what happened>,"detail":<optional: what you did about it>,"severity":"info"|"warn"|"error"}` +
 	" and keep working. Never stop for an incident; a genuine blocker is a different thing."
 
 const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line. " +
