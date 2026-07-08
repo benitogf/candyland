@@ -1103,8 +1103,8 @@ func (c *Conductor) campaignGate2Review(ctx context.Context, id string, cam run.
 	c.setCampaignRunning(id)
 	branch := CampaignBranch(cam)
 	wtRoot := filepath.Join(os.TempDir(), "candyland-gate", id)
-	defer os.RemoveAll(wtRoot)
 	delivered := map[string]string{}
+	defer gateCleanup(ctx, delivered, wtRoot) // proper worktree-remove per repo, then rm scratch
 	for _, repo := range folders {
 		if !isGitRepo(ctx, repo) {
 			continue
@@ -1239,6 +1239,7 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 		// One bounded resume-and-re-ask before blocking on a missing verdict (Task 6).
 		rmodel, rthinking := c.agentConfig(RoleIntentReviewer)
 		if rep, did := c.repairVerdict(ctx, id, intentReviewerID, res.sessionID, "INTENT_REVIEW", primary, extra, rmodel, rthinking); did {
+			c.addCampaignTokens(id, rep.tokens) // the repair spawn's usage is the campaign's
 			if r2, ok2 := parseIntentReview(rep.allText); ok2 {
 				review, ok = r2, true
 			} else {

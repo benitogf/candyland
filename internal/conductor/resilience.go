@@ -118,16 +118,15 @@ const resumeContinuePrompt = "You were interrupted (usage limit or connection lo
 // whether it actually complied with its instructions.
 type attemptOutcome struct {
 	partition     []partitionTask
-	review        *reviewVerdict // the reviewer's structured verdict (review phase only)
-	sawTool       bool           // the model used at least one tool (i.e. did real work)
-	lastText      string         // most recent assistant/result text (for deferral/question detection)
-	stalled       bool           // killed for producing no output, or exceeding the wall clock
-	startErr      error          // process could not be started (binary missing / not authenticated)
-	runErr        error          // process exited non-zero on its own
-	resultErrored bool           // a result line arrived with a non-success subtype (harness-signaled failure, even on a clean exit)
-	stderr        string         // the process's stderr (why it exited), surfaced on failure
-	tokens        int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
-	allText       string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
+	sawTool       bool   // the model used at least one tool (i.e. did real work)
+	lastText      string // most recent assistant/result text (for deferral/question detection)
+	stalled       bool   // killed for producing no output, or exceeding the wall clock
+	startErr      error  // process could not be started (binary missing / not authenticated)
+	runErr        error  // process exited non-zero on its own
+	resultErrored bool   // a result line arrived with a non-success subtype (harness-signaled failure, even on a clean exit)
+	stderr        string // the process's stderr (why it exited), surfaced on failure
+	tokens        int    // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
+	allText       string // every assistant/result text block joined (a verdict line may be in any block, not just the last)
 	// Raw usage totals accumulated from result lines — UNSCALED counts, unlike
 	// tokens above which keeps its /1000 display scaling. Input vs cache-read vs
 	// cache-creation split so cost and cache efficiency are derivable per attempt.
@@ -533,12 +532,9 @@ loop:
 					out.resultErrored = true
 				}
 			}
-			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
+			p, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {
 				out.partition = p
-			}
-			if rv != nil {
-				out.review = rv
 			}
 			if sawTool {
 				out.sawTool = true

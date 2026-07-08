@@ -247,7 +247,15 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		taskIntent += lead + "Partitioned tasks (what the loop set out to build):\n- " + strings.Join(taskTitles, "\n- ")
 	}
 	fixModel, fixThinking := c.agentConfig(RoleFix)
-	if clean, _ := c.reviewUntilClean(ctx, id, delivered, r.Branch, taskIntent, c.rootIntentFor(id), fixModel, fixThinking); !clean {
+	// A standalone run has no higher layer to contradict, so its root-intent channel
+	// stays DISARMED (RootIntent == "") — the render rule would otherwise arm it because
+	// taskIntent carries the "Partitioned tasks…" suffix and would differ from the bare
+	// OriginalIntent. Only a quest/campaign child carries a genuine root layer.
+	rootIntent := ""
+	if r.QuestID != "" {
+		rootIntent = c.rootIntentFor(id)
+	}
+	if clean, _ := c.reviewUntilClean(ctx, id, delivered, r.Branch, taskIntent, rootIntent, fixModel, fixThinking); !clean {
 		return // findings unresolved (or stopped) — never open a PR on un-reviewed work
 	}
 
@@ -1366,7 +1374,10 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 	// to route to its decomposition owner.
 	isRunHost := !strings.HasPrefix(hostID, "q") && !strings.HasPrefix(hostID, "c")
 	totalRounds := 0
-	defer func() { c.recordReviewRounds(hostID, totalRounds) }()
+	// A run records ReviewRounds only on the all-clean path (Task 2 byte-equivalence);
+	// a quest/campaign gate accumulates GateRounds on every return (cumulative across
+	// re-entries). `clean` is the named result read at defer time.
+	defer func() { c.recordReviewRounds(hostID, totalRounds, clean) }()
 	c.updateAgentHost(hostID, func(agents *[]run.Agent) {
 		a := ensureAgent(agents, reviewerID)
 		a.Role, a.Emoji, a.Task = "Reviewer", "🔎", "review the integrated diff"
@@ -1407,6 +1418,14 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 		// its session id; round ≥ 2 RESUMES it with a fresh-evidence reverify prompt so
 		// the reviewer does not re-derive the brief/diff/tests it already holds.
 		reviewerSession := ""
+		// Task 3: remove the reviewer's own resumed transcript on EVERY exit path (a
+		// structural early-return, a re-entry, or the clean break), alongside the
+		// template-copy cleanup defer. The closure reads the final session id.
+		defer func() {
+			if reviewerSession != "" {
+				cleanupTemplateCopy(reviewerSession, integDir)
+			}
+		}()
 		var pendingReverify []reviewFinding // blockers the fix pass just addressed, to re-verify
 		repoClean := false
 		for round := 1; round <= rounds; round++ {
@@ -1434,12 +1453,18 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 			// Task 5: collect and persist any INTENT_CONFLICT lines this reviewer flagged
 			// against the root intent (context-only contradiction, not a local blocker).
 			c.captureIntentConflicts(hostID, reviewerID, out.allText)
+			// narration is the text the verdict-integrity gate scans — the ORIGINAL pass
+			// by default, but the REPAIRED transcript when a repair produced the verdict.
+			narration := out.allText
 			verdict, ok := parseReview(out.allText)
 			if !ok {
 				// One bounded resume-and-re-ask before blocking on a missing verdict line.
 				if rep, did := c.repairVerdict(ctx, hostID, reviewerID, reviewerSession, "REVIEW_CLEAN/REVIEW_FINDINGS", integDir, extraDirsForDelivered(repo, folders), reviewerModel, reviewerThinking); did {
+					// The repair transcript is authoritative for both the narration check
+					// and any conflict the reviewer flagged while re-asking.
+					c.captureIntentConflicts(hostID, reviewerID, rep.allText)
 					if v, ok2 := parseReview(rep.allText); ok2 {
-						verdict, ok = v, true
+						verdict, ok, narration = v, true, rep.allText
 					} else {
 						c.failReview(ctx, hostID, reviewerID, "The reviewer "+noVerdictReason(rep, reviewerID, "REVIEW")+" for "+repoBase(repo)+" — refusing to open a PR on an un-reviewed change.")
 						return false, nil
@@ -1452,7 +1477,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 			// V3 verdict-integrity gate (unchanged): a REVIEW_CLEAN that contradicts its
 			// own narration is bounced back as a synthesized blocker.
 			if len(verdict.Blockers) == 0 {
-				if bad, reason := cleanVerdictContradictsNarration(out.allText); bad {
+				if bad, reason := cleanVerdictContradictsNarration(narration); bad {
 					c.updateAgentHost(hostID, func(agents *[]run.Agent) {
 						appendToAgentIn(agents, reviewerID, run.Event{T: "system", Text: "rejected REVIEW_CLEAN for " + repoBase(repo) + ": " + reason}, 0)
 					})
@@ -1498,10 +1523,6 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 			// Rounds exhausted with no clean verdict and nothing left to escalate.
 			c.failReview(ctx, hostID, reviewerID, fmt.Sprintf("Review of %s did not converge in %d rounds. No PR is opened until review is clean.", repoBase(repo), rounds))
 			return false, nil
-		}
-		// Cleanup the reviewer's own resumed transcript for this repo (Task 3).
-		if reviewerSession != "" {
-			cleanupTemplateCopy(reviewerSession, integDir)
 		}
 	}
 	if isRunHost {
@@ -1572,6 +1593,16 @@ func splitFindings(ctx context.Context, dir, branch string, blockers []reviewFin
 	return citable, structural
 }
 
+// gateCleanup tears down a gate's detached review worktrees the proper way — a
+// `git worktree remove` per repo (so the user's real repos carry no prunable
+// registration in .git/worktrees), then removes the parent scratch dir.
+func gateCleanup(ctx context.Context, delivered map[string]string, wtRoot string) {
+	for repo, wt := range delivered {
+		removeWorktree(ctx, repo, wt)
+	}
+	os.RemoveAll(wtRoot)
+}
+
 // branchHasDiff reports whether branch diverges from base in the repo at dir (so a
 // gate has something to review). `git diff --quiet` exits non-zero when a diff exists.
 func branchHasDiff(ctx context.Context, dir, base, branch string) bool {
@@ -1613,7 +1644,7 @@ func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string)
 // recordReviewRounds folds the rounds a review loop consumed onto the host: a run
 // records ReviewRounds (set), a quest/campaign gate accumulates GateRounds (cumulative
 // across re-entries).
-func (c *Conductor) recordReviewRounds(hostID string, n int) {
+func (c *Conductor) recordReviewRounds(hostID string, n int, clean bool) {
 	if n == 0 {
 		return
 	}
@@ -1623,7 +1654,11 @@ func (c *Conductor) recordReviewRounds(hostID string, n int) {
 	case strings.HasPrefix(hostID, "c"):
 		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.GateRounds += n })
 	default:
-		c.Update(hostID, func(r *run.Run) { r.ReviewRounds = n })
+		// Run-level byte-equivalence (Task 2): ReviewRounds is set only when the run's
+		// review reached the all-clean path, exactly as before the primitive extraction.
+		if clean {
+			c.Update(hostID, func(r *run.Run) { r.ReviewRounds = n })
+		}
 	}
 }
 
@@ -1852,7 +1887,7 @@ const conflictBootstrap = "You are the tech lead resolving a git merge conflict 
 // returns the signals the resilience layer uses to judge compliance: any parsed
 // partition, whether a tool was used (real work), and the latest text (checked
 // for deferral / a question to the user).
-func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, review *reviewVerdict, sawTool bool, text string) {
+func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, sawTool bool, text string) {
 	switch line.Type {
 	case "assistant":
 		for _, blk := range line.Message.Content {
@@ -1860,10 +1895,6 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			if b.Type == "text" && b.Text != "" {
 				if p := parsePartition(b.Text); p != nil {
 					partition = p
-				}
-				if v, ok := parseReview(b.Text); ok {
-					vv := v
-					review = &vv
 				}
 				if pass, fail, ok := parseTest(b.Text); ok {
 					c.recordAgentEvent(id, func(agents *[]run.Agent) {
@@ -1901,7 +1932,7 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			a.CacheCreationTokens += l.Usage.CacheCreationInputTokens
 		})
 	}
-	return partition, review, sawTool, text
+	return partition, sawTool, text
 }
 
 // parsePartition extracts the task array from a `PARTITION <json>` line.

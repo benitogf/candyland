@@ -783,8 +783,20 @@ func stampConflictRulings(notes []run.IntentConflictNote, ruling string) {
 // defaults to "proceed" — never block delivery on a decider that did not rule
 // (mirrors decisionBlocks' "absent an explicit signal, proceed" semantics).
 func rulingFromAnswer(resolved bool, answer string) string {
-	if resolved && strings.Contains(strings.ToLower(answer), "fix") {
-		return "fix"
+	if !resolved {
+		return "proceed"
+	}
+	a := strings.ToLower(answer)
+	// An explicit "proceed" wins over an incidental "fix" ("proceed — no fix needed").
+	if strings.Contains(a, "proceed") {
+		return "proceed"
+	}
+	// Otherwise route to fix only on a real "fix" TOKEN (word boundary), never a
+	// substring buried in another word.
+	for _, w := range strings.FieldsFunc(a, func(r rune) bool { return !(r >= 'a' && r <= 'z') }) {
+		if w == "fix" {
+			return "fix"
+		}
 	}
 	return "proceed"
 }

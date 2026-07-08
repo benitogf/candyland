@@ -464,24 +464,26 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 	if out.stalled {
 		return nil, "discovery stalled", out.tokens, "the quest lead stalled before producing a verdict"
 	}
+	tokens = out.tokens
 	parsed, none, ok := parseWorkItems(out.text)
 	if !ok {
 		// One bounded resume-and-re-ask before giving up on a missing verdict (Task 6).
 		model, thinking := c.agentConfig(RoleQuestLead)
 		if rep, did := c.repairVerdict(ctx, id, questLeadID, out.sessionID, "WORKITEMS", primary, extra, model, thinking); did {
+			tokens += rep.tokens // the repair spawn's usage still belongs to this tick
 			if p, n, ok2 := parseWorkItems(rep.allText); ok2 {
 				parsed, none, ok = p, n, ok2
 			} else {
-				return nil, "no verdict", out.tokens + rep.tokens, "the quest lead " + noVerdictReason(rep, questLeadID, "WORKITEMS")
+				return nil, "no verdict", tokens, "the quest lead " + noVerdictReason(rep, questLeadID, "WORKITEMS")
 			}
 		} else {
-			return nil, "no verdict", out.tokens, "the quest lead " + noVerdictReason(out.full, questLeadID, "WORKITEMS")
+			return nil, "no verdict", tokens, "the quest lead " + noVerdictReason(out.full, questLeadID, "WORKITEMS")
 		}
 	}
 	if none {
-		return nil, "no work items surfaced", out.tokens, ""
+		return nil, "no work items surfaced", tokens, ""
 	}
-	return parsed, fmt.Sprintf("surfaced %d work %s", len(parsed), plural(len(parsed), "item", "items")), out.tokens, ""
+	return parsed, fmt.Sprintf("surfaced %d work %s", len(parsed), plural(len(parsed), "item", "items")), tokens, ""
 }
 
 // questLeadOutcome is the slice of streamOnce a discovery pass needs.
@@ -683,6 +685,15 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 // of the shared branch (Task 7). Returns true to proceed to delivery; false when the
 // gate blocked the quest (recorded) or its structural-remediation could not converge.
 func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
+	// A campaign-owned quest shares campaign/<CampaignID> with sibling quests that may
+	// still be committing to it concurrently. Gating (and force-pointing) that shared
+	// branch here would race them and orphan their commits. Campaign gate 2
+	// (campaignGate2Review, Task 8) reviews the converged campaign branch race-free
+	// after ALL child quests finish, so campaign-owned branch delivery is still gated
+	// by the same review primitive — just at the safe single-writer point. Skip here.
+	if q, ok := c.GetQuest(id); ok && q.CampaignID != "" {
+		return true
+	}
 	for attempt := range maxReviewRounds() {
 		if ctx.Err() != nil {
 			return false
@@ -712,19 +723,20 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 			}
 			wt := filepath.Join(wtRoot, repoBase(repo))
 			if err := addDetachedWorktree(ctx, repo, wt, strings.TrimSpace(sha)); err != nil {
-				os.RemoveAll(wtRoot)
+				removeWorktree(ctx, repo, wt)
+				gateCleanup(ctx, delivered, wtRoot)
 				c.failReview(ctx, id, reviewerID, "quest gate: couldn't create the review worktree for "+repoBase(repo)+": "+err.Error())
 				return false
 			}
 			delivered[repo] = wt
 		}
 		if len(delivered) == 0 {
-			os.RemoveAll(wtRoot)
+			gateCleanup(ctx, delivered, wtRoot)
 			return true
 		}
 		fixModel, fixThinking := c.agentConfig(RoleFix)
 		clean, structural := c.reviewUntilClean(ctx, q.ID, delivered, branch, questGateTaskIntent(q), c.rootIntentFor(q.ID), fixModel, fixThinking)
-		os.RemoveAll(wtRoot)
+		gateCleanup(ctx, delivered, wtRoot)
 		if ctx.Err() != nil {
 			return false
 		}

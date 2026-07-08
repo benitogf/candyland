@@ -2,12 +2,14 @@ package conductor
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/benitogf/candyland/internal/bus"
 	"github.com/benitogf/candyland/internal/run"
 )
 
@@ -405,6 +407,227 @@ func TestRouteQuestIntentConflictsFixRuling(t *testing.T) {
 	}
 	if len(q.Escalations) == 0 {
 		t.Error("routing must record the escalation (it paused and asked)")
+	}
+}
+
+// === Non-blocker 6: rulingFromAnswer word-boundary =========================
+
+func TestRulingFromAnswer(t *testing.T) {
+	cases := []struct {
+		resolved bool
+		answer   string
+		want     string
+	}{
+		{true, "proceed — no fix needed", "proceed"}, // explicit proceed wins over incidental "fix"
+		{true, "fix it now", "fix"},
+		{true, "please fix the contradiction", "fix"},
+		{true, "reconcile it", "proceed"},     // no fix token
+		{true, "prefix the field", "proceed"}, // "fix" only as a substring, not a token
+		{false, "fix", "proceed"},             // unresolved never blocks/fixes
+	}
+	for _, tc := range cases {
+		if got := rulingFromAnswer(tc.resolved, tc.answer); got != tc.want {
+			t.Errorf("rulingFromAnswer(%v, %q) = %q, want %q", tc.resolved, tc.answer, got, tc.want)
+		}
+	}
+}
+
+// === Blocker 2: a standalone run's reviewer brief renders NO ROOT INTENT ====
+
+func TestStandaloneRunReviewerBriefNoRootIntent(t *testing.T) {
+	c, _ := deliveryConductor(t, stubClaude(
+		roleCleanReviewer,
+		role("tech lead", emitPartition(`[{"id":"a","title":"do it","files":["a.txt"],"test":"t"}]`)),
+		coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
+	))
+	id := c.Create(run.Spec{Prompt: "add csv export"})
+	c.Begin(id)
+	waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
+
+	// The reviewer brief the conductor last wrote for this standalone run carries the
+	// task intent but an EMPTY root layer — the render rule then omits ROOT INTENT.
+	obj, err := c.server.Storage.Get(bus.BriefKey(reviewerID))
+	if err != nil {
+		t.Fatalf("read reviewer brief: %v", err)
+	}
+	var br bus.Brief
+	if json.Unmarshal(obj.Data, &br) != nil {
+		t.Fatal("unmarshal reviewer brief")
+	}
+	if br.RootIntent != "" {
+		t.Errorf("a standalone run's reviewer brief must have an empty RootIntent (disarmed), got %q", br.RootIntent)
+	}
+	if br.Intent == "" {
+		t.Error("the task intent must still be present")
+	}
+}
+
+// === Blocker 3.1: a resume that terminal-fails falls back to a fresh fork ====
+
+func TestReviewerResumeFailureFallsBackToFork(t *testing.T) {
+	dir := t.TempDir()
+	argvLog := filepath.Join(dir, "argv.log")
+	// A --resume spawn dies non-zero; a fresh fork (no --resume) emits a clean verdict.
+	stub := "#!/usr/bin/env bash\n" +
+		"printf '%s\\n' \"$*\" >> \"" + argvLog + "\"\n" +
+		"if [[ \"$*\" == *\"--resume\"* ]]; then echo 'resume boom' >&2; exit 1; fi\n" +
+		"echo '{\"type\":\"assistant\",\"session_id\":\"rev-2\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"REVIEW_CLEAN\"}]}}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\",\"usage\":{\"output_tokens\":1}}'\n"
+	writeExec(t, stub)
+
+	c := New(nil)
+	sess := "rev-1"
+	out := c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess)
+	if out.startErr != nil {
+		t.Fatalf("fallback fork must complete: %+v", out)
+	}
+	if v, ok := parseReview(out.allText); !ok || len(v.Blockers) != 0 {
+		t.Fatalf("fallback fork must produce the clean verdict, got ok=%v v=%+v", ok, v)
+	}
+	log := readFileStr(t, argvLog)
+	if !strings.Contains(log, "--resume rev-1") {
+		t.Error("the round must FIRST attempt the resume")
+	}
+	// The fallback re-forked in the SAME round (a second spawn with no --resume), and
+	// the session was re-captured from it.
+	if len(spineArgvLines(t, argvLog)) < 2 {
+		t.Error("a terminal-failed resume must fall back to a second (fork) spawn in the same round")
+	}
+	if sess != "rev-2" {
+		t.Errorf("the fallback fork must re-capture the session, got %q", sess)
+	}
+}
+
+// === Blocker 3.2: at run level, structural findings fold into the fix set ====
+
+// A non-citable (empty-file) finding at RUN level is NOT returned as structural — it
+// is folded into the fix set, so a fix pass runs and the run reaches a clean review
+// and opens a PR (proving the fold; a split would strand it and open no PR).
+func TestRunLevelFoldsStructuralIntoFix(t *testing.T) {
+	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0") // both rounds fork → both match "code reviewer"
+	marker := filepath.Join(t.TempDir(), "reviewed-once")
+	reviewer := role("code reviewer",
+		"if [[ -f \""+marker+"\" ]]; then\n"+
+			"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git diff\"}}]}}'\n"+
+			emitText("REVIEW_CLEAN")+emitResult("clean", 1)+
+			"else\n"+
+			"  touch \""+marker+"\"\n"+
+			"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git diff\"}}]}}'\n"+
+			emitText(`REVIEW_FINDINGS {\"blockers\":[{\"file\":\"\",\"issue\":\"a non-citable structural gap\"}]}`)+emitResult("findings", 1)+
+			"fi\n")
+	fixer := role("addressing review findings",
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"fixed.txt\"}}]}}'\n"+
+			"echo \"fix by $$\" > fixed.txt\n"+
+			emitResult("fixed", 1))
+	c, _ := deliveryConductor(t, stubClaude(
+		fixer, reviewer,
+		role("tech lead", emitPartition(`[{"id":"a","title":"do it","files":["a.txt"],"test":"t"}]`)),
+		coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
+	))
+	id := c.Create(run.Spec{Prompt: "add csv export"})
+	c.Begin(id)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" || r.Error != "" {
+		t.Fatalf("run must recover via a fix pass and deliver: status=%q err=%q", r.Status, r.Error)
+	}
+	if r.PrURL == "" {
+		t.Error("a run-level structural finding must fold into the fix set and still reach a PR")
+	}
+}
+
+// === Blocker 3.3/3.4: standalone quest delivery gate — citable vs non-citable =
+
+// seedQuestBranch creates branch off main in repo with one extra commit (a diff), via
+// a throwaway worktree, so the gate has real work to review.
+func seedQuestBranch(t *testing.T, repo, branch, file string) {
+	t.Helper()
+	ctx := context.Background()
+	wt := filepath.Join(t.TempDir(), "seed")
+	if _, err := git(ctx, repo, "worktree", "add", "-b", branch, wt, "main"); err != nil {
+		t.Fatalf("seed worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, file), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, wt, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, wt, "commit", "-q", "-m", "seed "+file); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = git(ctx, repo, "worktree", "remove", "--force", wt)
+}
+
+// A converge quest gate with a CITABLE REVIEW_FINDINGS runs a fix pass, re-reviews
+// clean, and delivers a terminal PR (GateRounds ≥ 2 across the fix cycle).
+func TestQuestGateCitableFindingFixesThenDelivers(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gate-reviewed-once")
+	reviewer := role("code reviewer",
+		"if [[ -f \""+marker+"\" ]]; then\n"+
+			"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git diff\"}}]}}'\n"+
+			emitText("REVIEW_CLEAN")+emitResult("clean", 1)+
+			"else\n  touch \""+marker+"\"\n"+
+			"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git diff\"}}]}}'\n"+
+			emitText(`REVIEW_FINDINGS {\"blockers\":[{\"file\":\"seed.txt\",\"line\":1,\"issue\":\"cited fix me\"}]}`)+emitResult("findings", 1)+
+			"fi\n")
+	fixer := role("addressing review findings",
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"seed.txt\"}}]}}'\n"+
+			"echo \"fixed by $$\" > seed.txt\n"+emitResult("fixed", 1))
+	c, repo := deliveryConductor(t, stubClaude(fixer, reviewer, coder(emitResult("noop", 1))))
+	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0")
+
+	id := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{repo}})
+	seedQuestBranch(t, repo, "quest/"+id, "seed.txt")
+	c.UpdateQuest(id, func(q *run.Quest) {
+		q.Status = "running"
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	c.finishQuest(context.Background(), id)
+
+	q, _ := c.GetQuest(id)
+	if len(q.PRs) != 1 || q.PRs[0].URL == "" {
+		t.Fatalf("a citable finding must be fixed then delivered, got PRs=%+v status=%q", q.PRs, q.Status)
+	}
+	if q.GateRounds < 2 {
+		t.Errorf("a fix cycle must consume ≥ 2 gate rounds, got %d", q.GateRounds)
+	}
+}
+
+// A converge quest gate with a NON-CITABLE finding requeues a review-gap item; when
+// the requeued child cannot deliver (no partition), the gate blocks and opens NO PR.
+func TestQuestGateNonCitableRequeuesNoPR(t *testing.T) {
+	reviewer := role("code reviewer",
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git diff\"}}]}}'\n"+
+			emitText(`REVIEW_FINDINGS {\"blockers\":[{\"file\":\"\",\"issue\":\"non-citable: reconcile the design\"}]}`)+emitResult("findings", 1))
+	// No "tech lead" fragment: the requeued review-gap child run's tech lead produces
+	// no PARTITION → the child fails → the gate cannot converge → no PR.
+	c, repo := deliveryConductor(t, stubClaude(reviewer, coder(emitResult("noop", 1))))
+	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0")
+
+	id := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{repo}})
+	seedQuestBranch(t, repo, "quest/"+id, "seed.txt")
+	c.UpdateQuest(id, func(q *run.Quest) {
+		q.Status = "running"
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	c.finishQuest(context.Background(), id)
+
+	q, _ := c.GetQuest(id)
+	for _, pr := range q.PRs {
+		if pr.URL != "" {
+			t.Fatalf("a non-citable finding must NOT deliver a PR, got %+v", q.PRs)
+		}
+	}
+	gap := false
+	for _, w := range q.WorkItems {
+		if w.Classification == "review-gap" {
+			gap = true
+		}
+	}
+	if !gap {
+		t.Errorf("a non-citable finding must be requeued as a review-gap work item, got %+v", q.WorkItems)
 	}
 }
 
