@@ -567,14 +567,12 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 			}
 			defer func() { <-sem }()
 
-			questID := c.launchCampaignChildQuest(ctx, id, cam, folders, q, reuse)
-			if cq, ok := c.GetQuest(questID); ok {
-				c.addCampaignTokens(id, cq.TokensUsed)
-				if questDelivered(cq) {
-					mu.Lock()
-					completed++
-					mu.Unlock()
-				}
+			questID, tokensThisDrive := c.launchCampaignChildQuest(ctx, id, cam, folders, q, reuse)
+			c.addCampaignTokens(id, tokensThisDrive)
+			if cq, ok := c.GetQuest(questID); ok && questDelivered(cq) {
+				mu.Lock()
+				completed++
+				mu.Unlock()
 			}
 		}(q)
 	}
@@ -798,18 +796,27 @@ func campaignTargetsPR(cam run.Campaign) bool {
 // instead hands the child quest the campaign's Deliver + TargetPR so it works the
 // existing PR. Its Title comes from the tech manager's QUESTS emission. It blocks
 // until the quest reaches a terminal (non-running) state or the campaign is stopped.
-func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem, reuse bool) string {
+// launchCampaignChildQuest returns the child quest's id and the tokens it consumed
+// THIS drive (the delta since the drive began) — never the quest's cumulative total.
+// The delta is what the caller attributes to the campaign, so a relaunch that reuses
+// an already-delivered quest (whose tokens the prior drive already counted, and which
+// persist in cam.TokensUsed) does not re-charge them and wrongly trip the token cap.
+func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem, reuse bool) (string, int) {
 	existing, found := c.latestChildQuestForItem(id, item.ID)
 	switch reuseChildQuestAction(reuse, existing, found) {
 	case "reuse-terminal":
 		c.appendCampaignNote(id, fmt.Sprintf("relaunch: partition item %q already delivered by quest %q (%s) — reusing it, not re-creating", item.ID, existing.ID, existing.Status))
-		return existing.ID
+		return existing.ID, 0 // delivered on a prior drive — its tokens are already in cam.TokensUsed
 	case "resume":
 		c.appendCampaignNote(id, fmt.Sprintf("relaunch: resuming paused quest %q for partition item %q", existing.ID, item.ID))
+		before := existing.TokensUsed // the prior drive already charged this much
 		c.BeginQuest(existing.ID)
-		return c.waitForChildQuestTerminal(ctx, existing.ID)
+		c.waitForChildQuestTerminal(ctx, existing.ID)
+		return existing.ID, c.questTokensSince(existing.ID, before)
 	case "wait":
-		return c.waitForChildQuestTerminal(ctx, existing.ID)
+		before := existing.TokensUsed
+		c.waitForChildQuestTerminal(ctx, existing.ID)
+		return existing.ID, c.questTokensSince(existing.ID, before)
 	}
 	spec := run.QuestSpec{
 		CampaignID: id,
@@ -832,7 +839,23 @@ func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam
 	questID := c.CreateQuest(spec)
 	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.QuestIDs = append(cam.QuestIDs, questID) })
 	c.BeginQuest(questID)
-	return c.waitForChildQuestTerminal(ctx, questID)
+	c.waitForChildQuestTerminal(ctx, questID)
+	return questID, c.questTokensSince(questID, 0) // fresh quest — all its tokens are this drive's
+}
+
+// questTokensSince returns the tokens a child quest has consumed since it held
+// `before` cumulative tokens — the delta a single drive is responsible for. It reads
+// the quest's current TokensUsed fresh (a concurrent "wait" quest may still be
+// growing) and floors at zero so a stale/negative read never subtracts from the cap.
+func (c *Conductor) questTokensSince(questID string, before int) int {
+	q, ok := c.GetQuest(questID)
+	if !ok {
+		return 0
+	}
+	if d := q.TokensUsed - before; d > 0 {
+		return d
+	}
+	return 0
 }
 
 // reuseChildQuestAction decides how a campaign RELAUNCH should treat an existing

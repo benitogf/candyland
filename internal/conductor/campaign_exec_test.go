@@ -813,6 +813,7 @@ func TestCampaignRelaunchDoesNotRepeatDeliveredWork(t *testing.T) {
 	childID := c.CreateQuest(run.QuestSpec{CampaignID: id, PartitionItemID: "q1", Title: "csv export", Objective: "implement csv export end to end", Folders: []string{repo}})
 	c.UpdateQuest(childID, func(q *run.Quest) {
 		q.Status = "done"
+		q.TokensUsed = 100000 // the prior drive's spend on this quest
 		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
 		recomputeQuestRollups(q)
 	})
@@ -823,6 +824,7 @@ func TestCampaignRelaunchDoesNotRepeatDeliveredWork(t *testing.T) {
 		cam.PlanGate = run.GateResult{Passed: true, DecidedAt: now}
 		cam.Partition = []run.QuestPartitionItem{{ID: "q1", Title: "csv export", Objective: "implement csv export end to end"}}
 		cam.Status = "blocked"
+		cam.TokensUsed = 100000 // as the prior drive persisted it (the child's spend, already counted)
 	})
 
 	if !c.BeginCampaign(id) {
@@ -852,5 +854,11 @@ func TestCampaignRelaunchDoesNotRepeatDeliveredWork(t *testing.T) {
 	// (iii) ZERO new child runs — the delivered work was reused, not re-executed.
 	if runs := c.CampaignChildRuns(id); len(runs) != 0 {
 		t.Fatalf("relaunch must launch no new child runs for already-delivered work, got %d", len(runs))
+	}
+	// (iv) the reused quest's 100k tokens are NOT re-charged to the campaign. cam
+	// started this drive at 100k; a relaunch adds only the (tiny) gate-2 spend, never
+	// a second 100k — a double-count would land near 200k and could trip the cap.
+	if cam.TokensUsed >= 150000 {
+		t.Fatalf("relaunch double-counted the reused quest's tokens: cam.TokensUsed=%d (expected ~100k + small gate-2 delta)", cam.TokensUsed)
 	}
 }
