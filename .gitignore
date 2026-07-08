@@ -13,6 +13,9 @@ dist/
 /bazel-*
 MODULE.bazel.lock
 
+# AgentsPanel test bundle scratch dirs (guard against pre-tmpdir leaks)
+.agentspanel-test-*/
+
 # loop scratchpads + plan contracts (local only)
 .janitor/
 .smith/
