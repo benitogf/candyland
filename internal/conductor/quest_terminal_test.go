@@ -1,7 +1,10 @@
 package conductor
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -278,5 +281,44 @@ func TestReviewQuestTerminalSummaryNamesPR(t *testing.T) {
 	none := &run.Quest{Deliver: run.DeliverReview, TargetPR: 712}
 	if s := questTerminalSummary(none); !containsFold(s, "712") {
 		t.Errorf("even a no-finding review must name the PR, got %q", s)
+	}
+}
+
+// finishQuest is idempotent at the PR layer: if the quest's shared branch already
+// has an open PR (a re-finish after a resume), it reuses that PR's URL instead of
+// erroring on a duplicate `gh pr create` or recording a delivery failure.
+func TestFinishQuestReusesExistingOpenPR(t *testing.T) {
+	c, repo := deliveryConductor(t, stubClaude())
+	// gh stub: `pr list --json url` reports an already-open PR; anything else prints a URL.
+	gh := filepath.Join(t.TempDir(), "gh")
+	script := "#!/usr/bin/env bash\n" +
+		"if [[ \"$*\" == *defaultBranchRef* ]]; then echo 'main'; exit 0; fi\n" +
+		"if [[ \"$*\" == *'pr list'* ]]; then echo '[{\"url\":\"https://github.com/example/repo/pull/42\"}]'; exit 0; fi\n" +
+		"echo 'https://github.com/example/repo/pull/99'\n"
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CANDYLAND_GH", gh)
+
+	id := c.CreateQuest(run.QuestSpec{Objective: "do it", Folders: []string{repo}})
+	if _, err := git(context.Background(), repo, "branch", "quest/"+id); err != nil {
+		t.Fatalf("seed quest branch: %v", err)
+	}
+	c.UpdateQuest(id, func(q *run.Quest) {
+		q.Status = "running"
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	c.finishQuest(context.Background(), id)
+
+	q, _ := c.GetQuest(id)
+	if len(q.PRs) != 1 || q.PRs[0].URL != "https://github.com/example/repo/pull/42" {
+		t.Fatalf("finishQuest must reuse the existing open PR URL, got %+v", q.PRs)
+	}
+	if q.PRs[0].Err != "" {
+		t.Errorf("a reused PR carries no error, got %q", q.PRs[0].Err)
+	}
+	if q.Status == "delivery-failed" {
+		t.Errorf("reusing an existing PR is not a delivery failure (status=%q)", q.Status)
 	}
 }
