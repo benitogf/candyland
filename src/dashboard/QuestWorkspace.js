@@ -75,6 +75,7 @@ const Finding = ({ item, onRun }) => (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
             {item.classification && <Chip size="small" variant="outlined" label={item.classification} sx={{ height: 20 }} />}
             {item.disposition && <Chip size="small" color={item.disposition === 'completed' ? 'success' : item.disposition === 'blocked' ? 'warning' : 'default'} variant="outlined" label={item.disposition} sx={{ height: 20 }} />}
+            {item.deduped && <Chip size="small" variant="outlined" label="deduped · already delivered" sx={{ height: 20 }} />}
             {item.decision && <Typography variant="caption" color="text.secondary">decision: {item.decision}</Typography>}
             {item.childRunId && <Link component="button" type="button" onClick={() => onRun(item.childRunId)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>{item.childRunId}</Link>}
         </Box>

@@ -333,6 +333,9 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	// work already delivered. Close such items from the ledger evidence — no re-spawn
 	// (core/completion objective-met dedup).
 	delivered := deliveredTitles(q)
+	if delivered != nil && !questBranchExists(ctx, q) {
+		delivered = nil // shared branch gone — its delivered ledger no longer on disk; re-execute, don't dedup
+	}
 	ledger := skipLedger
 	deduped := 0
 	for i, it := range accepted {
@@ -350,6 +353,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		if delivered[dedupKey(it.Title)] {
 			deduped++
 			w.Disposition = "completed"
+			w.Deduped = true
 			ledger = append(ledger, w)
 			delete(blocked, it.Title) // a prior drive already delivered it — stop tracking
 			continue
@@ -400,9 +404,12 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		c.finishQuest(ctx, id)
 		return false
 	}
-	if deduped > 0 {
+	switch {
+	case deduped > 0 && len(rec.LaunchedRunIDs) == 0:
+		rec.NextAction = fmt.Sprintf("nothing new launched (%d deduped, %d blocker(s)) — continue next tick", deduped, len(rec.Blockers))
+	case deduped > 0:
 		rec.NextAction = fmt.Sprintf("launched child runs (%d already-delivered item(s) deduped) — continue next tick", deduped)
-	} else {
+	default:
 		rec.NextAction = "launched child runs — continue next tick"
 	}
 
@@ -614,7 +621,7 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 	// The terminal per-repo PR open is I/O (git push + gh) — do it OUTSIDE the
 	// UpdateQuest write lock, then persist the result in a single mutation.
 	var prs []run.PR
-	if branch := QuestBranch(q); strings.HasPrefix(branch, "quest/") && q.ItemsCompleted > 0 {
+	if branch := QuestBranch(q); strings.HasPrefix(branch, "quest/") && (q.ItemsCompleted > 0 || q.ItemsDeduped > 0) {
 		prs = openBranchPRs(ctx, q.Folders, branch, questPRTitle(q), questPRBody(q))
 	}
 	// Convergence gate: a quest with unresolved blocked items cannot reach a clean
@@ -702,7 +709,7 @@ func questIsNoOp(q *run.Quest) bool {
 	if q.Deliver == run.DeliverFeedback || q.Deliver == run.DeliverReview {
 		return false
 	}
-	delivered := q.ItemsCompleted > 0 || q.PRsOpened > 0
+	delivered := q.ItemsCompleted > 0 || q.ItemsDeduped > 0 || q.PRsOpened > 0
 	surfaced := q.ItemsSkipped > 0 || len(q.WorkItems) > 0
 	return !delivered && surfaced
 }
@@ -790,17 +797,24 @@ func questTerminalSummary(q *run.Quest) string {
 	if q.ItemsCompleted == 0 && q.PRsOpened == 0 && len(q.WorkItems) == 0 {
 		return "nothing to do: 0 surfaced"
 	}
+	if q.ItemsDeduped > 0 {
+		return fmt.Sprintf("done: %d completed, %d already delivered (deduped), %d PRs", q.ItemsCompleted, q.ItemsDeduped, q.PRsOpened)
+	}
 	return ""
 }
 
 // recomputeQuestRollups derives the dashboard counters from the work-item ledger,
 // the single source of truth (mirroring recompute for runs).
 func recomputeQuestRollups(q *run.Quest) {
-	prs, completed, skipped, blocked := 0, 0, 0, 0
+	prs, completed, skipped, blocked, deduped := 0, 0, 0, 0, 0
 	for _, w := range q.WorkItems {
 		switch w.Disposition {
 		case "completed":
-			completed++
+			if w.Deduped {
+				deduped++
+			} else {
+				completed++
+			}
 		case "skipped":
 			skipped++
 		case "blocked":
@@ -823,6 +837,7 @@ func recomputeQuestRollups(q *run.Quest) {
 	}
 	q.PRsOpened = prs
 	q.ItemsCompleted = completed
+	q.ItemsDeduped = deduped
 	q.ItemsSkipped = skipped
 	q.ItemsBlocked = blocked
 }
@@ -918,11 +933,30 @@ func deliveredTitles(q run.Quest) map[string]bool {
 		if w.Disposition != "completed" {
 			continue
 		}
-		if title := dedupKey(workItemTitle(w, ticks[w.SourceTick])); title != "" {
-			done[title] = true
+		title, derived := workItemTitleDerived(w, ticks[w.SourceTick])
+		if !derived {
+			continue
+		}
+		if k := dedupKey(title); k != "" {
+			done[k] = true
 		}
 	}
 	return done
+}
+
+// questBranchExists reports whether the quest's shared delivery branch still
+// exists in its primary repo. Objective-met dedup trusts the ledger only while
+// the branch holding the delivered commits is actually present — a reset or
+// deleted branch means that work is gone and re-surfacing it must re-execute,
+// not dedup-close.
+func questBranchExists(ctx context.Context, q run.Quest) bool {
+	branch := QuestBranch(q)
+	if branch == "" || len(q.Folders) == 0 {
+		return false
+	}
+	repo := expandHome(q.Folders[0])
+	sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch)
+	return err == nil && strings.TrimSpace(sha) != ""
 }
 
 // resurfaceBlocked returns the transiently-blocked items held for a convergence
@@ -1234,6 +1268,16 @@ func workItemFailure(t run.Tick, title string) string {
 // skippedWorkItems). When the derivation misses (foreign id shape, rewritten
 // history) it falls back to the item's evidence, classification, then id.
 func workItemTitle(w run.WorkItem, t run.Tick) string {
+	title, _ := workItemTitleDerived(w, t)
+	return title
+}
+
+// workItemTitleDerived recovers a work item's title and reports whether the
+// result is a REAL derivation (a matched triage-decision line, or the item's
+// evidence text) rather than a weak fallback (classification or raw id). Dedup
+// evidence must use only real derivations — a generic fallback like the
+// classification "cleanup" would collapse every future item titled "cleanup".
+func workItemTitleDerived(w run.WorkItem, t run.Tick) (string, bool) {
 	kind, idx := workItemIndex(w.ID, w.SourceTick)
 	var suffixes []string
 	switch kind {
@@ -1249,19 +1293,19 @@ func workItemTitle(w run.WorkItem, t run.Tick) string {
 				continue
 			}
 			if seen == idx {
-				return strings.TrimSuffix(d, suf)
+				return strings.TrimSuffix(d, suf), true
 			}
 			seen++
 			break
 		}
 	}
 	if ev := strings.TrimSpace(w.Evidence); ev != "" {
-		return truncate(ev, 80)
+		return truncate(ev, 80), true
 	}
 	if cl := strings.TrimSpace(w.Classification); cl != "" {
-		return cl
+		return cl, false
 	}
-	return w.ID
+	return w.ID, false
 }
 
 // workItemIndex splits a ledger id "<tick>-w<i>" / "<tick>-s<n>" into its kind

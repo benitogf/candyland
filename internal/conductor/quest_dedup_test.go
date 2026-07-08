@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,6 +86,9 @@ func TestQuestRelaunchDedupsAlreadyDeliveredItem(t *testing.T) {
 		Objective: "keep it tidy",
 		Folders:   []string{repo},
 	})
+	if _, err := git(context.Background(), repo, "branch", "quest/"+id); err != nil {
+		t.Fatalf("seed quest branch: %v", err)
+	}
 	// Pre-seed the durable ledger as a PRIOR drive would: "tidy the lint" was already
 	// delivered onto the shared branch (a completed WorkItem whose title is recoverable
 	// from its tick's triage-decision line).
@@ -128,6 +132,15 @@ func TestQuestRelaunchDedupsAlreadyDeliveredItem(t *testing.T) {
 	}
 	if launched == nil || launched.Disposition != "completed" || launched.ChildRunID == "" {
 		t.Fatalf("new item must be completed via a launched child run, got %+v", launched)
+	}
+	if !deduped.Deduped {
+		t.Errorf("deduped item must carry Deduped=true, got %+v", deduped)
+	}
+	if q.ItemsDeduped != 1 {
+		t.Errorf("q.ItemsDeduped = %d, want 1", q.ItemsDeduped)
+	}
+	if q.ItemsCompleted != 2 {
+		t.Errorf("q.ItemsCompleted = %d, want 2 (pre-seeded t0-w0 + launched new item)", q.ItemsCompleted)
 	}
 
 	// One terminal PR opened for the shared branch (the new item's commit landed there).

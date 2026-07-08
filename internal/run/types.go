@@ -397,6 +397,8 @@ type WorkItem struct {
 	Decision       string `json:"decision,omitempty"`       // triage's call (do now | skip | block)
 	ChildRunID     string `json:"childRunId,omitempty"`     // the run launched for this item, when one was
 	Disposition    string `json:"disposition,omitempty"`    // final outcome (completed | skipped | blocked)
+	// closed by objective-met dedup (already delivered on the shared branch) — not a freshly executed completion
+	Deduped bool `json:"deduped,omitempty"`
 }
 
 // Tick is one iteration of the quest loop: a discovery pass, the triage decisions
@@ -475,6 +477,7 @@ type Quest struct {
 	// Rollup fields for the dashboard, recomputed from WorkItems/Ticks by the loop.
 	PRsOpened      int `json:"prsOpened"`
 	ItemsCompleted int `json:"itemsCompleted"`
+	ItemsDeduped   int `json:"itemsDeduped,omitempty"`
 	ItemsSkipped   int `json:"itemsSkipped"`
 	ItemsBlocked   int `json:"itemsBlocked"`
 	// Agents are the quest's OWN coordinating agents (the quest-lead that runs the

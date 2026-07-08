@@ -671,7 +671,7 @@ func repointDeps(deps []string, replacedBy map[string]string, self string) []str
 // the campaign has something to review/deliver). A "surfaced-only" no-op or a quest
 // that blocked without completing an item does not count.
 func questDelivered(q run.Quest) bool {
-	return q.ItemsCompleted > 0
+	return q.ItemsCompleted > 0 || q.ItemsDeduped > 0
 }
 
 // sanitizeDeps drops dependency ids that reference no quest in the partition and, if
