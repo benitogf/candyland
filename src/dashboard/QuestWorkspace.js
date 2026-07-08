@@ -25,7 +25,7 @@ import { useSystemStatus } from '../data/system'
 import { stopQuest } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
-import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
+import { PostmortemBlock, IncidentsBlock, EscalationsBlock } from '../components/AuditBlocks'
 import { PauseBanner } from '../components/StatusBits'
 import { CopyPrLink } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
@@ -160,6 +160,7 @@ const QuestWorkspace = ({ id, onClose }) => {
                     )}
 
                     {quest.status === 'blocked' && <PostmortemBlock postmortem={quest.postmortem} />}
+                    <IncidentsBlock incidents={quest.incidents} />
                     <EscalationsBlock escalations={quest.escalations} />
 
                     {tab === 'objective' && (
