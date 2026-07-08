@@ -9,18 +9,25 @@ import (
 // models opus-4-8, thinking low for coder+fix and high for every coordinating role.
 func TestAgentConfigDefaults(t *testing.T) {
 	c, _ := newQuestServer(t)
-	cases := map[string]string{
-		RoleCoder: "low", RoleFix: "low",
-		RoleTechLead: "high", RoleReviewer: "high", RoleQuestLead: "high",
-		RoleIntentLead: "high", RoleTechManager: "high", RoleIntentManager: "high", RoleIntentReviewer: "high",
+	type want struct{ model, thinking string }
+	cases := map[string]want{
+		RoleCoder:          {"claude-opus-4-8", "low"},
+		RoleFix:            {"claude-opus-4-8", "low"},
+		RoleTechLead:       {"claude-opus-4-8", "high"},
+		RoleQuestLead:      {"claude-opus-4-8", "high"},
+		RoleIntentLead:     {"claude-opus-4-8", "high"},
+		RoleTechManager:    {"claude-opus-4-8", "high"},
+		RoleReviewer:       {"claude-fable-5", "high"},
+		RoleIntentReviewer: {"claude-fable-5", "high"},
+		RoleIntentManager:  {"claude-fable-5", "high"},
 	}
-	for role, wantThinking := range cases {
+	for role, w := range cases {
 		model, thinking := c.agentConfig(role)
-		if model != "claude-opus-4-8" {
-			t.Errorf("role %q default model = %q, want claude-opus-4-8", role, model)
+		if model != w.model {
+			t.Errorf("role %q default model = %q, want %q", role, model, w.model)
 		}
-		if thinking != wantThinking {
-			t.Errorf("role %q default thinking = %q, want %q", role, thinking, wantThinking)
+		if thinking != w.thinking {
+			t.Errorf("role %q default thinking = %q, want %q", role, thinking, w.thinking)
 		}
 	}
 }
@@ -42,8 +49,8 @@ func TestAgentConfigFreshPerCall(t *testing.T) {
 		t.Errorf("post-change coder = %q/%q, want claude-sonnet-5/high", m, th)
 	}
 	// An untouched level still resolves to its default.
-	if m, th := c.agentConfig(RoleReviewer); m != "claude-opus-4-8" || th != "high" {
-		t.Errorf("untouched reviewer = %q/%q, want default opus/high", m, th)
+	if m, th := c.agentConfig(RoleReviewer); m != "claude-fable-5" || th != "high" {
+		t.Errorf("untouched reviewer = %q/%q, want default fable/high", m, th)
 	}
 }
 

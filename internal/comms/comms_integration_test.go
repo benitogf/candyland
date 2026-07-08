@@ -113,6 +113,31 @@ func TestFormatBriefRendersFindings(t *testing.T) {
 	}
 }
 
+// A brief carries the driving ask in Intent. formatBrief must surface it under a
+// clear `intent (the driving ask` label so the coder builds to the ask — and must
+// omit the label entirely when no Intent is set (empty fields stay hidden).
+func TestFormatBriefRendersIntent(t *testing.T) {
+	const label = "intent (the driving ask"
+	with := bus.Brief{
+		Role:   "backend",
+		Repo:   "/repo",
+		Title:  "export report",
+		Intent: "ship the export as CSV",
+	}
+	rendered := formatBrief(with)
+	if !strings.Contains(rendered, label) {
+		t.Errorf("formatBrief must render an intent label, got %q", rendered)
+	}
+	if !strings.Contains(rendered, with.Intent) {
+		t.Errorf("formatBrief dropped the intent text, got %q", rendered)
+	}
+
+	without := formatBrief(bus.Brief{Role: "backend", Repo: "/repo", Title: "no intent"})
+	if strings.Contains(without, label) {
+		t.Errorf("formatBrief must omit the intent label when Intent is empty, got %q", without)
+	}
+}
+
 // CPB1 + CPB2 (inbox): A sends to B; B's inbox returns it over io.Remote*, and a
 // second read is empty (cursor advanced — server-side seq>cursor scoping).
 func TestCommsSendInboxRoundTrip(t *testing.T) {

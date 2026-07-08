@@ -33,8 +33,30 @@ const (
 // settingsKey is the single ooo object holding the whole Settings.
 const settingsKey = "settings"
 
-// defaultModel is the model every level defaults to (contract §9 Defaults).
+// defaultModel is the fallback model for spawns with no explicit selection
+// (resilience.go claudeArgs) and the default for every building/coordinating
+// role.
 const defaultModel = "claude-opus-4-8"
+
+// reviewDefaultModel is the default for the independent reviewing roles.
+// Evidence (2026-07-08, r117–r120): opus-high in-loop reviewers returned 1–2
+// round REVIEW_CLEANs on work that fable reviews then found materially
+// defective — independent review defaults to the model that catches, not the
+// builder's own.
+const reviewDefaultModel = "claude-fable-5"
+
+// defaultModelFor is the per-role default model (§9 Defaults): reviewer,
+// intent-reviewer, and intent-manager (the gate-1 judge) review independently
+// and default to fable-5; every building/coordinating role stays on opus-4-8.
+// The tech manager's gate-2 done-verdict is a self-assessment cross-checked by
+// the intent reviewer, so it keeps the builder default.
+func defaultModelFor(role string) string {
+	switch role {
+	case RoleReviewer, RoleIntentReviewer, RoleIntentManager:
+		return reviewDefaultModel
+	}
+	return defaultModel
+}
 
 // LevelConfig is one role's model + thinking (effort) selection.
 type LevelConfig struct {
@@ -77,7 +99,7 @@ func defaultThinking(role string) string {
 // low for coder+fix, high otherwise). An unknown role also defaults to high — the
 // safe (higher-effort) side for a coordinating identity.
 func defaultLevel(role string) LevelConfig {
-	return LevelConfig{Model: defaultModel, Thinking: defaultThinking(role)}
+	return LevelConfig{Model: defaultModelFor(role), Thinking: defaultThinking(role)}
 }
 
 // DefaultSettings is the full default table (contract §9). Reset-to-defaults

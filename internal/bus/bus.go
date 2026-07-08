@@ -124,6 +124,7 @@ type Brief struct {
 	Feedback string   `json:"feedback,omitempty"` // prior-attempt failure to avoid (re-plan / retry)
 	Attempt  int      `json:"attempt,omitempty"`  // 1-based attempt number
 	Findings []string `json:"findings,omitempty"` // reviewer-cited blockers a fix pass must address (review phase)
+	Intent   string   `json:"intent,omitempty"`   // the run's driving intent — what was asked for (reviewer verifies the diff against it; fix acts in service of it)
 }
 
 // Bus carries the bus state: who the single-writer orchestrator is, the

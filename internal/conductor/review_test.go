@@ -1,6 +1,7 @@
 package conductor
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -176,7 +177,7 @@ func TestFixReviewFindingsFailsFastOnEmptyFindings(t *testing.T) {
 	c, _ := deliveryConductor(t, reviewThenCleanClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	// Call the fix pass directly with empty blockers — it must abort fast.
-	if c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1, "", "") {
+	if c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1, "", "", "") {
 		t.Fatal("a fix pass with no findings must return false (fail fast), not true")
 	}
 	r, _ := c.Get(id)
@@ -264,5 +265,77 @@ func TestReviewerSlimBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(reviewBootstrap, "kb_get") {
 		t.Error("the full (cold/fallback) bootstrap must keep the kb_get doctrine load")
+	}
+}
+
+// The reviewer judges intent fidelity, so reviewUntilClean threads the run's
+// driving intent (OriginalIntent + the partitioned task titles) into BOTH the
+// reviewer's brief and, when a fix round runs, the fix pass's brief. The stub
+// captures each brief it is spawned with (via brief_get over the bus) to a file so
+// the test can assert the intent text and a task title rode along.
+const reviewCapturesIntentClaude = `#!/usr/bin/env bash
+prompt="$2"
+brief=$(curl -s "http://$CANDYLAND_BUS_ADDR/brief/$CANDYLAND_AGENT_ID" 2>/dev/null)
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  printf '%s' "$brief" > "$CANDYLAND_REVIEW_BRIEF"
+  n=$(cat "$CANDYLAND_REVIEW_COUNT" 2>/dev/null || echo 0)
+  n=$((n+1)); echo "$n" > "$CANDYLAND_REVIEW_COUNT"
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  if [[ "$n" -le 1 ]]; then
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_FINDINGS {\"blockers\":[{\"file\":\"a.txt\",\"line\":1,\"issue\":\"needs a guard\"}]}"}]}}'
+  else
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  fi
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"review findings"* ]]; then
+  printf '%s' "$brief" > "$CANDYLAND_FIX_BRIEF"
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file":"a.txt"}}]}}'
+  printf 'fixed per review\n' >> "a.txt"
+  echo '{"type":"result","subtype":"success","result":"fixed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"wire the widget\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+else
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
+  echo "content" > "a.txt"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+fi
+`
+
+func TestReviewBriefCarriesDrivingIntent(t *testing.T) {
+	c, _ := deliveryConductor(t, reviewCapturesIntentClaude)
+	dir := t.TempDir()
+	t.Setenv("CANDYLAND_REVIEW_COUNT", dir+"/n")
+	t.Setenv("CANDYLAND_REVIEW_BRIEF", dir+"/review-brief")
+	t.Setenv("CANDYLAND_FIX_BRIEF", dir+"/fix-brief")
+	t.Setenv("CANDYLAND_REVIEW_ROUNDS", "3")
+
+	const intentMarker = "INTENTMARKER-ship-the-lever"
+	id := c.Create(run.Spec{Prompt: intentMarker})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" || r.Error != "" {
+		t.Fatalf("run did not finish clean: status=%q error=%q", r.Status, r.Error)
+	}
+
+	reviewBrief, err := os.ReadFile(dir + "/review-brief")
+	if err != nil {
+		t.Fatalf("reviewer brief was not captured: %v", err)
+	}
+	if !strings.Contains(string(reviewBrief), intentMarker) {
+		t.Errorf("the reviewer brief must carry the run's driving intent %q:\n%s", intentMarker, reviewBrief)
+	}
+	// The partitioned task title rides along as "what the loop set out to build".
+	if !strings.Contains(string(reviewBrief), "wire the widget") {
+		t.Errorf("the reviewer brief must carry the partitioned task titles:\n%s", reviewBrief)
+	}
+
+	fixBrief, err := os.ReadFile(dir + "/fix-brief")
+	if err != nil {
+		t.Fatalf("fix-pass brief was not captured (a fix round must have run): %v", err)
+	}
+	if !strings.Contains(string(fixBrief), intentMarker) {
+		t.Errorf("the fix-pass brief must also carry the driving intent %q:\n%s", intentMarker, fixBrief)
 	}
 }

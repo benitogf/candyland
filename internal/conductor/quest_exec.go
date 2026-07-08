@@ -35,8 +35,10 @@ func maxQuestTicks() int { return envInt("CANDYLAND_QUEST_MAX_TICKS", 20) }
 // maxItemAttempts bounds how many times the loop will launch a child run for the
 // SAME work-item title before giving up on it (so a quest can't thrash one blocked
 // item forever — the per-item analogue of maxReplans). Tunable via
-// CANDYLAND_QUEST_ITEM_ATTEMPTS.
-func maxItemAttempts() int { return envInt("CANDYLAND_QUEST_ITEM_ATTEMPTS", 2) }
+// CANDYLAND_QUEST_ITEM_ATTEMPTS. The ceiling exists to stop a malfunctioning loop
+// (thrash, non-convergence); it does not bound legitimate convergence — a rigorous
+// review legitimately consumes several rounds.
+func maxItemAttempts() int { return envInt("CANDYLAND_QUEST_ITEM_ATTEMPTS", 3) }
 
 // questDriver tracks a quest's running tick-loop goroutine so pause/stop can halt
 // it. It mirrors how a run's runtime holds the executor's control channel: a quest
