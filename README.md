@@ -73,6 +73,14 @@ filters.
   repo** at the delivery gate. A `missed` commitment feeds a bounded
   **remediation quest**; a `partial` annotates without blocking.
 
+A relaunch does not repeat itself. A campaign resumed after a pause or block
+reuses its already-settled intent brief and gate-1-approved partition instead of
+re-running the managers, and reuses its existing child quests (reusing a delivered
+one, resuming a paused one) rather than minting duplicates. Within a quest tick,
+an item a prior drive — or, for a campaign child, any sibling — already delivered
+on the shared branch is deduped from the durable ledger and closed without a new
+run, provided that branch still exists.
+
 Launched from the detritus session over REST:
 
 ```bash

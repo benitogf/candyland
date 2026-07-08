@@ -1000,6 +1000,8 @@ func openBranchPRs(ctx context.Context, folders []string, branch, title, body st
 		base := prBase(ctx, repo) // the repo's DEFAULT branch, never the checkout (q4 fix)
 		if err := pushBranch(ctx, repo, branch); err != nil {
 			pr.Err = "push failed: " + err.Error()
+		} else if url, ok := existingOpenPR(ctx, repo, branch); ok {
+			pr.URL = url // idempotent re-finish: an open PR for this branch already exists — reuse it
 		} else if url, err := openPR(ctx, repo, base, branch, title, body); err != nil {
 			pr.Err = "PR failed: " + err.Error()
 		} else {

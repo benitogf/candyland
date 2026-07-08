@@ -408,3 +408,21 @@ func openPR(ctx context.Context, repo, base, head, title, body string) (string, 
 	}
 	return url, nil
 }
+
+// existingOpenPR returns the URL of an already-open PR whose head is `head`, if
+// any — re-finishing a quest/campaign delivery must reuse it, never error on a
+// duplicate `gh pr create`. A gh/list error or no match returns ("", false).
+func existingOpenPR(ctx context.Context, repo, head string) (string, bool) {
+	out, err := runCmd(ctx, repo, ghBin(), "pr", "list", "--head", head, "--state", "open", "--json", "url")
+	if err != nil {
+		return "", false
+	}
+	var prs []struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal([]byte(out), &prs) != nil || len(prs) == 0 {
+		return "", false
+	}
+	url := strings.TrimSpace(prs[0].URL)
+	return url, url != ""
+}

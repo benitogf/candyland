@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -299,27 +300,44 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 	}
 
 	// ── Stage 1+2: INTENT BRIEF + BRIEF GATE (bounded route-back). ──
-	brief, ok := c.briefUntilGated(ctx, id, cam, folders)
-	if ctx.Err() != nil {
-		return // paused/stopped mid-brief — not a failure
-	}
-	if !ok {
-		return // blocked (gate failed past the bound, or the lead produced no brief) — recorded
+	// Relaunch reuse: a prior drive that passed the brief gate persisted the settled
+	// IntentBrief — reuse it instead of re-spawning the intent lead.
+	var brief run.IntentBrief
+	if cam.BriefGate.Passed && cam.BriefGate.DecidedAt != "" {
+		brief = cam.IntentBrief
+		c.appendCampaignNote(id, "relaunch: reusing the settled intent brief (gate passed) — not re-running the intent lead")
+	} else {
+		var ok bool
+		brief, ok = c.briefUntilGated(ctx, id, cam, folders)
+		if ctx.Err() != nil {
+			return // paused/stopped mid-brief — not a failure
+		}
+		if !ok {
+			return // blocked (gate failed past the bound, or the lead produced no brief) — recorded
+		}
 	}
 
-	// ── Stage 3+4: DECOMPOSE into child QUESTS (the tech manager) + GATE 1 (the intent
-	//    manager reviews the partition against the brief), a bounded convergence loop. ──
-	quests, ok := c.partitionUntilGated(ctx, id, cam, brief, folders)
-	if ctx.Err() != nil {
-		return // paused/stopped mid-gate — not a failure
-	}
-	if !ok {
-		return // blocked (no partition, or gate 1 never converged) — recorded
+	// ── Stage 3+4: DECOMPOSE into child QUESTS + GATE 1. ──
+	// Relaunch reuse: a prior drive that passed gate 1 persisted the approved
+	// partition — reuse it instead of re-spawning the tech manager.
+	var quests []questPartitionItem
+	if cam.PlanGate.Passed && cam.PlanGate.DecidedAt != "" && len(cam.Partition) > 0 {
+		quests = cam.Partition
+		c.appendCampaignNote(id, "relaunch: reusing the settled quest partition (gate 1 passed) — not re-running the tech manager")
+	} else {
+		var ok bool
+		quests, ok = c.partitionUntilGated(ctx, id, cam, brief, folders)
+		if ctx.Err() != nil {
+			return // paused/stopped mid-gate — not a failure
+		}
+		if !ok {
+			return // blocked (no partition, or gate 1 never converged) — recorded
+		}
 	}
 
 	// ── Stage 5: EXECUTE the child quests concurrently on the shared campaign branch
 	//    (deps sequence dependents; independent quests run in parallel). ──
-	if !c.executeChildQuests(ctx, id, cam, folders, quests) {
+	if !c.executeChildQuests(ctx, id, cam, folders, quests, true) {
 		return // stopped, or every quest failed and there is nothing to review — recorded
 	}
 	if ctx.Err() != nil {
@@ -387,7 +405,7 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 			return
 		}
 		c.appendCampaignNote(id, fmt.Sprintf("remediation round %d/%d: the tech manager spawns %d quest(s) to close %s", round+1, rounds, len(remediation), gaps))
-		if !c.executeChildQuests(ctx, id, cam, folders, remediation) {
+		if !c.executeChildQuests(ctx, id, cam, folders, remediation, false) {
 			// executeChildQuests blocked with a generic "no quest delivered work"
 			// reason (or ctx was cancelled). When it's the former, replace it with the
 			// actionable gap context so the operator sees WHICH commitments are stuck.
@@ -490,7 +508,8 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 // token cap, once exceeded, skips the remaining quests (deliver-partial, never a
 // pre-PR pause that strands with no PR). It returns false only when stopped, or when
 // nothing landed at all (blocked).
-func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem) bool {
+func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem, reuse bool) bool {
+	quests = dedupOverlappingQuests(c, id, folders, quests)
 	quests = sanitizeDeps(c, id, quests)
 	tokenCap := effectiveTokenCap(cam)
 	// One done-channel per quest id, closed when that quest reaches terminal — a
@@ -548,14 +567,12 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 			}
 			defer func() { <-sem }()
 
-			questID := c.launchCampaignChildQuest(ctx, id, cam, folders, q)
-			if cq, ok := c.GetQuest(questID); ok {
-				c.addCampaignTokens(id, cq.TokensUsed)
-				if questDelivered(cq) {
-					mu.Lock()
-					completed++
-					mu.Unlock()
-				}
+			questID, tokensThisDrive := c.launchCampaignChildQuest(ctx, id, cam, folders, q, reuse)
+			c.addCampaignTokens(id, tokensThisDrive)
+			if cq, ok := c.GetQuest(questID); ok && questDelivered(cq) {
+				mu.Lock()
+				completed++
+				mu.Unlock()
 			}
 		}(q)
 	}
@@ -570,11 +587,109 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 	return true
 }
 
+// dedupOverlappingQuests collapses cross-quest partition overlap: two quests that
+// pursue the SAME objective over OVERLAPPING folders would each spawn runs against the
+// same scope on the shared campaign branch — double work and colliding edits. The tech
+// manager can emit such a partition (e.g. two attempts route back and both survive, or
+// distinct ids describe the same slice). This keeps the FIRST quest of each overlapping
+// group and drops the rest, repointing any dependency on a dropped quest to the kept
+// one so the DAG stays intact. Exact-id duplicates are a strict subset (same objective,
+// same folders) and are caught here too.
+func dedupOverlappingQuests(c *Conductor, id string, campaignFolders []string, quests []questPartitionItem) []questPartitionItem {
+	kept := make([]questPartitionItem, 0, len(quests))
+	// dropped id -> the kept id that subsumes it, so deps can be repointed.
+	replacedBy := map[string]string{}
+	for _, q := range quests {
+		owner, overlaps := firstOverlapping(kept, q, campaignFolders)
+		if overlaps {
+			replacedBy[q.ID] = owner
+			if c != nil && id != "" {
+				c.appendCampaignNote(id, fmt.Sprintf("quest %q overlaps quest %q (same objective, shared folders) — skipping the duplicate so the campaign spawns one run for that scope", q.ID, owner))
+			}
+			continue
+		}
+		kept = append(kept, q)
+	}
+	if len(replacedBy) == 0 {
+		return kept
+	}
+	for i := range kept {
+		kept[i].Deps = repointDeps(kept[i].Deps, replacedBy, kept[i].ID)
+	}
+	return kept
+}
+
+// firstOverlapping returns the id of the first kept quest that q overlaps, if any. Two
+// quests overlap when they share the same normalized objective AND their RESOLVED folder
+// scopes intersect. Scopes are resolved token→campaign-folder via resolveQuestFolders
+// (full-path or basename match, empty/unmatched tokens mapping to all campaign folders)
+// before intersecting, so the dedup sees the same folder sets the runtime scopes each
+// quest onto rather than the tech manager's raw tokens.
+func firstOverlapping(kept []questPartitionItem, q questPartitionItem, campaignFolders []string) (string, bool) {
+	obj := normalizeObjective(q.Objective)
+	for _, k := range kept {
+		if normalizeObjective(k.Objective) != obj {
+			continue
+		}
+		if foldersIntersect(resolveQuestFolders(k.Folders, campaignFolders), resolveQuestFolders(q.Folders, campaignFolders)) {
+			return k.ID, true
+		}
+	}
+	return "", false
+}
+
+// normalizeObjective lowercases and collapses whitespace so trivially-different phrasings
+// of the same objective compare equal.
+func normalizeObjective(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+// foldersIntersect reports whether two folder scopes touch. An empty scope means "the
+// whole campaign", so it intersects any scope (including another empty one).
+func foldersIntersect(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	set := make(map[string]bool, len(a))
+	for _, f := range a {
+		set[normalizeFolder(f)] = true
+	}
+	for _, f := range b {
+		if set[normalizeFolder(f)] {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFolder(f string) string {
+	return strings.TrimRight(strings.TrimSpace(f), "/")
+}
+
+// repointDeps rewrites dependency ids that were dropped by dedup onto the kept quest that
+// subsumed them, dropping a dep that would point at the quest itself.
+func repointDeps(deps []string, replacedBy map[string]string, self string) []string {
+	if len(deps) == 0 {
+		return deps
+	}
+	out := make([]string, 0, len(deps))
+	for _, d := range deps {
+		if owner, ok := replacedBy[d]; ok {
+			d = owner
+		}
+		if d == self {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 // questDelivered reports whether a terminal child quest actually delivered work (so
 // the campaign has something to review/deliver). A "surfaced-only" no-op or a quest
 // that blocked without completing an item does not count.
 func questDelivered(q run.Quest) bool {
-	return q.ItemsCompleted > 0
+	return q.ItemsCompleted > 0 || q.ItemsDeduped > 0
 }
 
 // sanitizeDeps drops dependency ids that reference no quest in the partition and, if
@@ -681,35 +796,131 @@ func campaignTargetsPR(cam run.Campaign) bool {
 // instead hands the child quest the campaign's Deliver + TargetPR so it works the
 // existing PR. Its Title comes from the tech manager's QUESTS emission. It blocks
 // until the quest reaches a terminal (non-running) state or the campaign is stopped.
-func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem) string {
+// launchCampaignChildQuest returns the child quest's id and the tokens it consumed
+// THIS drive (the delta since the drive began) — never the quest's cumulative total.
+// The delta is what the caller attributes to the campaign, so a relaunch that reuses
+// an already-delivered quest (whose tokens the prior drive already counted, and which
+// persist in cam.TokensUsed) does not re-charge them and wrongly trip the token cap.
+func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam run.Campaign, folders []string, item questPartitionItem, reuse bool) (string, int) {
+	existing, found := c.latestChildQuestForItem(id, item.ID)
+	switch reuseChildQuestAction(reuse, existing, found) {
+	case "reuse-terminal":
+		c.appendCampaignNote(id, fmt.Sprintf("relaunch: partition item %q already delivered by quest %q (%s) — reusing it, not re-creating", item.ID, existing.ID, existing.Status))
+		return existing.ID, 0 // delivered on a prior drive — its tokens are already in cam.TokensUsed
+	case "resume":
+		c.appendCampaignNote(id, fmt.Sprintf("relaunch: resuming paused quest %q for partition item %q", existing.ID, item.ID))
+		before := existing.TokensUsed // the prior drive already charged this much
+		c.BeginQuest(existing.ID)
+		c.waitForChildQuestTerminal(ctx, existing.ID)
+		return existing.ID, c.questTokensSince(existing.ID, before)
+	case "wait":
+		before := existing.TokensUsed
+		c.waitForChildQuestTerminal(ctx, existing.ID)
+		return existing.ID, c.questTokensSince(existing.ID, before)
+	}
 	spec := run.QuestSpec{
 		CampaignID: id,
 		Objective:  campaignChildQuestObjective(cam, item),
 		Title:      strings.TrimSpace(item.Title),
 		Folders:    resolveQuestFolders(item.Folders, folders),
 	}
+	// Only a reuse-eligible launch (the persisted partition, Stage 5) is stamped with
+	// its partition-item id so a later relaunch reuses it. A remediation quest
+	// (reuse=false) is NOT a persisted-partition item — its ids (r1, r2, …) repeat
+	// across rounds — so leaving PartitionItemID empty keeps latestChildQuestForItem
+	// from ever reusing a remediation quest against a same-string main partition id.
+	if reuse {
+		spec.PartitionItemID = item.ID
+	}
 	if campaignTargetsPR(cam) {
-		// feedback/review campaign: the child quest works the EXISTING PR (feedback
-		// updates it in place, review reports) instead of the campaign branch.
 		spec.Deliver = cam.Deliver
 		spec.TargetPR = cam.TargetPR
 	}
 	questID := c.CreateQuest(spec)
 	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.QuestIDs = append(cam.QuestIDs, questID) })
 	c.BeginQuest(questID)
+	c.waitForChildQuestTerminal(ctx, questID)
+	return questID, c.questTokensSince(questID, 0) // fresh quest — all its tokens are this drive's
+}
+
+// questTokensSince returns the tokens a child quest has consumed since it held
+// `before` cumulative tokens — the delta a single drive is responsible for. It reads
+// the quest's current TokensUsed fresh (a concurrent "wait" quest may still be
+// growing) and floors at zero so a stale/negative read never subtracts from the cap.
+func (c *Conductor) questTokensSince(questID string, before int) int {
+	q, ok := c.GetQuest(questID)
+	if !ok {
+		return 0
+	}
+	if d := q.TokensUsed - before; d > 0 {
+		return d
+	}
+	return 0
+}
+
+// reuseChildQuestAction decides how a campaign RELAUNCH should treat an existing
+// child quest found for a partition item. reuse is false for remediation rounds
+// (their ids repeat across rounds and must always spawn fresh). Returns:
+//
+//	"reuse-terminal" — done/reviewed/surfaced-only: count its delivery, don't re-create;
+//	"resume"         — paused: BeginQuest it and wait;
+//	"wait"           — running: another driver owns it, just wait;
+//	""               — none found, or blocked/stopped/delivery-failed (spawn a fresh generation),
+//	                   or reuse disabled (remediation).
+func reuseChildQuestAction(reuse bool, existing run.Quest, found bool) string {
+	if !reuse || !found {
+		return ""
+	}
+	switch existing.Status {
+	case "done", "reviewed", "surfaced-only":
+		return "reuse-terminal"
+	case "paused":
+		return "resume"
+	case "running":
+		return "wait"
+	default: // blocked, stopped, delivery-failed, "" → fresh generation
+		return ""
+	}
+}
+
+// latestChildQuestForItem returns the most recent child quest of campaign `id`
+// launched for partition item `itemID` (highest numeric quest id — the latest
+// generation), so relaunch reuses/resumes it rather than duplicating it.
+func (c *Conductor) latestChildQuestForItem(id, itemID string) (run.Quest, bool) {
+	if itemID == "" {
+		return run.Quest{}, false
+	}
+	var latest run.Quest
+	best := -1
+	for _, q := range c.CampaignChildQuests(id) {
+		if q.PartitionItemID != itemID {
+			continue
+		}
+		n, _ := strconv.Atoi(strings.TrimPrefix(q.ID, "q"))
+		if n > best {
+			best, latest = n, q
+		}
+	}
+	return latest, best >= 0
+}
+
+// waitForChildQuestTerminal blocks until the child quest leaves "running" (a
+// terminal/paused/blocked/stopped state) or the campaign ctx is cancelled (which
+// stops the quest). Callers hold the quest id already, so it returns nothing.
+func (c *Conductor) waitForChildQuestTerminal(ctx context.Context, questID string) {
 	for {
 		select {
 		case <-ctx.Done():
 			c.StopQuest(questID, "campaign stopped")
-			return questID
+			return
 		case <-time.After(50 * time.Millisecond):
 		}
 		q, ok := c.GetQuest(questID)
 		if !ok {
-			return questID
+			return
 		}
 		if q.Status != "running" {
-			return questID // terminal (done/surfaced-only/reviewed) or paused/blocked/stopped
+			return
 		}
 	}
 }
@@ -781,7 +992,7 @@ func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.
 			return nil, false // the intent manager produced no verdict (blocked) — recorded
 		}
 		reason := orDefault(strings.TrimSpace(verdict.Reason), fmt.Sprintf("%d quest(s) reviewed against %d commitment(s)", len(quests), len(brief.Commitments)))
-		c.recordPartitionGate(id, verdict.Agree, reason)
+		c.recordPartitionGate(id, verdict.Agree, reason, quests)
 		if verdict.Agree {
 			return quests, true
 		}
@@ -1207,17 +1418,12 @@ func commitmentByID(brief run.IntentBrief) map[string]string {
 
 // --- decomposition: the tech manager's QUESTS partition ---
 
-// questPartitionItem is one child quest the tech manager emits on a `QUESTS <json>`
-// line (the campaign-altitude analogue of the run tech lead's PARTITION task). It is
-// a parsed-from-stdout convention, not a stored type: {id,title,objective,folders,
-// deps}. deps names the ids this quest must wait for (empty → concurrent).
-type questPartitionItem struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Objective string   `json:"objective"`
-	Folders   []string `json:"folders"`
-	Deps      []string `json:"deps"`
-}
+// questPartitionItem is the campaign-altitude analogue of the run tech lead's
+// PARTITION task, parsed from a `QUESTS <json>` line: {id,title,objective,folders,
+// deps}. deps names the ids this quest must wait for (empty → concurrent). It is now
+// the stored run.QuestPartitionItem (persisted on Campaign.Partition for relaunch
+// reuse).
+type questPartitionItem = run.QuestPartitionItem
 
 // partitionVerdict is the intent manager's gate-1 verdict on the QUESTS partition,
 // emitted on a `PARTITION_REVIEW <json>` line: {agree, reason}. agree=false routes
@@ -1357,9 +1563,12 @@ func (c *Conductor) recordBriefGate(id string, passed bool, reason string) {
 // recordPartitionGate records gate 1 (the intent-manager partition-convergence gate)
 // on the campaign's PlanGate field — the agentic gate 1 replaces the former
 // deterministic plan gate but keeps the same durable slot the UI renders.
-func (c *Conductor) recordPartitionGate(id string, passed bool, reason string) bool {
+func (c *Conductor) recordPartitionGate(id string, passed bool, reason string, quests []questPartitionItem) bool {
 	return c.UpdateCampaign(id, func(cam *run.Campaign) {
 		cam.PlanGate = run.GateResult{Passed: passed, Reason: reason, DecidedAt: time.Now().UTC().Format(time.RFC3339)}
+		if passed {
+			cam.Partition = append([]run.QuestPartitionItem(nil), quests...)
+		}
 	})
 }
 

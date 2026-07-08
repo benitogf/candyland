@@ -327,7 +327,22 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	//    executor. Each item gets a durable WorkItem with the real disposition (no
 	//    positional guessing — the disposition is the launch outcome). The skip/block
 	//    triage ledger is carried alongside the launched items. ──
+	// Objective-met dedup on relaunch: a prior drive's completed items live in the
+	// quest's durable ledger. On a shared-branch quest their delivery accumulated on
+	// that branch (no per-finding PR), so re-surfacing one on a later drive would re-do
+	// work already delivered. Close such items from the ledger evidence — no re-spawn
+	// (core/completion objective-met dedup).
+	delivered := deliveredTitles(q)
+	if delivered != nil && !questBranchExists(ctx, q) {
+		delivered = nil // shared branch gone — its delivered ledger no longer on disk; re-execute, don't dedup
+	}
+	if delivered != nil && q.CampaignID != "" {
+		for k := range c.campaignDeliveredTitles(q.CampaignID, q) {
+			delivered[k] = true
+		}
+	}
 	ledger := skipLedger
+	deduped := 0
 	for i, it := range accepted {
 		w := run.WorkItem{
 			ID:             fmt.Sprintf("%s-w%d", tickID, i),
@@ -340,6 +355,14 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 			return false
 		}
 		rec.TriageDecisions = append(rec.TriageDecisions, it.Title+": do now")
+		if delivered[dedupKey(it.Title)] {
+			deduped++
+			w.Disposition = "completed"
+			w.Deduped = true
+			ledger = append(ledger, w)
+			delete(blocked, it.Title) // a prior drive already delivered it — stop tracking
+			continue
+		}
 		if itemAttempts[it.Title] >= maxItemAttempts() {
 			rec.Blockers = append(rec.Blockers, fmt.Sprintf("giving up on %q after %d attempts", it.Title, maxItemAttempts()))
 			w.Disposition = "blocked"
@@ -375,7 +398,25 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		ledger = append(ledger, w)
 		delete(blocked, it.Title) // a prior transient block converged on retry
 	}
-	rec.NextAction = "launched child runs — continue next tick"
+
+	// A dedup-only tick did no new work: everything accepted was already delivered on
+	// the shared branch by a prior drive (nothing launched, nothing blocked). Continuing
+	// would re-surface the same delivered items forever, so finish instead — the quest
+	// has converged (core/completion objective-met dedup).
+	if deduped > 0 && len(rec.LaunchedRunIDs) == 0 && len(rec.Blockers) == 0 {
+		rec.NextAction = fmt.Sprintf("all %d surfaced item(s) already delivered on the shared branch — deduped, nothing to launch — stopping", deduped)
+		c.recordTick(id, rec, tokens, ledger)
+		c.finishQuest(ctx, id)
+		return false
+	}
+	switch {
+	case deduped > 0 && len(rec.LaunchedRunIDs) == 0:
+		rec.NextAction = fmt.Sprintf("nothing new launched (%d deduped, %d blocker(s)) — continue next tick", deduped, len(rec.Blockers))
+	case deduped > 0:
+		rec.NextAction = fmt.Sprintf("launched child runs (%d already-delivered item(s) deduped) — continue next tick", deduped)
+	default:
+		rec.NextAction = "launched child runs — continue next tick"
+	}
 
 	c.recordTick(id, rec, tokens, ledger)
 	return true
@@ -585,7 +626,7 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 	// The terminal per-repo PR open is I/O (git push + gh) — do it OUTSIDE the
 	// UpdateQuest write lock, then persist the result in a single mutation.
 	var prs []run.PR
-	if branch := QuestBranch(q); strings.HasPrefix(branch, "quest/") && q.ItemsCompleted > 0 {
+	if branch := QuestBranch(q); strings.HasPrefix(branch, "quest/") && (q.ItemsCompleted > 0 || q.ItemsDeduped > 0) {
 		prs = openBranchPRs(ctx, q.Folders, branch, questPRTitle(q), questPRBody(q))
 	}
 	// Convergence gate: a quest with unresolved blocked items cannot reach a clean
@@ -601,13 +642,43 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 			return // a concurrent Stop is authoritative
 		}
 		if prs != nil {
-			q.PRs = prs
+			q.PRs = mergeTerminalPRs(q.PRs, prs)
 			recomputeQuestRollups(q) // fold the terminal PRs into PRsOpened
 		}
 		q.Status = questTerminalStatus(q)
 		q.Summary = questTerminalSummary(q)
 		q.LastProgress = time.Now().UTC().Format(time.RFC3339)
 	})
+}
+
+// mergeTerminalPRs overlays freshly-opened terminal PRs onto any already on the
+// quest, but never replaces a recorded successful PR (URL set) with an errored
+// re-attempt for the same repo — an idempotent re-finish that hit a transient gh
+// error must not erase a real PR URL. New successful entries and new repos win.
+func mergeTerminalPRs(existing, fresh []run.PR) []run.PR {
+	byRepo := map[string]run.PR{}
+	order := []string{}
+	for _, p := range existing {
+		if _, seen := byRepo[p.Repo]; !seen {
+			order = append(order, p.Repo)
+		}
+		byRepo[p.Repo] = p
+	}
+	for _, p := range fresh {
+		prev, seen := byRepo[p.Repo]
+		if seen && prev.URL != "" && p.URL == "" {
+			continue // keep the good record; don't overwrite with an errored re-attempt
+		}
+		if !seen {
+			order = append(order, p.Repo)
+		}
+		byRepo[p.Repo] = p
+	}
+	out := make([]run.PR, 0, len(order))
+	for _, repo := range order {
+		out = append(out, byRepo[repo])
+	}
+	return out
 }
 
 // questPRTitle is the title of a converge quest's terminal PR: its display Title,
@@ -643,7 +714,7 @@ func questIsNoOp(q *run.Quest) bool {
 	if q.Deliver == run.DeliverFeedback || q.Deliver == run.DeliverReview {
 		return false
 	}
-	delivered := q.ItemsCompleted > 0 || q.PRsOpened > 0
+	delivered := q.ItemsCompleted > 0 || q.ItemsDeduped > 0 || q.PRsOpened > 0
 	surfaced := q.ItemsSkipped > 0 || len(q.WorkItems) > 0
 	return !delivered && surfaced
 }
@@ -731,17 +802,24 @@ func questTerminalSummary(q *run.Quest) string {
 	if q.ItemsCompleted == 0 && q.PRsOpened == 0 && len(q.WorkItems) == 0 {
 		return "nothing to do: 0 surfaced"
 	}
+	if q.ItemsDeduped > 0 {
+		return fmt.Sprintf("done: %d completed, %d already delivered (deduped), %d PRs", q.ItemsCompleted, q.ItemsDeduped, q.PRsOpened)
+	}
 	return ""
 }
 
 // recomputeQuestRollups derives the dashboard counters from the work-item ledger,
 // the single source of truth (mirroring recompute for runs).
 func recomputeQuestRollups(q *run.Quest) {
-	prs, completed, skipped, blocked := 0, 0, 0, 0
+	prs, completed, skipped, blocked, deduped := 0, 0, 0, 0, 0
 	for _, w := range q.WorkItems {
 		switch w.Disposition {
 		case "completed":
-			completed++
+			if w.Deduped {
+				deduped++
+			} else {
+				completed++
+			}
 		case "skipped":
 			skipped++
 		case "blocked":
@@ -764,6 +842,7 @@ func recomputeQuestRollups(q *run.Quest) {
 	}
 	q.PRsOpened = prs
 	q.ItemsCompleted = completed
+	q.ItemsDeduped = deduped
 	q.ItemsSkipped = skipped
 	q.ItemsBlocked = blocked
 }
@@ -831,6 +910,85 @@ func acceptedItems(items []questWorkItem) []questWorkItem {
 		out = append(out, it)
 	}
 	return out
+}
+
+// dedupKey normalizes a work-item title for objective-met dedup matching (case-
+// and surrounding-whitespace-insensitive), so a re-surfaced item matches its prior
+// completed ledger entry regardless of incidental casing/spacing differences.
+func dedupKey(title string) string {
+	return strings.ToLower(strings.TrimSpace(title))
+}
+
+// deliveredTitles is the set of work-item titles the quest has ALREADY completed,
+// recovered from its durable ledger — the evidence a relaunch uses to skip work a
+// prior drive delivered on the shared branch (core/completion objective-met dedup).
+// It is empty for a quest with no shared branch (a per-finding/PR quest opens a PR
+// per finding and guards re-surfacing via dropOwnArtifacts, so ledger dedup does not
+// apply), keyed by dedupKey so matching is stable across casing/spacing.
+func deliveredTitles(q run.Quest) map[string]bool {
+	if QuestBranch(q) == "" {
+		return nil // no shared branch — nothing accumulates across drives to dedup against
+	}
+	ticks := make(map[string]run.Tick, len(q.Ticks))
+	for _, t := range q.Ticks {
+		ticks[t.ID] = t
+	}
+	done := map[string]bool{}
+	for _, w := range q.WorkItems {
+		if w.Disposition != "completed" {
+			continue
+		}
+		title, derived := workItemTitleDerived(w, ticks[w.SourceTick])
+		if !derived {
+			continue
+		}
+		if k := dedupKey(title); k != "" {
+			done[k] = true
+		}
+	}
+	return done
+}
+
+// campaignDeliveredTitles unions deliveredTitles across the child quests of the
+// campaign whose folder scope OVERLAPS forQuest's, so forQuest's tick dedups work a
+// sibling — or a prior generation of itself — already delivered onto the shared
+// campaign branch within the SAME scope. This is the cross-quest half of
+// objective-met dedup (the 2026-07-07 incident: one objective re-executed by runs
+// from quests that did not own it).
+//
+// The folder-scope filter is load-bearing: the dedup key is title-only, so without
+// it two genuinely distinct items in a multi-repo campaign that share a generic
+// title (e.g. "update dependencies") — one delivered in repo A, one still to do in
+// repo B — would collide and the second be skipped as already-done. Restricting the
+// union to siblings whose scope intersects forQuest's keeps a cross-repo title
+// collision from silently dropping real work; the failure direction of the filter
+// is to under-dedup (re-execute), never to over-skip.
+func (c *Conductor) campaignDeliveredTitles(campaignID string, forQuest run.Quest) map[string]bool {
+	out := map[string]bool{}
+	for _, q := range c.CampaignChildQuests(campaignID) {
+		if !foldersIntersect(q.Folders, forQuest.Folders) {
+			continue // a different scope — its titles are not evidence forQuest delivered its own
+		}
+		for k := range deliveredTitles(q) {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// questBranchExists reports whether the quest's shared delivery branch still
+// exists in its primary repo. Objective-met dedup trusts the ledger only while
+// the branch holding the delivered commits is actually present — a reset or
+// deleted branch means that work is gone and re-surfacing it must re-execute,
+// not dedup-close.
+func questBranchExists(ctx context.Context, q run.Quest) bool {
+	branch := QuestBranch(q)
+	if branch == "" || len(q.Folders) == 0 {
+		return false
+	}
+	repo := expandHome(q.Folders[0])
+	sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch)
+	return err == nil && strings.TrimSpace(sha) != ""
 }
 
 // resurfaceBlocked returns the transiently-blocked items held for a convergence
@@ -1142,6 +1300,16 @@ func workItemFailure(t run.Tick, title string) string {
 // skippedWorkItems). When the derivation misses (foreign id shape, rewritten
 // history) it falls back to the item's evidence, classification, then id.
 func workItemTitle(w run.WorkItem, t run.Tick) string {
+	title, _ := workItemTitleDerived(w, t)
+	return title
+}
+
+// workItemTitleDerived recovers a work item's title and reports whether the
+// result is a REAL derivation (a matched triage-decision line, or the item's
+// evidence text) rather than a weak fallback (classification or raw id). Dedup
+// evidence must use only real derivations — a generic fallback like the
+// classification "cleanup" would collapse every future item titled "cleanup".
+func workItemTitleDerived(w run.WorkItem, t run.Tick) (string, bool) {
 	kind, idx := workItemIndex(w.ID, w.SourceTick)
 	var suffixes []string
 	switch kind {
@@ -1157,19 +1325,19 @@ func workItemTitle(w run.WorkItem, t run.Tick) string {
 				continue
 			}
 			if seen == idx {
-				return strings.TrimSuffix(d, suf)
+				return strings.TrimSuffix(d, suf), true
 			}
 			seen++
 			break
 		}
 	}
 	if ev := strings.TrimSpace(w.Evidence); ev != "" {
-		return truncate(ev, 80)
+		return truncate(ev, 80), true
 	}
 	if cl := strings.TrimSpace(w.Classification); cl != "" {
-		return cl
+		return cl, false
 	}
-	return w.ID
+	return w.ID, false
 }
 
 // workItemIndex splits a ledger id "<tick>-w<i>" / "<tick>-s<n>" into its kind

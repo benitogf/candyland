@@ -654,7 +654,211 @@ func TestExecuteChildQuestsNoPanicOnDuplicateIDs(t *testing.T) {
 		{ID: "dup", Title: "b"},
 		{ID: "", Title: "c"},
 	}
-	if got := c.executeChildQuests(ctx, id, cam, []string{repo}, quests); got {
+	if got := c.executeChildQuests(ctx, id, cam, []string{repo}, quests, true); got {
 		t.Errorf("executeChildQuests on a cancelled ctx must report false, got true")
+	}
+}
+
+// relaunchReuseClaude drives the DELIVERY stages of a campaign (gate 2 + child
+// pipeline) but wires the two PRE-LAUNCH managers as TRIPWIRES: if the intent
+// lead or tech manager is spawned, it touches a marker file. A relaunch that
+// reuses the persisted brief + partition must never spawn either — the markers
+// must stay absent.
+var relaunchReuseClaude = stubClaude(
+	role("intent lead", `touch "$CANDYLAND_LEAD_TRIP"
+`+emitText(`INTENT_BRIEF {\"restatedGoal\":\"x\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+emitResult("brief", 1)),
+	role("intent manager", emitPartitionReview(true, "covers the commitments")),
+	campIntentReviewer,
+	// campTechDone ("technical sign-off") MUST precede the "tech manager" tripwire:
+	// the gate-2 sign-off prompt contains both substrings, so the sign-off branch has
+	// to win. Only the DECOMPOSE spawn (which lacks "technical sign-off") falls through
+	// to the tripwire — which a reuse-relaunch must never reach.
+	campTechDone,
+	role("tech manager", `touch "$CANDYLAND_TECH_TRIP"
+`+emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export end to end","folders":[],"deps":[]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// A campaign RELAUNCH reuses the settled brief + gate-1-approved partition from
+// durable state instead of re-running the intent lead / tech manager. Seeds a
+// campaign as a prior drive would have left it (both gates passed, partition
+// persisted, resumable status), then BeginCampaign must deliver WITHOUT spawning
+// either pre-launch manager (tripwires stay absent).
+func TestCampaignRelaunchReusesSettledGates(t *testing.T) {
+	c, repo := deliveryConductor(t, relaunchReuseClaude)
+	setCampaignFixtures(t, "satisfied") // both commitments satisfied → clean gate 2 → deliver
+	leadTrip := filepath.Join(t.TempDir(), "intent-lead-spawned")
+	techTrip := filepath.Join(t.TempDir(), "tech-manager-spawned")
+	t.Setenv("CANDYLAND_LEAD_TRIP", leadTrip)
+	t.Setenv("CANDYLAND_TECH_TRIP", techTrip)
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		cam.IntentBrief = run.IntentBrief{
+			RestatedGoal: "add csv export to the reports page",
+			Commitments: []run.Commitment{
+				{ID: "c1", Statement: "export endpoint exists"},
+				{ID: "c2", Statement: "export includes totals"},
+			},
+		}
+		cam.BriefGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.PlanGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.Partition = []run.QuestPartitionItem{{ID: "q1", Title: "csv export", Objective: "implement csv export end to end"}}
+		cam.Status = "blocked" // resumable
+		cam.PauseReason = "seeded relaunch"
+	})
+
+	if !c.BeginCampaign(id) {
+		t.Fatal("BeginCampaign returned false for a resumable campaign")
+	}
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 120*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("relaunched campaign did not deliver: status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	if _, err := os.Stat(leadTrip); err == nil {
+		t.Error("intent lead was re-spawned on relaunch — the settled brief must be reused, not re-derived")
+	}
+	if _, err := os.Stat(techTrip); err == nil {
+		t.Error("tech manager was re-spawned on relaunch — the settled partition must be reused, not re-derived")
+	}
+	if len(cam.QuestIDs) != 1 {
+		t.Fatalf("relaunch must launch the one persisted child quest, got %v", cam.QuestIDs)
+	}
+	child, _ := c.GetQuest(cam.QuestIDs[0])
+	if child.Title != "csv export" {
+		t.Errorf("child quest title must come from the reused partition, got %q", child.Title)
+	}
+	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
+		t.Fatalf("reused-gate campaign must deliver one PR, got %+v", cam.PRs)
+	}
+}
+
+func TestReuseChildQuestAction(t *testing.T) {
+	q := func(status string) run.Quest { return run.Quest{Status: status} }
+	// remediation (reuse=false) never reuses, whatever exists.
+	for _, s := range []string{"done", "paused", "running", "blocked", "stopped", "delivery-failed"} {
+		if got := reuseChildQuestAction(false, q(s), true); got != "" {
+			t.Errorf("reuse=false must never reuse (status %q), got %q", s, got)
+		}
+	}
+	// nothing found → fresh.
+	if got := reuseChildQuestAction(true, run.Quest{}, false); got != "" {
+		t.Errorf("no existing quest → fresh, got %q", got)
+	}
+	cases := map[string]string{
+		"done": "reuse-terminal", "reviewed": "reuse-terminal", "surfaced-only": "reuse-terminal",
+		"paused": "resume", "running": "wait",
+		"blocked": "", "stopped": "", "delivery-failed": "",
+	}
+	for status, want := range cases {
+		if got := reuseChildQuestAction(true, q(status), true); got != want {
+			t.Errorf("reuse=true status %q → %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestLatestChildQuestForItem(t *testing.T) {
+	c, repo := deliveryConductor(t, stubClaude())
+	camID := c.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{repo}})
+	// Two generations for item "a" (later id wins) and one for item "b".
+	first := c.CreateQuest(run.QuestSpec{CampaignID: camID, PartitionItemID: "a", Objective: "a1", Folders: []string{repo}})
+	_ = c.CreateQuest(run.QuestSpec{CampaignID: camID, PartitionItemID: "b", Objective: "b1", Folders: []string{repo}})
+	second := c.CreateQuest(run.QuestSpec{CampaignID: camID, PartitionItemID: "a", Objective: "a2", Folders: []string{repo}})
+
+	got, ok := c.latestChildQuestForItem(camID, "a")
+	if !ok || got.ID != second {
+		t.Fatalf("latest for item a must be the higher-id quest %q, got %q (ok=%v)", second, got.ID, ok)
+	}
+	if got.ID == first {
+		t.Errorf("must not return the older generation %q", first)
+	}
+	if _, ok := c.latestChildQuestForItem(camID, "zzz"); ok {
+		t.Error("unknown item must return found=false")
+	}
+	if _, ok := c.latestChildQuestForItem(camID, ""); ok {
+		t.Error("empty item id must return found=false")
+	}
+}
+
+// Keystone: the 2026-07-07 incident shape end-to-end. A campaign RELAUNCH must not
+// repeat work a prior drive already delivered. Seeds the campaign as a blocked prior
+// drive left it — settled gates, persisted partition, and one child quest already
+// delivered on the campaign branch — then BeginCampaign must deliver while (i) NOT
+// re-spawning the intent lead / tech manager (tripwires stay absent — change A),
+// (ii) NOT minting a second-generation quest for the delivered item (change B), and
+// (iii) launching ZERO new child runs (the delivered work is reused, not re-executed
+// — changes B/C). This is the failure #46 describes: re-paid brief+partition and the
+// same objective re-run across relaunched quests.
+func TestCampaignRelaunchDoesNotRepeatDeliveredWork(t *testing.T) {
+	c, repo := deliveryConductor(t, relaunchReuseClaude)
+	setCampaignFixtures(t, "satisfied")
+	leadTrip := filepath.Join(t.TempDir(), "lead")
+	techTrip := filepath.Join(t.TempDir(), "tech")
+	t.Setenv("CANDYLAND_LEAD_TRIP", leadTrip)
+	t.Setenv("CANDYLAND_TECH_TRIP", techTrip)
+
+	id := c.CreateCampaign(run.CampaignSpec{Input: "add CSV export", Folders: []string{repo}})
+	if _, err := git(context.Background(), repo, "branch", "campaign/"+id); err != nil {
+		t.Fatalf("seed campaign branch: %v", err)
+	}
+	childID := c.CreateQuest(run.QuestSpec{CampaignID: id, PartitionItemID: "q1", Title: "csv export", Objective: "implement csv export end to end", Folders: []string{repo}})
+	c.UpdateQuest(childID, func(q *run.Quest) {
+		q.Status = "done"
+		q.TokensUsed = 100000 // the prior drive's spend on this quest
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		cam.IntentBrief = run.IntentBrief{RestatedGoal: "add csv export", Commitments: []run.Commitment{{ID: "c1", Statement: "endpoint"}, {ID: "c2", Statement: "totals"}}}
+		cam.BriefGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.PlanGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.Partition = []run.QuestPartitionItem{{ID: "q1", Title: "csv export", Objective: "implement csv export end to end"}}
+		cam.Status = "blocked"
+		cam.TokensUsed = 100000 // as the prior drive persisted it (the child's spend, already counted)
+	})
+
+	if !c.BeginCampaign(id) {
+		t.Fatal("BeginCampaign returned false")
+	}
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool { return cam.Status == "done" || cam.Status == "blocked" }, 120*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("relaunch did not deliver: status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	// (i) the pre-launch managers were NOT re-spawned — brief + partition were reused.
+	if _, err := os.Stat(leadTrip); err == nil {
+		t.Error("intent lead was re-spawned on relaunch — the settled brief must be reused")
+	}
+	if _, err := os.Stat(techTrip); err == nil {
+		t.Error("tech manager was re-spawned on relaunch — the settled partition must be reused")
+	}
+	// (ii) no second-generation quest for the already-delivered partition item.
+	n := 0
+	for _, q := range c.CampaignChildQuests(id) {
+		if q.PartitionItemID == "q1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("relaunch must reuse the delivered child quest for item q1, not duplicate it — got %d quests for q1", n)
+	}
+	// (iii) ZERO new child runs — the delivered work was reused, not re-executed.
+	if runs := c.CampaignChildRuns(id); len(runs) != 0 {
+		t.Fatalf("relaunch must launch no new child runs for already-delivered work, got %d", len(runs))
+	}
+	// (iv) the reused quest's 100k tokens are NOT re-charged to the campaign. cam
+	// started this drive at 100k; a relaunch adds only the (tiny) gate-2 spend, never
+	// a second 100k — a double-count would land near 200k and could trip the cap.
+	if cam.TokensUsed >= 150000 {
+		t.Fatalf("relaunch double-counted the reused quest's tokens: cam.TokensUsed=%d (expected ~100k + small gate-2 delta)", cam.TokensUsed)
 	}
 }
