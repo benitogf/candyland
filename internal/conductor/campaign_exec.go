@@ -906,21 +906,21 @@ func (c *Conductor) latestChildQuestForItem(id, itemID string) (run.Quest, bool)
 
 // waitForChildQuestTerminal blocks until the child quest leaves "running" (a
 // terminal/paused/blocked/stopped state) or the campaign ctx is cancelled (which
-// stops the quest), then returns its id.
-func (c *Conductor) waitForChildQuestTerminal(ctx context.Context, questID string) string {
+// stops the quest). Callers hold the quest id already, so it returns nothing.
+func (c *Conductor) waitForChildQuestTerminal(ctx context.Context, questID string) {
 	for {
 		select {
 		case <-ctx.Done():
 			c.StopQuest(questID, "campaign stopped")
-			return questID
+			return
 		case <-time.After(50 * time.Millisecond):
 		}
 		q, ok := c.GetQuest(questID)
 		if !ok {
-			return questID
+			return
 		}
 		if q.Status != "running" {
-			return questID
+			return
 		}
 	}
 }
