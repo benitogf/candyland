@@ -10,7 +10,7 @@
 // renders without a DOM. Run with:  node --test src/components/AgentsPanel.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, symlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -33,6 +33,7 @@ globalThis.document = dom.window.document
 // imports against the project's own dependencies.
 const bundleDir = mkdtempSync(join(tmpdir(), 'agentspanel-test-'))
 symlinkSync(join(root, 'node_modules'), join(bundleDir, 'node_modules'), 'dir')
+process.on('exit', () => rmSync(bundleDir, { recursive: true, force: true }))
 const out = join(bundleDir, 'bundle.mjs')
 const entry = `
 import React from 'react'
