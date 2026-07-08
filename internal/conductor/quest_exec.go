@@ -336,6 +336,11 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	if delivered != nil && !questBranchExists(ctx, q) {
 		delivered = nil // shared branch gone — its delivered ledger no longer on disk; re-execute, don't dedup
 	}
+	if delivered != nil && q.CampaignID != "" {
+		for k := range c.campaignDeliveredTitles(q.CampaignID) {
+			delivered[k] = true
+		}
+	}
 	ledger := skipLedger
 	deduped := 0
 	for i, it := range accepted {
@@ -942,6 +947,21 @@ func deliveredTitles(q run.Quest) map[string]bool {
 		}
 	}
 	return done
+}
+
+// campaignDeliveredTitles unions deliveredTitles across EVERY child quest of the
+// campaign, so any child's tick dedups work ANY sibling — or a prior generation of
+// itself — already delivered onto the shared campaign branch. This is the
+// cross-quest half of objective-met dedup (the 2026-07-07 incident: one objective
+// re-executed by runs from quests that did not own it).
+func (c *Conductor) campaignDeliveredTitles(campaignID string) map[string]bool {
+	out := map[string]bool{}
+	for _, q := range c.CampaignChildQuests(campaignID) {
+		for k := range deliveredTitles(q) {
+			out[k] = true
+		}
+	}
+	return out
 }
 
 // questBranchExists reports whether the quest's shared delivery branch still

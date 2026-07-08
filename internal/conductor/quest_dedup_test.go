@@ -148,3 +148,74 @@ func TestQuestRelaunchDedupsAlreadyDeliveredItem(t *testing.T) {
 		t.Fatalf("converge quest must open one terminal PR, got %+v", q.PRs)
 	}
 }
+
+// campaignDeliveredTitles unions the delivered-title sets of all a campaign's child
+// quests, keyed case/space-insensitively, so a sibling's completed work is visible
+// to every other child's dedup.
+func TestCampaignDeliveredTitlesUnionsSiblings(t *testing.T) {
+	c, repo := deliveryConductor(t, stubClaude())
+	camID := c.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{repo}})
+	seed := func(title string) {
+		qid := c.CreateQuest(run.QuestSpec{CampaignID: camID, Objective: "o", Folders: []string{repo}})
+		c.UpdateQuest(qid, func(q *run.Quest) {
+			q.Ticks = append(q.Ticks, run.Tick{ID: "t0", TriageDecisions: []string{title + ": do now"}})
+			q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t0-w0", SourceTick: "t0", Disposition: "completed"})
+			recomputeQuestRollups(q)
+		})
+	}
+	seed("tidy the lint")
+	seed("wire the endpoint")
+
+	got := c.campaignDeliveredTitles(camID)
+	if !got[dedupKey("tidy the lint")] || !got[dedupKey("wire the endpoint")] {
+		t.Fatalf("union must contain both siblings' delivered titles, got %v", got)
+	}
+}
+
+// A campaign child quest dedups an item a SIBLING already delivered on the shared
+// campaign branch — the cross-quest guard. Sibling A completed "tidy the lint";
+// fresh quest B (same campaign) surfaces "tidy the lint" + a new "fix the docs".
+// B must dedup the sibling-delivered one (no child run) and launch only the new one.
+func TestCampaignChildDedupsSiblingDeliveredItem(t *testing.T) {
+	c, repo := deliveryConductor(t, dedupQuestClaude)
+	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
+	camID := c.CreateCampaign(run.CampaignSpec{Input: "keep tidy", Folders: []string{repo}})
+	if _, err := git(context.Background(), repo, "branch", "campaign/"+camID); err != nil {
+		t.Fatalf("seed campaign branch: %v", err)
+	}
+	// Sibling A already delivered "tidy the lint" onto the campaign branch.
+	sib := c.CreateQuest(run.QuestSpec{CampaignID: camID, Objective: "sibling", Folders: []string{repo}})
+	c.UpdateQuest(sib, func(q *run.Quest) {
+		q.Ticks = append(q.Ticks, run.Tick{ID: "t0", TriageDecisions: []string{"tidy the lint: do now"}})
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t0-w0", SourceTick: "t0", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	// Fresh quest B under the same campaign.
+	b := c.CreateQuest(run.QuestSpec{CampaignID: camID, Objective: "keep it tidy", Folders: []string{repo}})
+	if !c.BeginQuest(b) {
+		t.Fatal("BeginQuest returned false for B")
+	}
+	q := waitForQuest(t, c, b, func(q run.Quest) bool { return q.Status != "running" }, 60*time.Second)
+
+	// B's first drive tick (t1) launched exactly one child — the NEW item — while
+	// "tidy the lint" was deduped from sibling A's delivery (no child run).
+	if len(q.Ticks) == 0 {
+		t.Fatal("B recorded no ticks")
+	}
+	drive := q.Ticks[0]
+	if len(drive.LaunchedRunIDs) != 1 {
+		t.Fatalf("B must launch exactly one child (the new item only); the sibling-delivered item must dedup — got %d: %v", len(drive.LaunchedRunIDs), drive.LaunchedRunIDs)
+	}
+	var deduped *run.WorkItem
+	for i := range q.WorkItems {
+		if q.WorkItems[i].Deduped {
+			deduped = &q.WorkItems[i]
+		}
+	}
+	if deduped == nil || deduped.ChildRunID != "" {
+		t.Fatalf("the sibling-delivered item must be deduped (completed, no child run), got %+v", deduped)
+	}
+	if q.ItemsDeduped != 1 {
+		t.Errorf("B must record exactly one deduped item, got ItemsDeduped=%d", q.ItemsDeduped)
+	}
+}
