@@ -28,7 +28,7 @@ import { useSystemStatus } from '../data/system'
 import { stopCampaign } from '../data/api'
 import { useToast } from '../feedback'
 import ConfirmStopDialog from '../components/ConfirmStopDialog'
-import { PostmortemBlock, EscalationsBlock } from '../components/AuditBlocks'
+import { PostmortemBlock, IncidentsBlock, EscalationsBlock } from '../components/AuditBlocks'
 import { PauseBanner } from '../components/StatusBits'
 import { CopyPrLink } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
@@ -176,6 +176,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                     )}
 
                     {campaign.status === 'blocked' && <PostmortemBlock postmortem={campaign.postmortem} />}
+                    <IncidentsBlock incidents={campaign.incidents} />
                     <EscalationsBlock escalations={campaign.escalations} />
 
                     <Block title="rollup">

@@ -1730,7 +1730,7 @@ const intentLeadBootstrap = "You are the intent lead opening a campaign — the 
 	"Restate the goal, split the scope by domain, derive the CHECKABLE COMMITMENTS (each a single assertion intent review can later judge satisfied/partial/missed), draft the task list, list dependencies, and suggest human review-routing. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_BRIEF ` followed by a JSON object " +
 	`{"restatedGoal":"…","scopeByDomain":["…"],"resolvedQuestions":["…"],"openQuestions":["…"],"draftTasks":["…"],"dependencies":["…"],"roughSizing":"…","reviewRouting":["…"],"commitments":[{"id":"c1","statement":"one checkable assertion"}]}` +
-	". Do not ask questions and do not defer."
+	". Do not ask questions and do not defer." + incidentDoctrine
 
 // intentLeadBootstrapSlim is the fork-path variant of intentLeadBootstrap: a
 // forked template session already carries the role's doctrine, so the kb_get
@@ -1743,7 +1743,7 @@ const intentLeadBootstrapSlim = "You are the intent lead opening a campaign — 
 	"Restate the goal, split the scope by domain, derive the CHECKABLE COMMITMENTS (each a single assertion intent review can later judge satisfied/partial/missed), draft the task list, list dependencies, and suggest human review-routing. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_BRIEF ` followed by a JSON object " +
 	`{"restatedGoal":"…","scopeByDomain":["…"],"resolvedQuestions":["…"],"openQuestions":["…"],"draftTasks":["…"],"dependencies":["…"],"roughSizing":"…","reviewRouting":["…"],"commitments":[{"id":"c1","statement":"one checkable assertion"}]}` +
-	". Do not ask questions and do not defer."
+	". Do not ask questions and do not defer." + incidentDoctrine
 
 // intentLeadBriefPrompt is the per-campaign context the intent lead reads via
 // brief_get: the IMMUTABLE original input it must restate (never rewritten).
@@ -1766,7 +1766,7 @@ const intentReviewerBootstrap = "You are the intent reviewer closing a campaign:
 	"Inspect the delivered work (run the diff command in the brief, read the changed files) and judge EACH commitment: satisfied (fully delivered with evidence), partial (some but not all), or missed (not delivered). Cite concrete evidence for every verdict. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_REVIEW ` followed by JSON " +
 	`{"verdicts":[{"commitmentId":"c1","verdict":"satisfied|partial|missed","evidence":["file:line or fact backing the verdict"]}]}` +
-	". Judge every commitment; do not ask questions and do not defer."
+	". Judge every commitment; do not ask questions and do not defer." + incidentDoctrine
 
 // intentReviewerBootstrapSlim is the fork-path variant of intentReviewerBootstrap:
 // the kb_get loads (and their unavailable-document fallback chain, which only
@@ -1779,7 +1779,7 @@ const intentReviewerBootstrapSlim = "You are the intent reviewer closing a campa
 	"Inspect the delivered work (run the diff command in the brief, read the changed files) and judge EACH commitment: satisfied (fully delivered with evidence), partial (some but not all), or missed (not delivered). Cite concrete evidence for every verdict. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_REVIEW ` followed by JSON " +
 	`{"verdicts":[{"commitmentId":"c1","verdict":"satisfied|partial|missed","evidence":["file:line or fact backing the verdict"]}]}` +
-	". Judge every commitment; do not ask questions and do not defer."
+	". Judge every commitment; do not ask questions and do not defer." + incidentDoctrine
 
 // intentReviewerBriefPrompt is the per-campaign context the reviewer reads via
 // brief_get: the original input, the commitments to judge, and the campaign-branch
@@ -1809,7 +1809,7 @@ const techManagerBootstrap = "You are the tech manager opening a campaign: you o
 	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
 	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
 	`[{"id":"q1","title":"short label","objective":"what this quest delivers","folders":["optional repo subset"],"deps":["ids this quest waits for"]}]` +
-	". The supervisor stamps branch delivery — you only decide the partition. Do not ask questions and do not defer."
+	". The supervisor stamps branch delivery — you only decide the partition. Do not ask questions and do not defer." + incidentDoctrine
 
 // techManagerBootstrapSlim is the fork-path variant of techManagerBootstrap: the
 // kb_get load is dropped — the forked session already carries the doctrine. The
@@ -1821,7 +1821,7 @@ const techManagerBootstrapSlim = "You are the tech manager opening a campaign: y
 	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
 	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
 	`[{"id":"q1","title":"short label","objective":"what this quest delivers","folders":["optional repo subset"],"deps":["ids this quest waits for"]}]` +
-	". The supervisor stamps branch delivery — you only decide the partition. Do not ask questions and do not defer."
+	". The supervisor stamps branch delivery — you only decide the partition. Do not ask questions and do not defer." + incidentDoctrine
 
 // techManagerBriefPrompt is the per-campaign context the tech manager reads via
 // brief_get for the decompose stage: the settled brief to partition into quests.
@@ -1857,7 +1857,7 @@ const partitionReviewBootstrap = "You are the intent manager at gate 1 of a camp
 	"Judge coverage: does every commitment map to at least one quest, is the scope right, are the dependencies sane? " +
 	"Then emit EXACTLY ONE line and stop: `PARTITION_REVIEW ` followed by JSON " +
 	`{"agree":true|false,"reason":"why the partition does or does not cover the brief"}` +
-	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer."
+	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer." + incidentDoctrine
 
 // partitionReviewBootstrapSlim is the fork-path variant of partitionReviewBootstrap:
 // the kb_get load is dropped — the forked session already carries the doctrine.
@@ -1869,7 +1869,7 @@ const partitionReviewBootstrapSlim = "You are the intent manager at gate 1 of a 
 	"Judge coverage: does every commitment map to at least one quest, is the scope right, are the dependencies sane? " +
 	"Then emit EXACTLY ONE line and stop: `PARTITION_REVIEW ` followed by JSON " +
 	`{"agree":true|false,"reason":"why the partition does or does not cover the brief"}` +
-	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer."
+	". agree=false routes back to the tech manager to re-partition. Do not ask questions and do not defer." + incidentDoctrine
 
 // partitionReviewBriefPrompt is the per-campaign context the intent manager reads via
 // brief_get at gate 1: the commitments to cover and the tech manager's proposed quests.
@@ -1900,7 +1900,7 @@ const techDoneBootstrap = "You are the tech manager at gate 2 of a campaign conf
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (integration/definition-of-done). Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
 	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
 	`{"done":true|false,"reason":"integration/review-loop status"}` +
-	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer."
+	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer." + incidentDoctrine
 
 // techDoneBootstrapSlim is the fork-path variant of techDoneBootstrap: the kb_get
 // load is dropped — the forked session already carries the doctrine. The
@@ -1911,7 +1911,7 @@ const techDoneBootstrapSlim = "You are the tech manager at gate 2 of a campaign 
 	"APPLY the detritus doctrine already loaded in this session. Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
 	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
 	`{"done":true|false,"reason":"integration/review-loop status"}` +
-	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer."
+	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer." + incidentDoctrine
 
 // techDoneBriefPrompt is the per-campaign context the tech manager reads via brief_get
 // at gate 2: the goal, the intent review's verdicts, and the campaign-branch diff command.

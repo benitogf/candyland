@@ -74,6 +74,40 @@ export const PostmortemBlock = ({ postmortem }) => {
     )
 }
 
+// The self-acknowledged-incident audit trail: non-terminal incidents an agent
+// voluntarily reported (INCIDENT lines) and kept working past — distinct from a
+// terminal postmortem and from a decision escalation. Rendered unconditionally at
+// each detail site; returns nothing when the record carries no incidents. Field
+// names mirror internal/run/types.go IncidentNote JSON tags exactly.
+const severityColor = (severity) => {
+    if (severity === 'error') return 'error.main'
+    if (severity === 'warn') return 'warning.main'
+    return 'info.main'
+}
+
+export const IncidentsBlock = ({ incidents }) => {
+    const list = incidents || []
+    if (list.length === 0) return null
+    return (
+        <Card sx={{ mb: 2.5 }}>
+            <CardContent>
+                <Typography variant="overline" color="info.main" sx={{ display: 'block', mb: 1 }}>incidents · {list.length}</Typography>
+                {list.map((n, i) => (
+                    <Box key={i} sx={{ py: 1, borderBottom: i < list.length - 1 ? '1px solid' : 'none', borderColor: 'divider' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
+                            {n.severity && <Chip size="small" variant="outlined" label={n.severity} sx={{ height: 20, color: severityColor(n.severity), borderColor: severityColor(n.severity) }} />}
+                            {n.agent && <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>{n.agent}</Typography>}
+                            {n.at && <Typography variant="caption" color="text.secondary">{n.at}</Typography>}
+                        </Box>
+                        {n.summary && <Typography variant="body2">{n.summary}</Typography>}
+                        {n.detail && <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{n.detail}</Typography>}
+                    </Box>
+                ))}
+            </CardContent>
+        </Card>
+    )
+}
+
 // The recorded decision-escalation audit trail. Each entry: from→to, the
 // question, the decider (lowest tier with authority), and the recorded answer.
 export const EscalationsBlock = ({ escalations }) => {

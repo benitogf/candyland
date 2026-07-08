@@ -344,6 +344,12 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 			c.resumeFromLimit(id)
 			continue
 		}
+		// The attempt resolved (not a limit/infra pause): capture any self-acknowledged
+		// incidents this agent reported in its transcript onto the host record. Every
+		// agent — run coders/tech-lead, quest-lead, campaign leads — funnels through
+		// here, so this is the single choke point where a non-terminal self-report is
+		// persisted onto the run/quest/campaign the id belongs to.
+		c.captureIncidents(id, agentID, out.allText)
 		return out
 	}
 }

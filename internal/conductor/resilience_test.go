@@ -375,6 +375,40 @@ func TestBootstrapsCarryRoleContractNotContext(t *testing.T) {
 	}
 }
 
+// TestBootstrapsCarryIncidentDoctrine asserts EVERY agent bootstrap constant
+// carries the shared incident self-report clause — so any agent (run/quest/
+// campaign, full and fork-slim) can self-report a mistake, doctrine violation, or
+// worked-around problem. The map keys name the constant so a failure names the
+// offending bootstrap.
+func TestBootstrapsCarryIncidentDoctrine(t *testing.T) {
+	bootstraps := map[string]string{
+		"techLeadBootstrap":            techLeadBootstrap,
+		"coderBootstrap":               coderBootstrap,
+		"reviewBootstrap":              reviewBootstrap,
+		"reviewBootstrapSlim":          reviewBootstrapSlim,
+		"reviewFixBootstrap":           reviewFixBootstrap,
+		"conflictBootstrap":            conflictBootstrap,
+		"questLeadBootstrap":           questLeadBootstrap,
+		"questLeadForkBootstrap":       questLeadForkBootstrap,
+		"intentLeadBootstrap":          intentLeadBootstrap,
+		"intentLeadBootstrapSlim":      intentLeadBootstrapSlim,
+		"intentReviewerBootstrap":      intentReviewerBootstrap,
+		"intentReviewerBootstrapSlim":  intentReviewerBootstrapSlim,
+		"techManagerBootstrap":         techManagerBootstrap,
+		"techManagerBootstrapSlim":     techManagerBootstrapSlim,
+		"techDoneBootstrap":            techDoneBootstrap,
+		"techDoneBootstrapSlim":        techDoneBootstrapSlim,
+		"partitionReviewBootstrap":     partitionReviewBootstrap,
+		"partitionReviewBootstrapSlim": partitionReviewBootstrapSlim,
+		"decisionBootstrap":            decisionBootstrap,
+	}
+	for name, p := range bootstraps {
+		if !strings.Contains(p, "INCIDENT ") {
+			t.Errorf("%s bootstrap must carry the incident self-report clause (missing \"INCIDENT \")", name)
+		}
+	}
+}
+
 // A coder that defers/asks a question on the first try (base prompt) and only
 // does real work once the prompt has been hardened with the autonomy reminder.
 // Exercises the non-compliance → retry-with-firmer-prompt → success path.
@@ -439,6 +473,65 @@ func TestRetryRecoversNonCompliantAgent(t *testing.T) {
 	// A clean run delivers a real PR.
 	if r.PrURL == "" {
 		t.Error("a completed run must set PrURL")
+	}
+}
+
+// A coder that works around a non-terminal problem self-reports it as an
+// `INCIDENT <json>` line (per incidentDoctrine, appended to every bootstrap) and
+// keeps working green — the incident must NOT block the run. It runs the real
+// delivery flow to completion and lands on the run's Incidents audit trail.
+const incidentReporter = `#!/usr/bin/env bash
+prompt="$2"
+if [[ "$prompt" == *"code reviewer"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"role\":\"Backend\",\"emoji\":\"X\",\"files\":[\"a.txt\"],\"test\":\"a_test\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"partition emitted","usage":{"output_tokens":10}}'
+else
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"INCIDENT {\"summary\":\"worked around a stale lockfile\",\"detail\":\"deleted go.sum and refetched\",\"severity\":\"warn\"}"}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"TEST {\"pass\":1,\"fail\":0}"}]}}'
+  echo "work by $$" > "candyland_$$.txt"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":20}}'
+fi
+`
+
+func TestSelfReportedIncidentLandsOnRunWithoutBlocking(t *testing.T) {
+	c, _ := deliveryConductor(t, incidentReporter)
+	t.Setenv("CANDYLAND_AGENT_ATTEMPTS", "2")
+
+	id := c.Create(run.Spec{Prompt: "add a CSV export"})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 30*time.Second)
+	if r.Status != "done" {
+		t.Fatalf("run did not finish: status=%q error=%q", r.Status, r.Error)
+	}
+	// A self-reported incident is NON-terminal — it must never fail the run.
+	if r.Error != "" {
+		t.Fatalf("a self-reported incident must not block the run: %q", r.Error)
+	}
+	if r.TasksGreen != 1 {
+		t.Errorf("tasksGreen=%d want 1 — the coder still finished green", r.TasksGreen)
+	}
+	if r.PrURL == "" {
+		t.Error("a clean run that self-reported an incident must still open a PR")
+	}
+	// The incident lands on the run's audit trail, stamped with the reporting agent.
+	if len(r.Incidents) != 1 {
+		t.Fatalf("want 1 incident on the run, got %+v", r.Incidents)
+	}
+	n := r.Incidents[0]
+	if n.Summary != "worked around a stale lockfile" {
+		t.Errorf("incident summary wrong: %q", n.Summary)
+	}
+	if n.Agent != "a" {
+		t.Errorf("incident should be stamped with the reporting agent %q, got %q", "a", n.Agent)
+	}
+	if n.Severity != "warn" {
+		t.Errorf("incident severity wrong: %q", n.Severity)
 	}
 }
 

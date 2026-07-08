@@ -32,7 +32,7 @@ const decisionBootstrap = "You are a manager resolving a decision escalated up t
 	"Call the brief_get tool FIRST to read the escalated decision (the question and its context). " +
 	"Decide it yourself using your authority: pick the best option given the context and the flow's scope; do NOT ask a human, do NOT defer, do NOT stop the flow. " +
 	"Then emit EXACTLY ONE line and stop: `DECISION ` followed by JSON " +
-	`{"answer":"the decision, stated so the lower tier can act on it"}` + "."
+	`{"answer":"the decision, stated so the lower tier can act on it"}` + "." + incidentDoctrine
 
 // parseDecision extracts a decider's answer from a `DECISION <json>` line. ok is
 // false when no such line is present. The last line wins.

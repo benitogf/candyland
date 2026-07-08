@@ -247,7 +247,8 @@ const wantColdQuestLeadBootstrap = "You are the quest lead driving one tick of a
 	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `WORKITEMS_NONE` (no safe in-scope work remains this tick) " +
 	"OR `WORKITEMS ` followed by a JSON array " + `[{"title":"…","evidence":"why it's needed","classification":"category","decision":"do|skip|block"}]` +
-	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. Do not ask questions and do not defer."
+	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. Do not ask questions and do not defer." +
+	incidentDoctrine
 
 func TestQuestLeadBootstrapUnchangedBySplit(t *testing.T) {
 	if questLeadBootstrap != wantColdQuestLeadBootstrap {
