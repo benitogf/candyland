@@ -228,6 +228,9 @@ func formatBrief(b bus.Brief) string {
 	if len(b.Deps) > 0 {
 		w("deps", strings.Join(b.Deps, ", "))
 	}
+	if b.Intent != "" {
+		fmt.Fprintf(&sb, "intent (the driving ask — the diff must satisfy it):\n%s\n", b.Intent)
+	}
 	if b.Attempt > 1 {
 		fmt.Fprintf(&sb, "attempt: %d\n", b.Attempt)
 	}
