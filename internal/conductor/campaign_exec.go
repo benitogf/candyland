@@ -491,6 +491,7 @@ func (c *Conductor) emitIntentBrief(ctx context.Context, id string, cam run.Camp
 // pre-PR pause that strands with no PR). It returns false only when stopped, or when
 // nothing landed at all (blocked).
 func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.Campaign, folders []string, quests []questPartitionItem) bool {
+	quests = dedupOverlappingQuests(c, id, quests)
 	quests = sanitizeDeps(c, id, quests)
 	tokenCap := effectiveTokenCap(cam)
 	// One done-channel per quest id, closed when that quest reaches terminal — a
@@ -568,6 +569,102 @@ func (c *Conductor) executeChildQuests(ctx context.Context, id string, cam run.C
 		return false
 	}
 	return true
+}
+
+// dedupOverlappingQuests collapses cross-quest partition overlap: two quests that
+// pursue the SAME objective over OVERLAPPING folders would each spawn runs against the
+// same scope on the shared campaign branch — double work and colliding edits. The tech
+// manager can emit such a partition (e.g. two attempts route back and both survive, or
+// distinct ids describe the same slice). This keeps the FIRST quest of each overlapping
+// group and drops the rest, repointing any dependency on a dropped quest to the kept
+// one so the DAG stays intact. Exact-id duplicates are a strict subset (same objective,
+// same folders) and are caught here too.
+func dedupOverlappingQuests(c *Conductor, id string, quests []questPartitionItem) []questPartitionItem {
+	kept := make([]questPartitionItem, 0, len(quests))
+	// dropped id -> the kept id that subsumes it, so deps can be repointed.
+	replacedBy := map[string]string{}
+	for _, q := range quests {
+		owner, overlaps := firstOverlapping(kept, q)
+		if overlaps {
+			replacedBy[q.ID] = owner
+			if c != nil && id != "" {
+				c.appendCampaignNote(id, fmt.Sprintf("quest %q overlaps quest %q (same objective, shared folders) — skipping the duplicate so the campaign spawns one run for that scope", q.ID, owner))
+			}
+			continue
+		}
+		kept = append(kept, q)
+	}
+	if len(replacedBy) == 0 {
+		return kept
+	}
+	for i := range kept {
+		kept[i].Deps = repointDeps(kept[i].Deps, replacedBy, kept[i].ID)
+	}
+	return kept
+}
+
+// firstOverlapping returns the id of the first kept quest that q overlaps, if any. Two
+// quests overlap when they share the same normalized objective AND their folder scopes
+// intersect (an empty folder list inherits the campaign folders, so it overlaps any
+// same-objective quest).
+func firstOverlapping(kept []questPartitionItem, q questPartitionItem) (string, bool) {
+	obj := normalizeObjective(q.Objective)
+	for _, k := range kept {
+		if normalizeObjective(k.Objective) != obj {
+			continue
+		}
+		if foldersIntersect(k.Folders, q.Folders) {
+			return k.ID, true
+		}
+	}
+	return "", false
+}
+
+// normalizeObjective lowercases and collapses whitespace so trivially-different phrasings
+// of the same objective compare equal.
+func normalizeObjective(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+// foldersIntersect reports whether two folder scopes touch. An empty scope means "the
+// whole campaign", so it intersects any scope (including another empty one).
+func foldersIntersect(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	set := make(map[string]bool, len(a))
+	for _, f := range a {
+		set[normalizeFolder(f)] = true
+	}
+	for _, f := range b {
+		if set[normalizeFolder(f)] {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFolder(f string) string {
+	return strings.TrimRight(strings.TrimSpace(f), "/")
+}
+
+// repointDeps rewrites dependency ids that were dropped by dedup onto the kept quest that
+// subsumed them, dropping a dep that would point at the quest itself.
+func repointDeps(deps []string, replacedBy map[string]string, self string) []string {
+	if len(deps) == 0 {
+		return deps
+	}
+	out := make([]string, 0, len(deps))
+	for _, d := range deps {
+		if owner, ok := replacedBy[d]; ok {
+			d = owner
+		}
+		if d == self {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // questDelivered reports whether a terminal child quest actually delivered work (so
