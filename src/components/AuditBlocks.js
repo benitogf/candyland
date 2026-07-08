@@ -97,6 +97,7 @@ export const IncidentsBlock = ({ incidents }) => {
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
                             {n.severity && <Chip size="small" variant="outlined" label={n.severity} sx={{ height: 20, color: severityColor(n.severity), borderColor: severityColor(n.severity) }} />}
                             {n.agent && <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>{n.agent}</Typography>}
+                            {n.at && <Typography variant="caption" color="text.secondary">{n.at}</Typography>}
                         </Box>
                         {n.summary && <Typography variant="body2">{n.summary}</Typography>}
                         {n.detail && <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{n.detail}</Typography>}
