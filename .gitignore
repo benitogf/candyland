@@ -13,6 +13,9 @@ dist/
 /bazel-*
 MODULE.bazel.lock
 
+# repo-root test bundle scratch dirs (guard against pre-tmpdir leaks)
+.*-test-*/
+
 # loop scratchpads + plan contracts (local only)
 .janitor/
 .smith/
