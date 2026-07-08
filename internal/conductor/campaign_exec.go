@@ -299,22 +299,39 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 	}
 
 	// ── Stage 1+2: INTENT BRIEF + BRIEF GATE (bounded route-back). ──
-	brief, ok := c.briefUntilGated(ctx, id, cam, folders)
-	if ctx.Err() != nil {
-		return // paused/stopped mid-brief — not a failure
-	}
-	if !ok {
-		return // blocked (gate failed past the bound, or the lead produced no brief) — recorded
+	// Relaunch reuse: a prior drive that passed the brief gate persisted the settled
+	// IntentBrief — reuse it instead of re-spawning the intent lead.
+	var brief run.IntentBrief
+	if cam.BriefGate.Passed && cam.BriefGate.DecidedAt != "" {
+		brief = cam.IntentBrief
+		c.appendCampaignNote(id, "relaunch: reusing the settled intent brief (gate passed) — not re-running the intent lead")
+	} else {
+		var ok bool
+		brief, ok = c.briefUntilGated(ctx, id, cam, folders)
+		if ctx.Err() != nil {
+			return // paused/stopped mid-brief — not a failure
+		}
+		if !ok {
+			return // blocked (gate failed past the bound, or the lead produced no brief) — recorded
+		}
 	}
 
-	// ── Stage 3+4: DECOMPOSE into child QUESTS (the tech manager) + GATE 1 (the intent
-	//    manager reviews the partition against the brief), a bounded convergence loop. ──
-	quests, ok := c.partitionUntilGated(ctx, id, cam, brief, folders)
-	if ctx.Err() != nil {
-		return // paused/stopped mid-gate — not a failure
-	}
-	if !ok {
-		return // blocked (no partition, or gate 1 never converged) — recorded
+	// ── Stage 3+4: DECOMPOSE into child QUESTS + GATE 1. ──
+	// Relaunch reuse: a prior drive that passed gate 1 persisted the approved
+	// partition — reuse it instead of re-spawning the tech manager.
+	var quests []questPartitionItem
+	if cam.PlanGate.Passed && cam.PlanGate.DecidedAt != "" && len(cam.Partition) > 0 {
+		quests = cam.Partition
+		c.appendCampaignNote(id, "relaunch: reusing the settled quest partition (gate 1 passed) — not re-running the tech manager")
+	} else {
+		var ok bool
+		quests, ok = c.partitionUntilGated(ctx, id, cam, brief, folders)
+		if ctx.Err() != nil {
+			return // paused/stopped mid-gate — not a failure
+		}
+		if !ok {
+			return // blocked (no partition, or gate 1 never converged) — recorded
+		}
 	}
 
 	// ── Stage 5: EXECUTE the child quests concurrently on the shared campaign branch
@@ -880,7 +897,7 @@ func (c *Conductor) partitionUntilGated(ctx context.Context, id string, cam run.
 			return nil, false // the intent manager produced no verdict (blocked) — recorded
 		}
 		reason := orDefault(strings.TrimSpace(verdict.Reason), fmt.Sprintf("%d quest(s) reviewed against %d commitment(s)", len(quests), len(brief.Commitments)))
-		c.recordPartitionGate(id, verdict.Agree, reason)
+		c.recordPartitionGate(id, verdict.Agree, reason, quests)
 		if verdict.Agree {
 			return quests, true
 		}
@@ -1306,17 +1323,12 @@ func commitmentByID(brief run.IntentBrief) map[string]string {
 
 // --- decomposition: the tech manager's QUESTS partition ---
 
-// questPartitionItem is one child quest the tech manager emits on a `QUESTS <json>`
-// line (the campaign-altitude analogue of the run tech lead's PARTITION task). It is
-// a parsed-from-stdout convention, not a stored type: {id,title,objective,folders,
-// deps}. deps names the ids this quest must wait for (empty → concurrent).
-type questPartitionItem struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Objective string   `json:"objective"`
-	Folders   []string `json:"folders"`
-	Deps      []string `json:"deps"`
-}
+// questPartitionItem is the campaign-altitude analogue of the run tech lead's
+// PARTITION task, parsed from a `QUESTS <json>` line: {id,title,objective,folders,
+// deps}. deps names the ids this quest must wait for (empty → concurrent). It is now
+// the stored run.QuestPartitionItem (persisted on Campaign.Partition for relaunch
+// reuse).
+type questPartitionItem = run.QuestPartitionItem
 
 // partitionVerdict is the intent manager's gate-1 verdict on the QUESTS partition,
 // emitted on a `PARTITION_REVIEW <json>` line: {agree, reason}. agree=false routes
@@ -1456,9 +1468,12 @@ func (c *Conductor) recordBriefGate(id string, passed bool, reason string) {
 // recordPartitionGate records gate 1 (the intent-manager partition-convergence gate)
 // on the campaign's PlanGate field — the agentic gate 1 replaces the former
 // deterministic plan gate but keeps the same durable slot the UI renders.
-func (c *Conductor) recordPartitionGate(id string, passed bool, reason string) bool {
+func (c *Conductor) recordPartitionGate(id string, passed bool, reason string, quests []questPartitionItem) bool {
 	return c.UpdateCampaign(id, func(cam *run.Campaign) {
 		cam.PlanGate = run.GateResult{Passed: passed, Reason: reason, DecidedAt: time.Now().UTC().Format(time.RFC3339)}
+		if passed {
+			cam.Partition = append([]run.QuestPartitionItem(nil), quests...)
+		}
 	})
 }
 

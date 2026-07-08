@@ -658,3 +658,86 @@ func TestExecuteChildQuestsNoPanicOnDuplicateIDs(t *testing.T) {
 		t.Errorf("executeChildQuests on a cancelled ctx must report false, got true")
 	}
 }
+
+// relaunchReuseClaude drives the DELIVERY stages of a campaign (gate 2 + child
+// pipeline) but wires the two PRE-LAUNCH managers as TRIPWIRES: if the intent
+// lead or tech manager is spawned, it touches a marker file. A relaunch that
+// reuses the persisted brief + partition must never spawn either — the markers
+// must stay absent.
+var relaunchReuseClaude = stubClaude(
+	role("intent lead", `touch "$CANDYLAND_LEAD_TRIP"
+`+emitText(`INTENT_BRIEF {\"restatedGoal\":\"x\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+emitResult("brief", 1)),
+	role("intent manager", emitPartitionReview(true, "covers the commitments")),
+	campIntentReviewer,
+	// campTechDone ("technical sign-off") MUST precede the "tech manager" tripwire:
+	// the gate-2 sign-off prompt contains both substrings, so the sign-off branch has
+	// to win. Only the DECOMPOSE spawn (which lacks "technical sign-off") falls through
+	// to the tripwire — which a reuse-relaunch must never reach.
+	campTechDone,
+	role("tech manager", `touch "$CANDYLAND_TECH_TRIP"
+`+emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export end to end","folders":[],"deps":[]}]`)),
+	campQuestLead,
+	roleCleanReviewer,
+	campChildTechLead,
+	campChildCoder,
+)
+
+// A campaign RELAUNCH reuses the settled brief + gate-1-approved partition from
+// durable state instead of re-running the intent lead / tech manager. Seeds a
+// campaign as a prior drive would have left it (both gates passed, partition
+// persisted, resumable status), then BeginCampaign must deliver WITHOUT spawning
+// either pre-launch manager (tripwires stay absent).
+func TestCampaignRelaunchReusesSettledGates(t *testing.T) {
+	c, repo := deliveryConductor(t, relaunchReuseClaude)
+	setCampaignFixtures(t, "satisfied") // both commitments satisfied → clean gate 2 → deliver
+	leadTrip := filepath.Join(t.TempDir(), "intent-lead-spawned")
+	techTrip := filepath.Join(t.TempDir(), "tech-manager-spawned")
+	t.Setenv("CANDYLAND_LEAD_TRIP", leadTrip)
+	t.Setenv("CANDYLAND_TECH_TRIP", techTrip)
+
+	id := c.CreateCampaign(run.CampaignSpec{
+		Input:   "add CSV export to the reports page",
+		Folders: []string{repo},
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		cam.IntentBrief = run.IntentBrief{
+			RestatedGoal: "add csv export to the reports page",
+			Commitments: []run.Commitment{
+				{ID: "c1", Statement: "export endpoint exists"},
+				{ID: "c2", Statement: "export includes totals"},
+			},
+		}
+		cam.BriefGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.PlanGate = run.GateResult{Passed: true, DecidedAt: now}
+		cam.Partition = []run.QuestPartitionItem{{ID: "q1", Title: "csv export", Objective: "implement csv export end to end"}}
+		cam.Status = "blocked" // resumable
+		cam.PauseReason = "seeded relaunch"
+	})
+
+	if !c.BeginCampaign(id) {
+		t.Fatal("BeginCampaign returned false for a resumable campaign")
+	}
+	cam := waitForCampaign(t, c, id, func(cam run.Campaign) bool {
+		return cam.Status == "done" || cam.Status == "blocked"
+	}, 120*time.Second)
+	if cam.Status != "done" {
+		t.Fatalf("relaunched campaign did not deliver: status=%q reason=%q", cam.Status, cam.PauseReason)
+	}
+	if _, err := os.Stat(leadTrip); err == nil {
+		t.Error("intent lead was re-spawned on relaunch — the settled brief must be reused, not re-derived")
+	}
+	if _, err := os.Stat(techTrip); err == nil {
+		t.Error("tech manager was re-spawned on relaunch — the settled partition must be reused, not re-derived")
+	}
+	if len(cam.QuestIDs) != 1 {
+		t.Fatalf("relaunch must launch the one persisted child quest, got %v", cam.QuestIDs)
+	}
+	child, _ := c.GetQuest(cam.QuestIDs[0])
+	if child.Title != "csv export" {
+		t.Errorf("child quest title must come from the reused partition, got %q", child.Title)
+	}
+	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
+		t.Fatalf("reused-gate campaign must deliver one PR, got %+v", cam.PRs)
+	}
+}

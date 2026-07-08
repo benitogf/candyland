@@ -554,6 +554,18 @@ type IntentReview struct {
 	ReviewedAt string              `json:"reviewedAt,omitempty"` // RFC3339 set when the review completes
 }
 
+// QuestPartitionItem is one child quest of the tech manager's settled QUESTS
+// partition. It is parsed from the tech manager's `QUESTS <json>` line and
+// persisted on the campaign (Campaign.Partition) so a relaunch reuses the
+// approved partition instead of re-paying decomposition.
+type QuestPartitionItem struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Objective string   `json:"objective"`
+	Folders   []string `json:"folders"`
+	Deps      []string `json:"deps"`
+}
+
 // CampaignSpec is the launch input for a campaign — the program-level container
 // above quests and runs. Candyland owns the full intent→delivery cycle for a
 // campaign (validation, decomposition into child quests/runs, review, per-repo
@@ -611,6 +623,10 @@ type Campaign struct {
 	// the pre-launch campaign gates; these hold the results.
 	BriefGate GateResult `json:"briefGate"`
 	PlanGate  GateResult `json:"planGate"`
+	// Partition is the gate-1-approved QUESTS partition, stamped when PlanGate
+	// passes. A relaunch reuses it (with the settled IntentBrief) instead of
+	// re-running the intent lead / tech manager. Empty until gate 1 passes.
+	Partition []QuestPartitionItem `json:"partition,omitempty"`
 	// QuestIDs/RunIDs are the campaign's children, linked as they are launched (a
 	// later phase). Children commit onto the campaign branch (campaign/<id> — the same
 	// name in each impacted repo) and open no PR.
