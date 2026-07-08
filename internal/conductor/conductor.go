@@ -786,17 +786,13 @@ func rulingFromAnswer(resolved bool, answer string) string {
 	if !resolved {
 		return "proceed"
 	}
-	a := strings.ToLower(answer)
-	// An explicit "proceed" wins over an incidental "fix" ("proceed — no fix needed").
-	if strings.Contains(a, "proceed") {
-		return "proceed"
-	}
-	// Otherwise route to fix only on a real "fix" TOKEN (word boundary), never a
-	// substring buried in another word.
-	for _, w := range strings.FieldsFunc(a, func(r rune) bool { return !(r >= 'a' && r <= 'z') }) {
-		if w == "fix" {
-			return "fix"
-		}
+	// The decider is instructed to answer a BARE token, so route on the FIRST token
+	// only — free text like "proceed — no fix needed" or "don't proceed — fix it"
+	// defeats substring matching. Anything but a leading "fix" defaults to proceed
+	// (never block delivery on an ambiguous ruling).
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(answer)))
+	if len(fields) > 0 && fields[0] == "fix" {
+		return "fix"
 	}
 	return "proceed"
 }
@@ -871,6 +867,20 @@ func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
 	if len(notes) == 0 {
 		return
 	}
+	// Dedup identical Issues within this single capture — allText re-echoes a result
+	// block, so a conflict line parses twice (the same r121 double-parse the incident
+	// capture also dedups); it must record once, not twice, and not double the
+	// escalation question.
+	seen := make(map[string]bool, len(notes))
+	deduped := notes[:0]
+	for _, n := range notes {
+		if seen[n.Issue] {
+			continue
+		}
+		seen[n.Issue] = true
+		deduped = append(deduped, n)
+	}
+	notes = deduped
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range notes {
 		notes[i].Agent = agentID

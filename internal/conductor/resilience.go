@@ -688,7 +688,7 @@ func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, bas
 		reason = why
 		if attempt >= attempts {
 			// Tech-lead missing PARTITION: one bounded resume-and-re-ask before the
-			// failure path (Task 6), and a truthful limit-vs-clean postmortem reason.
+			// failure path, and a truthful limit-vs-clean postmortem reason.
 			if isTechLead && why == "did not emit a task partition" {
 				var m, th string
 				if len(opts) > 0 {

@@ -467,7 +467,7 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 	tokens = out.tokens
 	parsed, none, ok := parseWorkItems(out.text)
 	if !ok {
-		// One bounded resume-and-re-ask before giving up on a missing verdict (Task 6).
+		// One bounded resume-and-re-ask before giving up on a missing verdict.
 		model, thinking := c.agentConfig(RoleQuestLead)
 		if rep, did := c.repairVerdict(ctx, id, questLeadID, out.sessionID, "WORKITEMS", primary, extra, model, thinking); did {
 			tokens += rep.tokens // the repair spawn's usage still belongs to this tick
@@ -641,7 +641,7 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 	if !ok {
 		return
 	}
-	// Quest DELIVERY GATE (Task 7): before any PR opens (standalone) or the campaign
+	// Quest DELIVERY GATE: before any PR opens (standalone) or the campaign
 	// collects the branch (campaign-owned), hard-review the quest's shared branch with
 	// the same review→fix→re-review primitive the run gate uses. A clean gate proceeds;
 	// a non-convergent citable review blocks; structural findings requeue as pre-
@@ -682,13 +682,13 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 }
 
 // questDeliveryGate runs the quest's delivery gate: a bounded review→fix→re-review
-// of the shared branch (Task 7). Returns true to proceed to delivery; false when the
+// of the shared branch. Returns true to proceed to delivery; false when the
 // gate blocked the quest (recorded) or its structural-remediation could not converge.
 func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 	// A campaign-owned quest shares campaign/<CampaignID> with sibling quests that may
 	// still be committing to it concurrently. Gating (and force-pointing) that shared
 	// branch here would race them and orphan their commits. Campaign gate 2
-	// (campaignGate2Review, Task 8) reviews the converged campaign branch race-free
+	// (campaignGate2Review) reviews the converged campaign branch race-free
 	// after ALL child quests finish, so campaign-owned branch delivery is still gated
 	// by the same review primitive — just at the safe single-writer point. Skip here.
 	if q, ok := c.GetQuest(id); ok && q.CampaignID != "" {
@@ -743,7 +743,7 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 		if !clean && len(structural) == 0 {
 			return false // reviewUntilClean already blocked the quest
 		}
-		// Two-layer intent routing (Task 5): any root-intent contradiction the reviewer
+		// Two-layer intent routing: any root-intent contradiction the reviewer
 		// flagged this round (captured onto the quest by reviewUntilClean) pauses the
 		// unit and asks for a ruling one tier up. `proceed` ships as-is; `fix` converts
 		// each contradiction into a pre-accepted review-gap item and re-gates.
@@ -777,7 +777,7 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 }
 
 // routeQuestIntentConflicts handles any root-intent contradictions the gate reviewer
-// flagged (Task 5 routing): it re-fetches the quest, collects the conflicts not yet
+// flagged: it re-fetches the quest, collects the conflicts not yet
 // ruled on, and — if any — pauses the unit to ask the quest-lead's tier for a ruling
 // (escalateQuestDecision). The ruling is stamped on each conflict. Returns whether to
 // PROCEED to delivery, and (when the ruling is `fix`) the conflict issues to reconcile.

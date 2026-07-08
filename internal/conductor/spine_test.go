@@ -285,7 +285,7 @@ func TestReviewerContinuityRoundTwoResumes(t *testing.T) {
 	c := New(nil)
 	var sess string
 	// Round 1: cold spawn (no template) captures the session id.
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, &sess)
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, &sess, bus.Brief{Role: "reviewer"})
 	if sess != "rev-1" {
 		t.Fatalf("round 1 must capture the reviewer session, got %q", sess)
 	}
@@ -294,7 +294,7 @@ func TestReviewerContinuityRoundTwoResumes(t *testing.T) {
 	// reverify text appear only in the round-2 spawn.)
 	os.Remove(argvLog)
 	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "",
-		[]reviewFinding{{File: "a.go", Line: 2, Issue: "x"}}, &sess)
+		[]reviewFinding{{File: "a.go", Line: 2, Issue: "x"}}, &sess, bus.Brief{Role: "reviewer"})
 	log2 := readFileStr(t, argvLog)
 	if !strings.Contains(log2, "--resume rev-1") || strings.Contains(log2, "--fork-session") {
 		t.Errorf("round 2 must resume the round-1 session (no fork), got %q", log2)
@@ -307,8 +307,8 @@ func TestReviewerContinuityRoundTwoResumes(t *testing.T) {
 	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0")
 	os.Remove(argvLog)
 	var sess2 string
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, &sess2)
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess2)
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, &sess2, bus.Brief{Role: "reviewer"})
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess2, bus.Brief{Role: "reviewer"})
 	if strings.Contains(readFileStr(t, argvLog), "--resume") {
 		t.Error("with continuity off no round may resume")
 	}
@@ -418,11 +418,12 @@ func TestRulingFromAnswer(t *testing.T) {
 		answer   string
 		want     string
 	}{
-		{true, "proceed — no fix needed", "proceed"}, // explicit proceed wins over incidental "fix"
+		{true, "proceed — no fix needed", "proceed"}, // first token is "proceed"
+		{true, "don't proceed — fix it", "proceed"},  // first token is "don't" → default proceed
+		{true, "fix", "fix"},                         // bare leading fix token
 		{true, "fix it now", "fix"},
-		{true, "please fix the contradiction", "fix"},
-		{true, "reconcile it", "proceed"},     // no fix token
-		{true, "prefix the field", "proceed"}, // "fix" only as a substring, not a token
+		{true, "reconcile it", "proceed"},     // no leading fix token
+		{true, "prefix the field", "proceed"}, // leading "prefix" is not the fix token
 		{false, "fix", "proceed"},             // unresolved never blocks/fixes
 	}
 	for _, tc := range cases {
@@ -477,7 +478,7 @@ func TestReviewerResumeFailureFallsBackToFork(t *testing.T) {
 
 	c := New(nil)
 	sess := "rev-1"
-	out := c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess)
+	out := c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess, bus.Brief{Role: "reviewer"})
 	if out.startErr != nil {
 		t.Fatalf("fallback fork must complete: %+v", out)
 	}
@@ -628,6 +629,86 @@ func TestQuestGateNonCitableRequeuesNoPR(t *testing.T) {
 	}
 	if !gap {
 		t.Errorf("a non-citable finding must be requeued as a review-gap work item, got %+v", q.WorkItems)
+	}
+}
+
+// === Blocker 1: a fork reviewer round re-reads the REVIEWER brief, not the FIX brief =
+
+// With continuity off (every round forks), a round-2 reviewer fork re-puts the
+// reviewer brief (diff-command Prompt) — so a prior fix pass's brief on the shared
+// brief/<reviewerID> key can never make the reviewer review blind.
+func TestForkReviewerRebriefsOverFixBrief(t *testing.T) {
+	c, _ := deliveryConductor(t, stubClaude(
+		role("code reviewer", emitText("REVIEW_CLEAN")+emitResult("ok", 1)),
+		coder(emitResult("noop", 1)),
+	))
+	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0")
+	// A prior fix pass left the FIX brief on the shared key (no diff-command Prompt).
+	c.putBrief(reviewerID, bus.Brief{Role: "fix", Findings: []string{"go fix x"}})
+
+	sess := "rev-1" // continuity off → round 2 still forks, ignoring the session
+	rb := bus.Brief{Role: "reviewer", Title: "review repo", Prompt: "git diff main..quest/q1"}
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess, rb)
+
+	obj, err := c.server.Storage.Get(bus.BriefKey(reviewerID))
+	if err != nil {
+		t.Fatalf("read brief: %v", err)
+	}
+	var br bus.Brief
+	if json.Unmarshal(obj.Data, &br) != nil {
+		t.Fatal("unmarshal brief")
+	}
+	if br.Prompt != "git diff main..quest/q1" || br.Role != "reviewer" {
+		t.Errorf("a fork reviewer round must re-put the reviewer brief (diff Prompt), got %+v", br)
+	}
+	if len(br.Findings) != 0 {
+		t.Errorf("the fix brief's Findings must not survive on the reviewer brief, got %+v", br.Findings)
+	}
+}
+
+// === Blocker 2: a clean-but-contradicted verdict is fixed in-loop, never routed =
+
+// At a GATE host, a REVIEW_CLEAN whose narration contradicts it synthesizes a
+// File-less blocker. That blocker must stay in the fix loop (fixed, re-reviewed,
+// delivered) — never classed structural and spun out as a review-gap child run.
+func TestGateNarrationBounceFixesNotRequeues(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gate-once")
+	reviewer := role("code reviewer",
+		"if [[ -f \""+marker+"\" ]]; then\n"+
+			emitText("REVIEW_CLEAN")+emitResult("clean", 1)+
+			"else\n  touch \""+marker+"\"\n"+
+			// A clean verdict whose prose admits a defect → conductor synthesizes a
+			// File-less blocker (must NOT be treated as structural at the gate).
+			emitText("I found dead code in the handler.")+emitText("REVIEW_CLEAN")+emitResult("contradicted", 1)+
+			"fi\n")
+	fixer := role("addressing review findings",
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"seed.txt\"}}]}}'\n"+
+			"echo \"fixed by $$\" > seed.txt\n"+emitResult("fixed", 1))
+	c, repo := deliveryConductor(t, stubClaude(fixer, reviewer, coder(emitResult("noop", 1))))
+	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0")
+
+	id := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{repo}})
+	seedQuestBranch(t, repo, "quest/"+id, "seed.txt")
+	c.UpdateQuest(id, func(q *run.Quest) {
+		q.Status = "running"
+		q.WorkItems = append(q.WorkItems, run.WorkItem{ID: "t1-w0", SourceTick: "t1", Disposition: "completed"})
+		recomputeQuestRollups(q)
+	})
+	c.finishQuest(context.Background(), id)
+
+	q, _ := c.GetQuest(id)
+	// A fix pass ran and re-review passed → delivered; the narration-bounce never
+	// became a review-gap child run.
+	if len(q.PRs) != 1 || q.PRs[0].URL == "" {
+		t.Fatalf("a narration-bounce must be fixed in-loop and delivered, got PRs=%+v status=%q", q.PRs, q.Status)
+	}
+	if q.GateRounds < 2 {
+		t.Errorf("the fix cycle must consume ≥ 2 gate rounds, got %d", q.GateRounds)
+	}
+	for _, w := range q.WorkItems {
+		if w.Classification == "review-gap" {
+			t.Errorf("a synthesized narration-bounce blocker must NOT spawn a review-gap child, got %+v", w)
+		}
 	}
 }
 

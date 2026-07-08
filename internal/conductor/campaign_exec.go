@@ -37,13 +37,15 @@ import (
 //	   back to the tech manager, bounded by maxPartitionAttempts. Both-agree required.
 //	5. EXECUTE       — run the child quests CONCURRENTLY (deps sequence dependents);
 //	   their work accumulates on the shared campaign branch; ctx halts them on stop.
-//	6. GATE 2        — dual sign-off: the INTENT MANAGER emits a per-commitment verdict
-//	   {satisfied|partial|missed} (core/intent-review), and the TECH MANAGER confirms
-//	   technical done. Both load their doctrine via kb_get (composition, not a rubric).
-//	7. DELIVERY GATE — a `missed` verdict (or withheld technical sign-off) feeds a
-//	   remediation QUEST via the tech manager, bounded by maxRemediationRounds; a
-//	   `partial` annotates but does NOT block. Only both-clean opens ONE PR PER REPO
-//	   from the campaign branch (reusing the run push+openPR machinery).
+//	6. GATE 2        — the INTENT MANAGER emits a per-commitment verdict
+//	   {satisfied|partial|missed} (core/intent-review), AND a separate reviewer hard-
+//	   reviews the converged campaign branch with the review→fix→re-review primitive
+//	   (the same atom the run and quest gates use). Both must clear.
+//	7. DELIVERY GATE — a `missed` commitment or a non-citable review finding feeds a
+//	   remediation QUEST, bounded by maxRemediationRounds; citable findings are fixed
+//	   inside the review loop; a `partial` annotates but does NOT block. Only a clean
+//	   review with no `missed` opens ONE PR PER REPO from the campaign branch (reusing
+//	   the run push+openPR machinery).
 //
 // The loop logic stays in Go (bounded stages, a global token cap);
 // the INTELLIGENCE (the brief, the per-commitment judgment) lives in the agents,
@@ -58,15 +60,16 @@ import (
 //     review at gate 2 (intentReviewerID). It composes core/planning + core/dream
 //     (brief) and core/intent-review (review) via kb_get.
 //   - the TECH MANAGER owns everything technical — it partitions the brief into
-//     concurrent child QUESTS (techManagerID, the QUESTS line), and confirms
-//     technical done at gate 2. It composes roles/tech-lead via kb_get.
+//     concurrent child QUESTS (techManagerID, the QUESTS line). Gate 2's technical
+//     sign-off is a review→fix→re-review over the campaign branch, not a manager
+//     attestation. It composes roles/tech-lead via kb_get.
 //
 // Each id keys its agent's brief on the bus the same way tl/coder ids do.
 const (
 	intentLeadID     = "intent-lead"     // stage 1: the Intent Brief
 	intentManagerID  = "intent-manager"  // gate 1: the intent manager reviewing the quest partition
 	intentReviewerID = "intent-reviewer" // gate 2: the final per-commitment intent review
-	techManagerID    = "tech-manager"    // decompose (QUESTS) + gate 2 technical-done confirmation
+	techManagerID    = "tech-manager"    // decompose (QUESTS); gate 2 technical sign-off is a branch review, not this agent
 )
 
 // campaignSpawn pre-seeds a coordinating agent's effective model+thinking on the
@@ -353,14 +356,15 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		return
 	}
 
-	// ── Stage 6+7: GATE 2 (dual sign-off) → REMEDIATE → DELIVER. ──
-	// Both managers must sign off before delivery: the intent manager runs the
-	// per-commitment intent review, and the tech manager confirms technical done. A
-	// `missed` verdict (or a not-done technical verdict) does NOT park the campaign
-	// in "blocked" on the first look — the tech manager spawns a remediation QUEST
-	// targeting exactly the gap, the loop re-reviews, and only both-clean delivers.
-	// Bounded by maxRemediationRounds so a genuinely un-closeable gap eventually
-	// blocks (a real hard blocker). A lingering `partial` annotates the PR, never blocks.
+	// ── Stage 6+7: GATE 2 → REMEDIATE → DELIVER. ──
+	// Before delivery the intent manager runs the per-commitment intent review AND a
+	// separate reviewer hard-reviews the converged campaign branch (the review→fix→
+	// re-review primitive). A `missed` commitment or a non-citable review finding does
+	// NOT park the campaign in "blocked" on the first look — it spawns a remediation
+	// QUEST targeting exactly the gap, the loop re-reviews, and only a clean review with
+	// no `missed` delivers. Bounded by maxRemediationRounds so a genuinely un-closeable
+	// gap eventually blocks (a real hard blocker). A lingering `partial` annotates the
+	// PR, never blocks.
 	rounds := maxRemediationRounds()
 	var review run.IntentReview
 	for round := 0; ; round++ {
@@ -372,8 +376,8 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		if !ok {
 			return // the reviewer produced no verdict (blocked) — recorded
 		}
-		// Gate 2's technical sign-off is now the SAME review→fix→re-review primitive
-		// the run and quest gates use (Task 8): a separate reviewer hard-reviews the
+		// Gate 2's technical sign-off is the SAME review→fix→re-review primitive
+		// the run and quest gates use: a separate reviewer hard-reviews the
 		// campaign branch, citable blockers drive an in-loop fix pass, and non-citable
 		// (structural) findings are returned for remediation. The old technical-done
 		// attestation spawn is retired in favor of a real review.
@@ -387,7 +391,7 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 
 		missed := missedCommitments(brief, review)
 		if len(missed) == 0 && clean && len(structural) == 0 {
-			break // dual sign-off clean — deliver (partials annotate the PR)
+			break // gate 2 clean (branch review clean + no missed commitment) — deliver (partials annotate the PR)
 		}
 		gaps := gapSummary(missed, structural)
 		if round >= rounds {
@@ -1091,7 +1095,7 @@ func (c *Conductor) reviewPartition(ctx context.Context, id string, cam run.Camp
 	return verdict, true
 }
 
-// campaignGate2Review is gate 2's technical sign-off (Task 8): the SAME
+// campaignGate2Review is gate 2's technical sign-off: the SAME
 // review→fix→re-review primitive the run and quest gates use. It stands up a
 // detached review worktree at the campaign branch per impacted repo, then runs
 // reviewUntilClean with the brief's commitments as the task intent and the campaign's
@@ -1132,7 +1136,7 @@ func (c *Conductor) campaignGate2Review(ctx context.Context, id string, cam run.
 	if !clean && len(structural) == 0 {
 		return false, nil, false // reviewUntilClean already blocked the campaign
 	}
-	// Two-layer intent routing (Task 5): a root-intent contradiction the reviewer
+	// Two-layer intent routing: a root-intent contradiction the reviewer
 	// flagged this round pauses the campaign for a ruling one tier up (the intent
 	// manager). `proceed` ships as-is; `fix` folds each contradiction into the
 	// structural set so the gate-2 loop routes it into a remediation quest and re-gates.
@@ -1236,7 +1240,7 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 	}
 	review, ok := parseIntentReview(res.allText)
 	if !ok {
-		// One bounded resume-and-re-ask before blocking on a missing verdict (Task 6).
+		// One bounded resume-and-re-ask before blocking on a missing verdict.
 		rmodel, rthinking := c.agentConfig(RoleIntentReviewer)
 		if rep, did := c.repairVerdict(ctx, id, intentReviewerID, res.sessionID, "INTENT_REVIEW", primary, extra, rmodel, rthinking); did {
 			c.addCampaignTokens(id, rep.tokens) // the repair spawn's usage is the campaign's
@@ -1423,9 +1427,9 @@ func gapSummary(missed []string, structural []reviewFinding) string {
 // before it can deliver. Each quest names the specific commitment and quotes the
 // reviewer's evidence, so the quest's runs close that exact gap on the campaign
 // branch (Deliver=branch, campaign-child) rather than re-running the whole
-// decomposition. When the tech manager withheld technical sign-off with a reason,
-// one more remediation quest targets that technical gap. Missed commitments come
-// first (they block); partials follow (deliver-blocking only if they regress to missed).
+// decomposition. Each non-citable STRUCTURAL finding from the gate-2 branch review
+// gets one more remediation quest targeting that gap. Missed commitments come first
+// (they block); partials follow (deliver-blocking only if they regress to missed).
 func remediationQuests(cam run.Campaign, brief run.IntentBrief, review run.IntentReview, structural []reviewFinding) []questPartitionItem {
 	byID := commitmentByID(brief)
 	var missed, partial []questPartitionItem

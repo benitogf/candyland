@@ -177,7 +177,7 @@ func TestFixReviewFindingsFailsFastOnEmptyFindings(t *testing.T) {
 	c, _ := deliveryConductor(t, reviewThenCleanClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	// Call the fix pass directly with empty blockers — it must abort fast.
-	if c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1, "", "", "") {
+	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1, "", "", ""); ok {
 		t.Fatal("a fix pass with no findings must return false (fail fast), not true")
 	}
 	r, _ := c.Get(id)
