@@ -686,3 +686,59 @@ func firstNonEmpty(vals ...string) string {
 func runBranch(spec run.Spec, id string) string {
 	return "feat/" + slug(firstNonEmpty(spec.Title, spec.Prompt, "run")) + "-" + id
 }
+
+// parseIncidentNotes extracts every agent-emitted self-acknowledged incident from
+// `INCIDENT <json>` lines. Unlike a single-verdict line (DECISION/POSTMORTEM,
+// last-wins), an agent may self-report several incidents while it keeps working, so
+// ALL parseable lines are collected in order. A line whose JSON does not parse, or
+// that carries no summary, is skipped.
+func parseIncidentNotes(text string) []run.IncidentNote {
+	var notes []run.IncidentNote
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "INCIDENT ") {
+			continue
+		}
+		var n run.IncidentNote
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "INCIDENT ")), &n) != nil {
+			continue
+		}
+		if strings.TrimSpace(n.Summary) == "" {
+			continue
+		}
+		notes = append(notes, n)
+	}
+	return notes
+}
+
+// captureIncidents parses any self-acknowledged incidents from an agent's transcript
+// and records them on the host record, stamping the reporting agent and the time. A
+// no-op when the transcript carries no INCIDENT line. This is a NON-TERMINAL
+// self-report path — distinct from recordEscalation (a decision) and the postmortem
+// gate (a terminal capability failure).
+func (c *Conductor) captureIncidents(hostID, agentID, text string) {
+	notes := parseIncidentNotes(text)
+	if len(notes) == 0 {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range notes {
+		notes[i].Agent = agentID
+		notes[i].At = now
+	}
+	c.recordIncidents(hostID, notes)
+}
+
+// recordIncidents persists incidents on the record that OWNS hostID, detected by
+// id-kind prefix exactly as recordEscalation does: quest (q<N>) → Quest.Incidents,
+// campaign (c<N>) → Campaign.Incidents, else run → Run.Incidents.
+func (c *Conductor) recordIncidents(hostID string, notes []run.IncidentNote) {
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.UpdateQuest(hostID, func(q *run.Quest) { q.Incidents = append(q.Incidents, notes...) })
+	case strings.HasPrefix(hostID, "c"):
+		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.Incidents = append(cam.Incidents, notes...) })
+	default:
+		c.Update(hostID, func(r *run.Run) { r.Incidents = append(r.Incidents, notes...) })
+	}
+}
