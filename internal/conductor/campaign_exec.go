@@ -812,11 +812,18 @@ func (c *Conductor) launchCampaignChildQuest(ctx context.Context, id string, cam
 		return c.waitForChildQuestTerminal(ctx, existing.ID)
 	}
 	spec := run.QuestSpec{
-		CampaignID:      id,
-		Objective:       campaignChildQuestObjective(cam, item),
-		Title:           strings.TrimSpace(item.Title),
-		Folders:         resolveQuestFolders(item.Folders, folders),
-		PartitionItemID: item.ID,
+		CampaignID: id,
+		Objective:  campaignChildQuestObjective(cam, item),
+		Title:      strings.TrimSpace(item.Title),
+		Folders:    resolveQuestFolders(item.Folders, folders),
+	}
+	// Only a reuse-eligible launch (the persisted partition, Stage 5) is stamped with
+	// its partition-item id so a later relaunch reuses it. A remediation quest
+	// (reuse=false) is NOT a persisted-partition item — its ids (r1, r2, …) repeat
+	// across rounds — so leaving PartitionItemID empty keeps latestChildQuestForItem
+	// from ever reusing a remediation quest against a same-string main partition id.
+	if reuse {
+		spec.PartitionItemID = item.ID
 	}
 	if campaignTargetsPR(cam) {
 		spec.Deliver = cam.Deliver

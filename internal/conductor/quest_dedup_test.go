@@ -149,9 +149,11 @@ func TestQuestRelaunchDedupsAlreadyDeliveredItem(t *testing.T) {
 	}
 }
 
-// campaignDeliveredTitles unions the delivered-title sets of all a campaign's child
-// quests, keyed case/space-insensitively, so a sibling's completed work is visible
-// to every other child's dedup.
+// campaignDeliveredTitles unions the delivered-title sets of a campaign's child
+// quests whose folder scope OVERLAPS the asking quest, keyed case/space-insensitively,
+// so a same-scope sibling's completed work is visible to a peer's dedup — but a
+// sibling in a DISJOINT scope is not (a title-only key would otherwise let a generic
+// title in repo A wrongly dedup real work in repo B).
 func TestCampaignDeliveredTitlesUnionsSiblings(t *testing.T) {
 	c, repo := deliveryConductor(t, stubClaude())
 	camID := c.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{repo}})
@@ -166,9 +168,18 @@ func TestCampaignDeliveredTitlesUnionsSiblings(t *testing.T) {
 	seed("tidy the lint")
 	seed("wire the endpoint")
 
-	got := c.campaignDeliveredTitles(camID)
+	// A quest sharing the siblings' scope (repo) sees both delivered titles.
+	sameScope := run.Quest{Folders: []string{repo}}
+	got := c.campaignDeliveredTitles(camID, sameScope)
 	if !got[dedupKey("tidy the lint")] || !got[dedupKey("wire the endpoint")] {
-		t.Fatalf("union must contain both siblings' delivered titles, got %v", got)
+		t.Fatalf("same-scope union must contain both siblings' delivered titles, got %v", got)
+	}
+
+	// A quest in a disjoint scope sees NONE of them — folder filter keeps a cross-repo
+	// title collision from wrongly deduping its work.
+	otherScope := run.Quest{Folders: []string{filepath.Join(t.TempDir(), "other-repo")}}
+	if got := c.campaignDeliveredTitles(camID, otherScope); len(got) != 0 {
+		t.Fatalf("disjoint-scope quest must dedup against nothing, got %v", got)
 	}
 }
 

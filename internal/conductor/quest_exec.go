@@ -337,7 +337,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		delivered = nil // shared branch gone — its delivered ledger no longer on disk; re-execute, don't dedup
 	}
 	if delivered != nil && q.CampaignID != "" {
-		for k := range c.campaignDeliveredTitles(q.CampaignID) {
+		for k := range c.campaignDeliveredTitles(q.CampaignID, q) {
 			delivered[k] = true
 		}
 	}
@@ -949,14 +949,26 @@ func deliveredTitles(q run.Quest) map[string]bool {
 	return done
 }
 
-// campaignDeliveredTitles unions deliveredTitles across EVERY child quest of the
-// campaign, so any child's tick dedups work ANY sibling — or a prior generation of
-// itself — already delivered onto the shared campaign branch. This is the
-// cross-quest half of objective-met dedup (the 2026-07-07 incident: one objective
-// re-executed by runs from quests that did not own it).
-func (c *Conductor) campaignDeliveredTitles(campaignID string) map[string]bool {
+// campaignDeliveredTitles unions deliveredTitles across the child quests of the
+// campaign whose folder scope OVERLAPS forQuest's, so forQuest's tick dedups work a
+// sibling — or a prior generation of itself — already delivered onto the shared
+// campaign branch within the SAME scope. This is the cross-quest half of
+// objective-met dedup (the 2026-07-07 incident: one objective re-executed by runs
+// from quests that did not own it).
+//
+// The folder-scope filter is load-bearing: the dedup key is title-only, so without
+// it two genuinely distinct items in a multi-repo campaign that share a generic
+// title (e.g. "update dependencies") — one delivered in repo A, one still to do in
+// repo B — would collide and the second be skipped as already-done. Restricting the
+// union to siblings whose scope intersects forQuest's keeps a cross-repo title
+// collision from silently dropping real work; the failure direction of the filter
+// is to under-dedup (re-execute), never to over-skip.
+func (c *Conductor) campaignDeliveredTitles(campaignID string, forQuest run.Quest) map[string]bool {
 	out := map[string]bool{}
 	for _, q := range c.CampaignChildQuests(campaignID) {
+		if !foldersIntersect(q.Folders, forQuest.Folders) {
+			continue // a different scope — its titles are not evidence forQuest delivered its own
+		}
 		for k := range deliveredTitles(q) {
 			out[k] = true
 		}
