@@ -218,6 +218,38 @@ func TestRootIntentFor(t *testing.T) {
 	}
 }
 
+func TestConflictRulingHostFor(t *testing.T) {
+	c, _ := newQuestServer(t)
+	// Standalone run → itself (disarmed anyway; forwarding is identity).
+	rid := c.Create(run.Spec{Prompt: "standalone"})
+	if got := c.conflictRulingHostFor(rid); got != rid {
+		t.Errorf("standalone run ruling host = %q, want %q", got, rid)
+	}
+	// Child run of a standalone quest → the quest (its gate rules).
+	sq := c.CreateQuest(run.QuestSpec{Objective: "keep lint clean"})
+	child1 := c.Create(run.Spec{Prompt: "child of standalone quest"})
+	c.Update(child1, func(r *run.Run) { r.QuestID = sq })
+	if got := c.conflictRulingHostFor(child1); got != sq {
+		t.Errorf("standalone-quest child ruling host = %q, want %q", got, sq)
+	}
+	// Child run of a campaign-owned quest → the CAMPAIGN (those quests skip
+	// their own gate; campaign gate 2 rules).
+	cid := c.CreateCampaign(run.CampaignSpec{Input: "overhaul billing"})
+	cq := c.CreateQuest(run.QuestSpec{Objective: "migrate the ledger", CampaignID: cid})
+	child2 := c.Create(run.Spec{Prompt: "child of campaign quest"})
+	c.Update(child2, func(r *run.Run) { r.QuestID = cq })
+	if got := c.conflictRulingHostFor(child2); got != cid {
+		t.Errorf("campaign-quest child ruling host = %q, want %q", got, cid)
+	}
+	// Campaign-owned quest itself → the campaign; campaign → itself.
+	if got := c.conflictRulingHostFor(cq); got != cid {
+		t.Errorf("campaign-owned quest ruling host = %q, want %q", got, cid)
+	}
+	if got := c.conflictRulingHostFor(cid); got != cid {
+		t.Errorf("campaign ruling host = %q, want %q", got, cid)
+	}
+}
+
 // === Task 8: remediationQuests fold structural review findings =============
 
 func TestRemediationQuestsIncludeStructural(t *testing.T) {
