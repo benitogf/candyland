@@ -859,14 +859,36 @@ func parseIntentConflicts(text string) []run.IntentConflictNote {
 	return notes
 }
 
+// conflictRulingHostFor resolves the unit whose GATE actually rules conflicts
+// captured under hostID: a quest-child run's conflicts belong to its owning quest
+// (no run-level routing exists — the quest delivery gate rules them), and a
+// campaign-owned quest's belong to the campaign (those quests skip their own gate;
+// campaign gate 2 rules instead). Without this forwarding a child-run reviewer's
+// conflict would sit unruled on the run record forever.
+func (c *Conductor) conflictRulingHostFor(hostID string) string {
+	if !strings.HasPrefix(hostID, "q") && !strings.HasPrefix(hostID, "c") {
+		if r, ok := c.Get(hostID); ok && r.QuestID != "" {
+			hostID = r.QuestID
+		}
+	}
+	if strings.HasPrefix(hostID, "q") {
+		if q, ok := c.GetQuest(hostID); ok && q.CampaignID != "" {
+			return q.CampaignID
+		}
+	}
+	return hostID
+}
+
 // captureIntentConflicts parses any reviewer-flagged root-intent conflicts from a
-// transcript and records them on the host record (stamping the agent and time), the
-// intent-layer sibling of captureIncidents. A no-op when none are present.
+// transcript and records them on the unit whose gate will rule them (stamping the
+// agent and time), the intent-layer sibling of captureIncidents. A no-op when none
+// are present.
 func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
 	notes := parseIntentConflicts(text)
 	if len(notes) == 0 {
 		return
 	}
+	hostID = c.conflictRulingHostFor(hostID)
 	now := time.Now().UTC().Format(time.RFC3339)
 	// Dedup by Issue and force the conductor to OWN Ruling: a reviewer never sets it.
 	// `seen` is pre-loaded with the Issues already recorded UNRULED on the host, so a

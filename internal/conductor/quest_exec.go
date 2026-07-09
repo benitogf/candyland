@@ -735,7 +735,16 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 			return true
 		}
 		fixModel, fixThinking := c.agentConfig(RoleFix)
-		clean, structural := c.reviewUntilClean(ctx, q.ID, delivered, branch, questGateTaskIntent(q), c.rootIntentFor(q.ID), fixModel, fixThinking)
+		// A standalone quest has no higher layer to contradict, so its root-intent
+		// channel stays DISARMED (rootIntent == "") — questGateTaskIntent always renders
+		// scope/safety/verify lines after the objective, so the render rule's equality
+		// disarm would never fire (the same hazard fanOut handles for standalone runs).
+		// Only a campaign-owned quest carries a genuine root layer.
+		rootIntent := ""
+		if q.CampaignID != "" {
+			rootIntent = c.rootIntentFor(q.ID)
+		}
+		clean, structural := c.reviewUntilClean(ctx, q.ID, delivered, branch, questGateTaskIntent(q), rootIntent, fixModel, fixThinking)
 		gateCleanup(ctx, delivered, wtRoot)
 		if ctx.Err() != nil {
 			return false

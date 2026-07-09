@@ -1474,18 +1474,21 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 			// against the root intent (context-only contradiction, not a local blocker).
 			c.captureIntentConflicts(hostID, reviewerID, out.allText)
 			// narration is the text the verdict-integrity gate scans — the ORIGINAL pass
-			// by default, but the REPAIRED transcript when a repair produced the verdict.
+			// by default; a repair APPENDS its transcript rather than replacing it, so a
+			// blocker-class admission or hedge from the interrupted pass still bounces a
+			// repaired REVIEW_CLEAN (the repair prompt yields little more than the bare
+			// verdict line — scanned alone it would blind the V3 gate).
 			narration := out.allText
 			verdict, ok := parseReview(out.allText)
 			if !ok {
 				// One bounded resume-and-re-ask before blocking on a missing verdict line.
 				if rep, did := c.repairVerdict(ctx, hostID, reviewerID, reviewerSession, "REVIEW_CLEAN/REVIEW_FINDINGS", integDir, extraDirsForDelivered(repo, folders), reviewerModel, reviewerThinking); did {
 					gateTokens += rep.tokens
-					// The repair transcript is authoritative for both the narration check
-					// and any conflict the reviewer flagged while re-asking.
+					// The repair transcript also carries any conflict the reviewer flagged
+					// while re-asking.
 					c.captureIntentConflicts(hostID, reviewerID, rep.allText)
 					if v, ok2 := parseReview(rep.allText); ok2 {
-						verdict, ok, narration = v, true, rep.allText
+						verdict, ok, narration = v, true, out.allText+"\n"+rep.allText
 					} else {
 						c.failReview(ctx, hostID, reviewerID, "The reviewer "+noVerdictReason(rep, reviewerID, "REVIEW")+" for "+repoBase(repo)+" — refusing to open a PR on an un-reviewed change.")
 						return false, nil

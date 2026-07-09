@@ -67,8 +67,9 @@ filters.
   the **final per-commitment intent review**; the **tech manager** decomposes
   the brief into **child quests** (concurrent by default), owns integration, and
   targets remediation. Two **convergence gates** sit between them — gate 1
-  (partition-vs-brief, before any work launches) and gate 2 (dual sign-off:
-  technical-done + intent-review, before delivery). Child quests commit onto the
+  (partition-vs-brief, before any work launches) and gate 2 (per-commitment
+  intent review plus the same review→fix→re-review loop that gates runs and
+  quests, run over the campaign branch, before delivery). Child quests commit onto the
   shared `campaign/<id>` branch and open no PR; the campaign opens **one PR per
   repo** at the delivery gate. A `missed` commitment feeds a bounded
   **remediation quest**; a `partial` annotates without blocking.
