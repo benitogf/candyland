@@ -329,6 +329,30 @@ func TestCaptureIntentConflictsPersists(t *testing.T) {
 	}
 }
 
+// Ruling is conductor-owned: a reviewer-supplied `ruling` on the line is dropped, so
+// the note persists UNRULED and unruledConflictIssues still picks it up for the tier
+// above. And a re-flag of the same still-unruled contradiction (a fork round) is not
+// recorded/asked twice.
+func TestCaptureIntentConflictsRulingOwnedAndDeduped(t *testing.T) {
+	c, _ := newQuestServer(t)
+	qid := c.CreateQuest(run.QuestSpec{Objective: "migrate"})
+	// A reviewer trying to pre-set the ruling must not shortcut the tier-above ruling.
+	c.captureIntentConflicts(qid, "review", `INTENT_CONFLICT {"issue":"drops the audit log","ruling":"proceed"}`)
+	q, _ := c.GetQuest(qid)
+	if len(q.IntentConflicts) != 1 || q.IntentConflicts[0].Ruling != "" {
+		t.Fatalf("reviewer-supplied ruling must be cleared (conductor-owned), got %+v", q.IntentConflicts)
+	}
+	if got := unruledConflictIssues(q.IntentConflicts); len(got) != 1 || got[0] != "drops the audit log" {
+		t.Errorf("the conflict must be picked up as unruled, got %+v", got)
+	}
+	// A fork round re-flags the SAME still-unruled contradiction → not recorded twice.
+	c.captureIntentConflicts(qid, "review", `INTENT_CONFLICT {"issue":"drops the audit log"}`)
+	q, _ = c.GetQuest(qid)
+	if len(q.IntentConflicts) != 1 {
+		t.Fatalf("a re-flagged still-unruled conflict must not record twice, got %+v", q.IntentConflicts)
+	}
+}
+
 // === Task 5: INTENT_CONFLICT routing — pause, rule one tier up, resume =====
 
 // questConflictClaude drives a converge quest whose GATE reviewer flags a root-intent

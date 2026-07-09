@@ -1402,7 +1402,7 @@ func partialAnnotations(brief run.IntentBrief, review run.IntentReview) []string
 }
 
 // gapSummary is the human-readable description of what gate 2 still finds unmet: the
-// missed commitments plus a not-done technical verdict (if any). It drives the
+// missed commitments plus any non-citable structural review findings. It drives the
 // remediation note and the eventual hard-block reason.
 func gapSummary(missed []string, structural []reviewFinding) string {
 	var parts []string

@@ -867,24 +867,28 @@ func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
 	if len(notes) == 0 {
 		return
 	}
-	// Dedup identical Issues within this single capture — allText re-echoes a result
-	// block, so a conflict line parses twice (the same r121 double-parse the incident
-	// capture also dedups); it must record once, not twice, and not double the
-	// escalation question.
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Dedup by Issue and force the conductor to OWN Ruling: a reviewer never sets it.
+	// `seen` is pre-loaded with the Issues already recorded UNRULED on the host, so a
+	// fork round (kill-switch / resume-fallback) that re-flags the same contradiction
+	// isn't recorded — or asked/counted — twice; within one capture it also collapses
+	// the allText result-echo double-parse.
 	seen := make(map[string]bool, len(notes))
+	for _, iss := range c.unruledConflictIssuesFor(hostID) {
+		seen[iss] = true
+	}
 	deduped := notes[:0]
 	for _, n := range notes {
 		if seen[n.Issue] {
 			continue
 		}
 		seen[n.Issue] = true
+		n.Agent, n.At, n.Ruling = agentID, now, "" // Ruling is conductor-owned; drop any reviewer value
 		deduped = append(deduped, n)
 	}
 	notes = deduped
-	now := time.Now().UTC().Format(time.RFC3339)
-	for i := range notes {
-		notes[i].Agent = agentID
-		notes[i].At = now
+	if len(notes) == 0 {
+		return
 	}
 	switch {
 	case strings.HasPrefix(hostID, "q"):
@@ -894,4 +898,24 @@ func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
 	default:
 		c.Update(hostID, func(r *run.Run) { r.IntentConflicts = append(r.IntentConflicts, notes...) })
 	}
+}
+
+// unruledConflictIssuesFor returns the Issue text of every conflict already recorded
+// UNRULED on the host — the cross-round dedup basis for captureIntentConflicts.
+func (c *Conductor) unruledConflictIssuesFor(hostID string) []string {
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		if q, ok := c.GetQuest(hostID); ok {
+			return unruledConflictIssues(q.IntentConflicts)
+		}
+	case strings.HasPrefix(hostID, "c"):
+		if cam, ok := c.GetCampaign(hostID); ok {
+			return unruledConflictIssues(cam.IntentConflicts)
+		}
+	default:
+		if r, ok := c.Get(hostID); ok {
+			return unruledConflictIssues(r.IntentConflicts)
+		}
+	}
+	return nil
 }
