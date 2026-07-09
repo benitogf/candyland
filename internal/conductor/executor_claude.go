@@ -1079,7 +1079,7 @@ const incidentDoctrine = " Separate from and additional to any protocol/verdict 
 	`{"summary":<one line what happened>,"detail":<optional: what you did about it>,"severity":"info"|"warn"|"error"}` +
 	" and keep working. Never stop for an incident; a genuine blocker is a different thing."
 
-const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line. " +
+const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line." + briefGetToolHint + " " +
 	"Then emit exactly one line beginning with `PARTITION ` followed by a JSON array of fork-safe tasks: " +
 	`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
 	"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
@@ -1088,7 +1088,7 @@ const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST 
 	"If the work spans more than one of the run's folders/repos, set each task's \"repo\" to the target folder's name (omit it for the primary repo); each impacted repo gets its own pull request. " +
 	"Then stop." + incidentDoctrine
 
-const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role. " +
+const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role." + briefGetToolHint + " " +
 	"Implement the task until its defining test is green: make the changes with your tools — do not just describe them. " +
 	"If your role is \"fullstack\", implement BOTH the server side and the client side of the slice and keep the API contract consistent between them. " +
 	"When you run the defining test, report the result as one line beginning with `TEST ` " +
@@ -1932,7 +1932,7 @@ func reviewReverifyPrompt(blockers []reviewFinding) string {
 }
 
 const conflictBootstrap = "You are the tech lead resolving a git merge conflict while integrating parallel work into one branch. " +
-	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
+	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files." + briefGetToolHint + " " +
 	"Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
 	"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
 	"Do not ask questions and do not leave any conflict unresolved." + incidentDoctrine

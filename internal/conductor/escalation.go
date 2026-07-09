@@ -29,7 +29,7 @@ import (
 // escalated question rides the brief (brief_get). It must decide autonomously and
 // emit ONE machine-readable DECISION line.
 const decisionBootstrap = "You are a manager resolving a decision escalated up to you from a lower tier — this is a launched flow with NO human available. " +
-	"Call the brief_get tool FIRST to read the escalated decision (the question and its context). " +
+	"Call the brief_get tool FIRST to read the escalated decision (the question and its context)." + briefGetToolHint + " " +
 	"Decide it yourself using your authority: pick the best option given the context and the flow's scope; do NOT ask a human, do NOT defer, do NOT stop the flow. " +
 	"Then emit EXACTLY ONE line and stop: `DECISION ` followed by JSON " +
 	`{"answer":"the decision, stated so the lower tier can act on it"}` + "." + incidentDoctrine
