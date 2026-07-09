@@ -140,11 +140,6 @@ func emitPartitionReview(agree bool, reason string) string {
 	return emitText(`PARTITION_REVIEW {\"agree\":`+boolStr(agree)+`,\"reason\":\"`+reason+`\"}`) + emitResult("gate1", 1)
 }
 
-// emitTechDone emits the tech-manager gate-2 technical sign-off {done,reason}.
-func emitTechDone(done bool, reason string) string {
-	return emitText(`TECH_DONE {\"done\":`+boolStr(done)+`,\"reason\":\"`+reason+`\"}`) + emitResult("gate2", 1)
-}
-
 func boolStr(b bool) string {
 	if b {
 		return "true"

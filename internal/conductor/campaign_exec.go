@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,13 +37,15 @@ import (
 //	   back to the tech manager, bounded by maxPartitionAttempts. Both-agree required.
 //	5. EXECUTE       — run the child quests CONCURRENTLY (deps sequence dependents);
 //	   their work accumulates on the shared campaign branch; ctx halts them on stop.
-//	6. GATE 2        — dual sign-off: the INTENT MANAGER emits a per-commitment verdict
-//	   {satisfied|partial|missed} (core/intent-review), and the TECH MANAGER confirms
-//	   technical done. Both load their doctrine via kb_get (composition, not a rubric).
-//	7. DELIVERY GATE — a `missed` verdict (or withheld technical sign-off) feeds a
-//	   remediation QUEST via the tech manager, bounded by maxRemediationRounds; a
-//	   `partial` annotates but does NOT block. Only both-clean opens ONE PR PER REPO
-//	   from the campaign branch (reusing the run push+openPR machinery).
+//	6. GATE 2        — the INTENT MANAGER emits a per-commitment verdict
+//	   {satisfied|partial|missed} (core/intent-review), AND a separate reviewer hard-
+//	   reviews the converged campaign branch with the review→fix→re-review primitive
+//	   (the same atom the run and quest gates use). Both must clear.
+//	7. DELIVERY GATE — a `missed` commitment or a non-citable review finding feeds a
+//	   remediation QUEST, bounded by maxRemediationRounds; citable findings are fixed
+//	   inside the review loop; a `partial` annotates but does NOT block. Only a clean
+//	   review with no `missed` opens ONE PR PER REPO from the campaign branch (reusing
+//	   the run push+openPR machinery).
 //
 // The loop logic stays in Go (bounded stages, a global token cap);
 // the INTELLIGENCE (the brief, the per-commitment judgment) lives in the agents,
@@ -56,15 +60,16 @@ import (
 //     review at gate 2 (intentReviewerID). It composes core/planning + core/dream
 //     (brief) and core/intent-review (review) via kb_get.
 //   - the TECH MANAGER owns everything technical — it partitions the brief into
-//     concurrent child QUESTS (techManagerID, the QUESTS line), and confirms
-//     technical done at gate 2. It composes roles/tech-lead via kb_get.
+//     concurrent child QUESTS (techManagerID, the QUESTS line). Gate 2's technical
+//     sign-off is a review→fix→re-review over the campaign branch, not a manager
+//     attestation. It composes roles/tech-lead via kb_get.
 //
 // Each id keys its agent's brief on the bus the same way tl/coder ids do.
 const (
 	intentLeadID     = "intent-lead"     // stage 1: the Intent Brief
 	intentManagerID  = "intent-manager"  // gate 1: the intent manager reviewing the quest partition
 	intentReviewerID = "intent-reviewer" // gate 2: the final per-commitment intent review
-	techManagerID    = "tech-manager"    // decompose (QUESTS) + gate 2 technical-done confirmation
+	techManagerID    = "tech-manager"    // decompose (QUESTS); gate 2 technical sign-off is a branch review, not this agent
 )
 
 // campaignSpawn pre-seeds a coordinating agent's effective model+thinking on the
@@ -351,14 +356,15 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		return
 	}
 
-	// ── Stage 6+7: GATE 2 (dual sign-off) → REMEDIATE → DELIVER. ──
-	// Both managers must sign off before delivery: the intent manager runs the
-	// per-commitment intent review, and the tech manager confirms technical done. A
-	// `missed` verdict (or a not-done technical verdict) does NOT park the campaign
-	// in "blocked" on the first look — the tech manager spawns a remediation QUEST
-	// targeting exactly the gap, the loop re-reviews, and only both-clean delivers.
-	// Bounded by maxRemediationRounds so a genuinely un-closeable gap eventually
-	// blocks (a real hard blocker). A lingering `partial` annotates the PR, never blocks.
+	// ── Stage 6+7: GATE 2 → REMEDIATE → DELIVER. ──
+	// Before delivery the intent manager runs the per-commitment intent review AND a
+	// separate reviewer hard-reviews the converged campaign branch (the review→fix→
+	// re-review primitive). A `missed` commitment or a non-citable review finding does
+	// NOT park the campaign in "blocked" on the first look — it spawns a remediation
+	// QUEST targeting exactly the gap, the loop re-reviews, and only a clean review with
+	// no `missed` delivers. Bounded by maxRemediationRounds so a genuinely un-closeable
+	// gap eventually blocks (a real hard blocker). A lingering `partial` annotates the
+	// PR, never blocks.
 	rounds := maxRemediationRounds()
 	var review run.IntentReview
 	for round := 0; ; round++ {
@@ -370,19 +376,24 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 		if !ok {
 			return // the reviewer produced no verdict (blocked) — recorded
 		}
-		techDone, ok := c.techManagerDone(ctx, id, cam, brief, review, folders)
+		// Gate 2's technical sign-off is the SAME review→fix→re-review primitive
+		// the run and quest gates use: a separate reviewer hard-reviews the
+		// campaign branch, citable blockers drive an in-loop fix pass, and non-citable
+		// (structural) findings are returned for remediation. The old technical-done
+		// attestation spawn is retired in favor of a real review.
+		clean, structural, gok := c.campaignGate2Review(ctx, id, cam, brief, folders)
 		if ctx.Err() != nil {
 			return
 		}
-		if !ok {
-			return // the tech manager produced no verdict (blocked) — recorded
+		if !gok {
+			return // gate 2 review hard-blocked (recorded)
 		}
 
 		missed := missedCommitments(brief, review)
-		if len(missed) == 0 && techDone.Done {
-			break // dual sign-off clean — deliver (partials annotate the PR)
+		if len(missed) == 0 && clean && len(structural) == 0 {
+			break // gate 2 clean (branch review clean + no missed commitment) — deliver (partials annotate the PR)
 		}
-		gaps := gapSummary(missed, techDone)
+		gaps := gapSummary(missed, structural)
 		if round >= rounds {
 			// E3: the remediation budget is exhausted — a genuine campaign DECISION.
 			// The tech manager escalates it ONE tier up to the intent-manager (the
@@ -404,7 +415,7 @@ func (c *Conductor) driveCampaign(ctx context.Context, id string) {
 			return
 		}
 
-		remediation := remediationQuests(cam, brief, review, techDone)
+		remediation := remediationQuests(cam, brief, review, structural)
 		if len(remediation) == 0 {
 			// Defensive: a gap with no addressable target — block rather than loop
 			// with nothing to spawn.
@@ -1084,40 +1095,100 @@ func (c *Conductor) reviewPartition(ctx context.Context, id string, cam run.Camp
 	return verdict, true
 }
 
-// techManagerDone spawns the tech manager at gate 2 to confirm technical done (all
-// child quests integrated green on the campaign branch, review-loop clean). Its
-// PROMPT names the branch diff command and the intent review's verdicts so it judges
-// the integrated state — {done, reason}. A missing verdict blocks (never a silent pass).
-func (c *Conductor) techManagerDone(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, review run.IntentReview, folders []string) (techDoneVerdict, bool) {
-	primary := folders[0]
-	extra := extraDirsFor(primary, folders)
+// campaignGate2Review is gate 2's technical sign-off: the SAME
+// review→fix→re-review primitive the run and quest gates use. It stands up a
+// detached review worktree at the campaign branch per impacted repo, then runs
+// reviewUntilClean with the brief's commitments as the task intent and the campaign's
+// OriginalInput as the root intent. Citable blockers drive an in-loop fix pass;
+// non-citable STRUCTURAL findings are returned so the gate-2 loop routes them into
+// remediation quests. ok=false means the review HARD-blocked (recorded) — the caller
+// returns without further remediation.
+func (c *Conductor) campaignGate2Review(ctx context.Context, id string, cam run.Campaign, brief run.IntentBrief, folders []string) (clean bool, structural []reviewFinding, ok bool) {
 	c.setCampaignRunning(id)
-	base, _ := currentBranch(ctx, primary)
-	c.putBrief(techManagerID, bus.Brief{
-		To:     techManagerID,
-		Role:   "tech-manager",
-		Prompt: techDoneBriefPrompt(cam, brief, review, orDefault(base, "main")),
-	})
-	prompt, opts := c.campaignSpawn(id, techManagerID, RoleTechManager, primary, techDoneBootstrapSlim, techDoneBootstrap)
-	res := streamOnce(ctx, c, id, techManagerID, prompt, primary, extra, opts)
-	c.addCampaignTokens(id, res.tokens)
-	if ctx.Err() != nil {
-		return techDoneVerdict{}, false
+	branch := CampaignBranch(cam)
+	wtRoot := filepath.Join(os.TempDir(), "candyland-gate", id)
+	delivered := map[string]string{}
+	defer gateCleanup(ctx, delivered, wtRoot) // proper worktree-remove per repo, then rm scratch
+	for _, repo := range folders {
+		if !isGitRepo(ctx, repo) {
+			continue
+		}
+		sha, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", branch)
+		if err != nil || strings.TrimSpace(sha) == "" {
+			continue // the branch carries no work in this repo
+		}
+		base, _ := currentBranch(ctx, repo)
+		if !branchHasDiff(ctx, repo, orDefault(base, "HEAD"), branch) {
+			continue // no divergence from base — nothing to review
+		}
+		wt := filepath.Join(wtRoot, repoBase(repo))
+		if err := addDetachedWorktree(ctx, repo, wt, strings.TrimSpace(sha)); err != nil {
+			c.blockCampaign(id, "gate 2: couldn't create the review worktree for "+repoBase(repo)+": "+err.Error())
+			return false, nil, false
+		}
+		delivered[repo] = wt
 	}
-	if res.startErr != nil {
-		c.blockCampaign(id, "gate 2 technical sign-off: "+startFailurePrefix+res.startErr.Error())
-		return techDoneVerdict{}, false
+	if len(delivered) == 0 {
+		return true, nil, true // nothing on the branch to review
 	}
-	if res.stalled {
-		c.blockCampaign(id, "the tech manager stalled before confirming technical done")
-		return techDoneVerdict{}, false
+	fixModel, fixThinking := c.agentConfig(RoleFix)
+	clean, structural = c.reviewUntilClean(ctx, id, delivered, branch, gate2TaskIntent(brief), cam.OriginalInput, fixModel, fixThinking)
+	if !clean && len(structural) == 0 {
+		return false, nil, false // reviewUntilClean already blocked the campaign
 	}
-	verdict, ok := parseTechDone(res.allText)
+	// Two-layer intent routing: a root-intent contradiction the reviewer
+	// flagged this round pauses the campaign for a ruling one tier up (the intent
+	// manager). `proceed` ships as-is; `fix` folds each contradiction into the
+	// structural set so the gate-2 loop routes it into a remediation quest and re-gates.
+	for _, iss := range c.routeCampaignIntentConflicts(ctx, id, branch) {
+		structural = append(structural, reviewFinding{Issue: iss})
+	}
+	return clean, structural, true
+}
+
+// routeCampaignIntentConflicts asks the intent manager (one tier up) to rule on any
+// root-intent contradictions the gate-2 reviewer flagged this round, stamps the
+// ruling, and returns the issues that must be reconciled (ruling `fix`) so the caller
+// folds them into the remediation set. `proceed` (the default) returns nothing.
+func (c *Conductor) routeCampaignIntentConflicts(ctx context.Context, id, branch string) []string {
+	cam, ok := c.GetCampaign(id)
 	if !ok {
-		c.blockCampaign(id, "the tech manager produced no TECH_DONE verdict — refusing to deliver un-confirmed work")
-		return techDoneVerdict{}, false
+		return nil
 	}
-	return verdict, true
+	issues := unruledConflictIssues(cam.IntentConflicts)
+	if len(issues) == 0 {
+		return nil
+	}
+	folders := campaignFolders(cam)
+	var workdir string
+	var extra []string
+	if len(folders) > 0 {
+		workdir, extra = folders[0], extraDirsFor(folders[0], folders)
+	}
+	esc, resolved := c.escalateCampaignDecision(ctx, cam, intentConflictQuestion(issues, branch), workdir, extra)
+	ruling := rulingFromAnswer(resolved, esc.Answer)
+	c.UpdateCampaign(id, func(cam *run.Campaign) { stampConflictRulings(cam.IntentConflicts, ruling) })
+	if ruling == "fix" {
+		return issues
+	}
+	return nil
+}
+
+// gate2TaskIntent renders the campaign's commitments as the task-layer intent the
+// gate-2 reviewer verifies the branch against (the commitment text the retired
+// technical-done brief used to render).
+func gate2TaskIntent(brief run.IntentBrief) string {
+	var b strings.Builder
+	if g := strings.TrimSpace(brief.RestatedGoal); g != "" {
+		fmt.Fprintf(&b, "CAMPAIGN GOAL: %s\n", g)
+	}
+	if len(brief.Commitments) > 0 {
+		b.WriteString("COMMITMENTS the delivered work must together satisfy:\n")
+		for _, cm := range brief.Commitments {
+			fmt.Fprintf(&b, "- [%s] %s\n", cm.ID, cm.Statement)
+		}
+	}
+	return b.String()
 }
 
 // setCampaignRunning flips a campaign back to running (clearing a transient pause
@@ -1169,8 +1240,20 @@ func (c *Conductor) intentReview(ctx context.Context, id string, cam run.Campaig
 	}
 	review, ok := parseIntentReview(res.allText)
 	if !ok {
-		c.blockCampaign(id, "the intent reviewer produced no INTENT_REVIEW verdict — refusing to deliver un-reviewed work")
-		return run.IntentReview{}, false
+		// One bounded resume-and-re-ask before blocking on a missing verdict.
+		rmodel, rthinking := c.agentConfig(RoleIntentReviewer)
+		if rep, did := c.repairVerdict(ctx, id, intentReviewerID, res.sessionID, "INTENT_REVIEW", primary, extra, rmodel, rthinking); did {
+			c.addCampaignTokens(id, rep.tokens) // the repair spawn's usage is the campaign's
+			if r2, ok2 := parseIntentReview(rep.allText); ok2 {
+				review, ok = r2, true
+			} else {
+				c.blockCampaign(id, "the intent reviewer "+noVerdictReason(rep, intentReviewerID, "INTENT_REVIEW")+" — refusing to deliver un-reviewed work")
+				return run.IntentReview{}, false
+			}
+		} else {
+			c.blockCampaign(id, "the intent reviewer "+noVerdictReason(res, intentReviewerID, "INTENT_REVIEW")+" — refusing to deliver un-reviewed work")
+			return run.IntentReview{}, false
+		}
 	}
 	review.ReviewedAt = time.Now().UTC().Format(time.RFC3339)
 	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.IntentReview = review })
@@ -1319,15 +1402,19 @@ func partialAnnotations(brief run.IntentBrief, review run.IntentReview) []string
 }
 
 // gapSummary is the human-readable description of what gate 2 still finds unmet: the
-// missed commitments plus a not-done technical verdict (if any). It drives the
+// missed commitments plus any non-citable structural review findings. It drives the
 // remediation note and the eventual hard-block reason.
-func gapSummary(missed []string, techDone techDoneVerdict) string {
+func gapSummary(missed []string, structural []reviewFinding) string {
 	var parts []string
 	if len(missed) > 0 {
 		parts = append(parts, fmt.Sprintf("%d missed commitment(s): %s", len(missed), strings.Join(missed, "; ")))
 	}
-	if !techDone.Done {
-		parts = append(parts, "technical sign-off withheld: "+orDefault(strings.TrimSpace(techDone.Reason), "the tech manager reports the campaign branch is not integrated/clean"))
+	if len(structural) > 0 {
+		issues := make([]string, 0, len(structural))
+		for _, s := range structural {
+			issues = append(issues, s.Issue)
+		}
+		parts = append(parts, fmt.Sprintf("%d structural review finding(s): %s", len(structural), strings.Join(issues, "; ")))
 	}
 	if len(parts) == 0 {
 		return "no specific gap"
@@ -1340,10 +1427,10 @@ func gapSummary(missed []string, techDone techDoneVerdict) string {
 // before it can deliver. Each quest names the specific commitment and quotes the
 // reviewer's evidence, so the quest's runs close that exact gap on the campaign
 // branch (Deliver=branch, campaign-child) rather than re-running the whole
-// decomposition. When the tech manager withheld technical sign-off with a reason,
-// one more remediation quest targets that technical gap. Missed commitments come
-// first (they block); partials follow (deliver-blocking only if they regress to missed).
-func remediationQuests(cam run.Campaign, brief run.IntentBrief, review run.IntentReview, techDone techDoneVerdict) []questPartitionItem {
+// decomposition. Each non-citable STRUCTURAL finding from the gate-2 branch review
+// gets one more remediation quest targeting that gap. Missed commitments come first
+// (they block); partials follow (deliver-blocking only if they regress to missed).
+func remediationQuests(cam run.Campaign, brief run.IntentBrief, review run.IntentReview, structural []reviewFinding) []questPartitionItem {
 	byID := commitmentByID(brief)
 	var missed, partial []questPartitionItem
 	n := 0
@@ -1369,30 +1456,34 @@ func remediationQuests(cam run.Campaign, brief run.IntentBrief, review run.Inten
 		}
 	}
 	out := append(missed, partial...)
-	if !techDone.Done {
+	// Non-citable STRUCTURAL review findings (gate 2) get one remediation quest each
+	// — the level that owns decomposition turns them into concrete work.
+	for _, s := range structural {
+		issue := strings.TrimSpace(s.Issue)
+		if issue == "" {
+			continue
+		}
 		n++
 		out = append(out, questPartitionItem{
 			ID:        fmt.Sprintf("r%d", n),
-			Title:     truncate("remediate: technical sign-off", 72),
-			Objective: techRemediationObjective(cam, brief, techDone),
+			Title:     truncate("remediate: "+issue, 72),
+			Objective: structuralRemediationObjective(cam, brief, issue),
 		})
 	}
 	return out
 }
 
-// techRemediationObjective frames the tech manager's withheld sign-off as a
-// remediation quest objective (integrate/clean the campaign branch to green).
-func techRemediationObjective(cam run.Campaign, brief run.IntentBrief, techDone techDoneVerdict) string {
+// structuralRemediationObjective frames a non-citable gate-2 review finding as a
+// remediation quest objective (deliver the missing work on the campaign branch).
+func structuralRemediationObjective(cam run.Campaign, brief run.IntentBrief, issue string) string {
 	var b strings.Builder
-	b.WriteString("REMEDIATE the campaign's technical integration so the tech manager can sign off.\n\n")
-	if r := strings.TrimSpace(techDone.Reason); r != "" {
-		fmt.Fprintf(&b, "WHAT IS STILL WRONG (tech manager): %s\n", r)
-	}
+	b.WriteString("REMEDIATE a structural review finding on the campaign branch so the gate-2 review passes.\n\n")
+	fmt.Fprintf(&b, "REVIEW FINDING (no single cited file — decompose it into concrete work): %s\n", issue)
 	fmt.Fprintf(&b, "\nThis is remediation work for the campaign goal: %s\n", brief.RestatedGoal)
 	if len(brief.ScopeByDomain) > 0 {
 		fmt.Fprintf(&b, "Stay in scope: %s\n", strings.Join(brief.ScopeByDomain, "; "))
 	}
-	b.WriteString("Deliver only the work needed to make the campaign branch integrate green with the review-loop clean.\n")
+	b.WriteString("Deliver only the work needed to resolve this finding; commit it onto the campaign branch.\n")
 	return b.String()
 }
 
@@ -1437,14 +1528,6 @@ type questPartitionItem = run.QuestPartitionItem
 // back to the tech manager (bounded by maxPartitionAttempts).
 type partitionVerdict struct {
 	Agree  bool   `json:"agree"`
-	Reason string `json:"reason"`
-}
-
-// techDoneVerdict is the tech manager's gate-2 technical sign-off, emitted on a
-// `TECH_DONE <json>` line: {done, reason}. done=false feeds a remediation quest
-// (bounded by maxRemediationRounds).
-type techDoneVerdict struct {
-	Done   bool   `json:"done"`
 	Reason string `json:"reason"`
 }
 
@@ -1512,24 +1595,6 @@ func parsePartitionVerdict(text string) (partitionVerdict, bool) {
 		}
 		var parsed partitionVerdict
 		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "PARTITION_REVIEW ")), &parsed) == nil {
-			v, ok = parsed, true
-		}
-	}
-	return v, ok
-}
-
-// parseTechDone extracts the tech manager's gate-2 technical sign-off from a
-// `TECH_DONE <json>` line. ok is false when no such line is present. Last wins.
-func parseTechDone(text string) (techDoneVerdict, bool) {
-	var v techDoneVerdict
-	ok := false
-	for _, ln := range strings.Split(text, "\n") {
-		ln = strings.TrimSpace(ln)
-		if !strings.HasPrefix(ln, "TECH_DONE ") {
-			continue
-		}
-		var parsed techDoneVerdict
-		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "TECH_DONE ")), &parsed) == nil {
 			v, ok = parsed, true
 		}
 	}
@@ -1731,7 +1796,7 @@ func parseIntentReview(text string) (run.IntentReview, bool) {
 // and APPLY them, then emit a structured INTENT_BRIEF verdict. It must NOT inline a
 // rubric — the doctrine is the rubric (the Composition Constraint).
 const intentLeadBootstrap = "You are the intent lead opening a campaign — the program-level intake that turns an immutable original request into a structured, checkable plan. " +
-	"Call the brief_get tool FIRST to read the campaign's ORIGINAL INPUT and any prior-attempt feedback — it is no longer on your command line. " +
+	"Call the brief_get tool FIRST to read the campaign's ORIGINAL INPUT and any prior-attempt feedback — it is no longer on your command line." + briefGetToolHint + ". " +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"core/planning\" (what a settled plan is and the .plan contract) and kb_get name=\"core/dream\" (executive intake: own the technical decisions, never ask the stakeholder). " +
 	"Do NOT improvise your own rubric — use the doctrine you loaded, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
 	"Restate the goal, split the scope by domain, derive the CHECKABLE COMMITMENTS (each a single assertion intent review can later judge satisfied/partial/missed), draft the task list, list dependencies, and suggest human review-routing. " +
@@ -1744,7 +1809,7 @@ const intentLeadBootstrap = "You are the intent lead opening a campaign — the 
 // load instructions are dropped. Every behavioral rule and the INTENT_BRIEF
 // verdict contract stay byte-identical to the full bootstrap.
 const intentLeadBootstrapSlim = "You are the intent lead opening a campaign — the program-level intake that turns an immutable original request into a structured, checkable plan. " +
-	"Call the brief_get tool FIRST to read the campaign's ORIGINAL INPUT and any prior-attempt feedback — it is no longer on your command line. " +
+	"Call the brief_get tool FIRST to read the campaign's ORIGINAL INPUT and any prior-attempt feedback — it is no longer on your command line." + briefGetToolHint + ". " +
 	"APPLY the detritus doctrine already loaded in this session. " +
 	"Do NOT improvise your own rubric — use the doctrine already loaded in this session, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
 	"Restate the goal, split the scope by domain, derive the CHECKABLE COMMITMENTS (each a single assertion intent review can later judge satisfied/partial/missed), draft the task list, list dependencies, and suggest human review-routing. " +
@@ -1768,7 +1833,7 @@ func intentLeadBriefPrompt(cam run.Campaign) string {
 // final-review method via kb_get (core/intent-review) — NOT an inlined rubric — and
 // emits a per-commitment verdict {satisfied|partial|missed} with cited evidence.
 const intentReviewerBootstrap = "You are the intent reviewer closing a campaign: judge whether the delivered work satisfies what the campaign COMMITTED to, per commitment, against the ORIGINAL INPUT — not just whether tasks ran. " +
-	"Call the brief_get tool FIRST to read the original input, the commitments to judge, and the diff command for the campaign branch. " +
+	"Call the brief_get tool FIRST to read the original input, the commitments to judge, and the diff command for the campaign branch." + briefGetToolHint + ". " +
 	"Load and APPLY the detritus final-review method via the kb_get tool: kb_get name=\"core/intent-review\" (the per-commitment verdict method). If that document is unavailable, fall back to kb_get name=\"core/completion\" (the definition of done) and kb_get name=\"core/review-rigor\"; APPLY the doctrine, do NOT improvise your own rubric. " +
 	"Inspect the delivered work (run the diff command in the brief, read the changed files) and judge EACH commitment: satisfied (fully delivered with evidence), partial (some but not all), or missed (not delivered). Cite concrete evidence for every verdict. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_REVIEW ` followed by JSON " +
@@ -1781,7 +1846,7 @@ const intentReviewerBootstrap = "You are the intent reviewer closing a campaign:
 // doctrine. The judging rules and the INTENT_REVIEW verdict contract stay
 // byte-identical to the full bootstrap.
 const intentReviewerBootstrapSlim = "You are the intent reviewer closing a campaign: judge whether the delivered work satisfies what the campaign COMMITTED to, per commitment, against the ORIGINAL INPUT — not just whether tasks ran. " +
-	"Call the brief_get tool FIRST to read the original input, the commitments to judge, and the diff command for the campaign branch. " +
+	"Call the brief_get tool FIRST to read the original input, the commitments to judge, and the diff command for the campaign branch." + briefGetToolHint + ". " +
 	"APPLY the detritus final-review method already loaded in this session (the per-commitment verdict method); APPLY the doctrine, do NOT improvise your own rubric. " +
 	"Inspect the delivered work (run the diff command in the brief, read the changed files) and judge EACH commitment: satisfied (fully delivered with evidence), partial (some but not all), or missed (not delivered). Cite concrete evidence for every verdict. " +
 	"Then emit EXACTLY ONE verdict line and stop: `INTENT_REVIEW ` followed by JSON " +
@@ -1811,7 +1876,7 @@ func intentReviewerBriefPrompt(cam run.Campaign, brief run.IntentBrief, base str
 // via kb_get and APPLY its program-altitude partition rules, then emit ONE machine-
 // readable QUESTS line. It must NOT inline a rubric — the doctrine is the rubric.
 const techManagerBootstrap = "You are the tech manager opening a campaign: you own everything technical — how the Intent Brief is partitioned into concurrent child QUESTS, integration across the shared branch, and remediation targeting. " +
-	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line. " +
+	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line." + briefGetToolHint + ". " +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (its program-altitude partition rules for a campaign). Do NOT improvise your own rubric — use the doctrine you loaded, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
 	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
 	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
@@ -1823,7 +1888,7 @@ const techManagerBootstrap = "You are the tech manager opening a campaign: you o
 // partition rules and the QUESTS line contract stay byte-identical to the full
 // bootstrap.
 const techManagerBootstrapSlim = "You are the tech manager opening a campaign: you own everything technical — how the Intent Brief is partitioned into concurrent child QUESTS, integration across the shared branch, and remediation targeting. " +
-	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line. " +
+	"Call the brief_get tool FIRST to read the campaign's Intent Brief (goal, scope-by-domain, commitments, draft tasks) and any prior-attempt feedback — it is no longer on your command line." + briefGetToolHint + ". " +
 	"APPLY the detritus doctrine already loaded in this session. Do NOT improvise your own rubric — use the doctrine already loaded in this session, and decide every technical question yourself (this is a launched campaign; it never asks the user). " +
 	"Partition the brief into the SMALLEST set of child quests that together deliver its commitments. Each quest is a bounded objective a quest-lead can drive to completion on the shared campaign branch. Make quests CONCURRENT by default; declare a dependency ONLY where one quest genuinely must finish before another can start. " +
 	"Then emit EXACTLY ONE line and stop: `QUESTS ` followed by a JSON array " +
@@ -1859,7 +1924,7 @@ func techManagerBriefPrompt(cam run.Campaign, brief run.IntentBrief) string {
 // brief's commitments, and emits a single PARTITION_REVIEW verdict. It composes the
 // intent method via kb_get — never an inlined rubric.
 const partitionReviewBootstrap = "You are the intent manager at gate 1 of a campaign: judge whether the tech manager's proposed child-quest partition would plausibly deliver the Intent Brief's commitments BEFORE any work launches. This is a partition-convergence gate between two managers, not the final review. " +
-	"Call the brief_get tool FIRST to read the brief's commitments and the tech manager's proposed quests. " +
+	"Call the brief_get tool FIRST to read the brief's commitments and the tech manager's proposed quests." + briefGetToolHint + ". " +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"core/planning\" (what a settled plan must cover). Do NOT improvise your own rubric. " +
 	"Judge coverage: does every commitment map to at least one quest, is the scope right, are the dependencies sane? " +
 	"Then emit EXACTLY ONE line and stop: `PARTITION_REVIEW ` followed by JSON " +
@@ -1871,7 +1936,7 @@ const partitionReviewBootstrap = "You are the intent manager at gate 1 of a camp
 // The coverage judgment and the PARTITION_REVIEW verdict contract stay
 // byte-identical to the full bootstrap.
 const partitionReviewBootstrapSlim = "You are the intent manager at gate 1 of a campaign: judge whether the tech manager's proposed child-quest partition would plausibly deliver the Intent Brief's commitments BEFORE any work launches. This is a partition-convergence gate between two managers, not the final review. " +
-	"Call the brief_get tool FIRST to read the brief's commitments and the tech manager's proposed quests. " +
+	"Call the brief_get tool FIRST to read the brief's commitments and the tech manager's proposed quests." + briefGetToolHint + ". " +
 	"APPLY the detritus doctrine already loaded in this session. Do NOT improvise your own rubric. " +
 	"Judge coverage: does every commitment map to at least one quest, is the scope right, are the dependencies sane? " +
 	"Then emit EXACTLY ONE line and stop: `PARTITION_REVIEW ` followed by JSON " +
@@ -1896,44 +1961,5 @@ func partitionReviewBriefPrompt(cam run.Campaign, brief run.IntentBrief, quests 
 		fmt.Fprintf(&b, "- [%s] %s — %s%s\n", q.ID, q.Title, q.Objective, deps)
 	}
 	b.WriteString("\nWould these quests plausibly deliver every commitment? Emit one PARTITION_REVIEW verdict.\n")
-	return b.String()
-}
-
-// techDoneBootstrap is the CONSTANT gate-2 prompt for the tech manager: it confirms
-// the campaign branch is technically done (all child quests integrated, review-loop
-// clean) and emits a single TECH_DONE verdict. Composition via kb_get, no inlined rubric.
-const techDoneBootstrap = "You are the tech manager at gate 2 of a campaign confirming technical sign-off: judge whether the child quests are integrated GREEN on the campaign branch with the review loop clean, before the campaign opens its PRs. " +
-	"Call the brief_get tool FIRST to read the campaign goal, the intent review's per-commitment verdicts, and the branch diff command. " +
-	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"roles/tech-lead\" (integration/definition-of-done). Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
-	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
-	`{"done":true|false,"reason":"integration/review-loop status"}` +
-	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer." + incidentDoctrine
-
-// techDoneBootstrapSlim is the fork-path variant of techDoneBootstrap: the kb_get
-// load is dropped — the forked session already carries the doctrine. The
-// inspection rule and the TECH_DONE verdict contract stay byte-identical to the
-// full bootstrap.
-const techDoneBootstrapSlim = "You are the tech manager at gate 2 of a campaign confirming technical sign-off: judge whether the child quests are integrated GREEN on the campaign branch with the review loop clean, before the campaign opens its PRs. " +
-	"Call the brief_get tool FIRST to read the campaign goal, the intent review's per-commitment verdicts, and the branch diff command. " +
-	"APPLY the detritus doctrine already loaded in this session. Inspect the integrated work (run the diff command, read changed files). Do NOT improvise your own rubric. " +
-	"Then emit EXACTLY ONE line and stop: `TECH_DONE ` followed by JSON " +
-	`{"done":true|false,"reason":"integration/review-loop status"}` +
-	". done=false feeds a remediation quest to close the technical gap. Do not ask questions and do not defer." + incidentDoctrine
-
-// techDoneBriefPrompt is the per-campaign context the tech manager reads via brief_get
-// at gate 2: the goal, the intent review's verdicts, and the campaign-branch diff command.
-func techDoneBriefPrompt(cam run.Campaign, brief run.IntentBrief, review run.IntentReview, base string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "CAMPAIGN GOAL: %s\n\n", brief.RestatedGoal)
-	if len(review.Verdicts) > 0 {
-		b.WriteString("THE INTENT REVIEW'S PER-COMMITMENT VERDICTS (for context):\n")
-		for _, v := range review.Verdicts {
-			fmt.Fprintf(&b, "- [%s] %s\n", v.CommitmentID, v.Verdict)
-		}
-		b.WriteString("\n")
-	}
-	branch := CampaignBranch(cam)
-	fmt.Fprintf(&b, "The child quests integrated onto the campaign branch %q. Inspect it with: git diff %s..%s\n", branch, base, branch)
-	b.WriteString("Confirm whether the branch is integrated green with the review loop clean. Emit one TECH_DONE verdict.\n")
 	return b.String()
 }

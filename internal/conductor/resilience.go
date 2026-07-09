@@ -108,26 +108,36 @@ func maxReviewRounds() int { return envInt("CANDYLAND_REVIEW_ROUNDS", 10) }
 // classification isn't a fragile substring guess.
 const startFailurePrefix = "Claude Code failed to start: "
 
+// resumeContinuePrompt is the prompt used when a limit/connection death is resumed
+// on the ACTUAL work session (not the doctrine template): the interrupted work is
+// continued in place rather than redone from scratch, so the agent finishes what it
+// started and emits its required protocol/verdict line.
+const resumeContinuePrompt = "You were interrupted (usage limit or connection loss) and this session has been resumed. Continue from where you stopped. Finish the task and emit the required protocol/verdict line."
+
 // attemptOutcome is what one claude process run produced — enough to decide
 // whether it actually complied with its instructions.
 type attemptOutcome struct {
 	partition     []partitionTask
-	review        *reviewVerdict // the reviewer's structured verdict (review phase only)
-	sawTool       bool           // the model used at least one tool (i.e. did real work)
-	lastText      string         // most recent assistant/result text (for deferral/question detection)
-	stalled       bool           // killed for producing no output, or exceeding the wall clock
-	startErr      error          // process could not be started (binary missing / not authenticated)
-	runErr        error          // process exited non-zero on its own
-	resultErrored bool           // a result line arrived with a non-success subtype (harness-signaled failure, even on a clean exit)
-	stderr        string         // the process's stderr (why it exited), surfaced on failure
-	tokens        int            // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
-	allText       string         // every assistant/result text block joined (a verdict line may be in any block, not just the last)
+	sawTool       bool   // the model used at least one tool (i.e. did real work)
+	lastText      string // most recent assistant/result text (for deferral/question detection)
+	stalled       bool   // killed for producing no output, or exceeding the wall clock
+	startErr      error  // process could not be started (binary missing / not authenticated)
+	runErr        error  // process exited non-zero on its own
+	resultErrored bool   // a result line arrived with a non-success subtype (harness-signaled failure, even on a clean exit)
+	stderr        string // the process's stderr (why it exited), surfaced on failure
+	tokens        int    // output tokens reported on the result line (for callers with no tracked run, e.g. a quest tick)
+	allText       string // every assistant/result text block joined (a verdict line may be in any block, not just the last)
 	// Raw usage totals accumulated from result lines — UNSCALED counts, unlike
 	// tokens above which keeps its /1000 display scaling. Input vs cache-read vs
 	// cache-creation split so cost and cache efficiency are derivable per attempt.
 	inputTokens      int
 	cacheReadTokens  int
 	cacheWriteTokens int
+	// sessionID is the claude session id this spawn actually ran under — the first
+	// non-empty session_id the stream emitted (the init line). It is the ACTUAL work
+	// session, distinct from a forked template id, so a limit/connection resume can
+	// continue the real interrupted work rather than redo it from the template.
+	sessionID string
 }
 
 // terminalFailed reports that the spawn reached a NON-success terminal: it failed
@@ -271,17 +281,26 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 			o.sessionID = sid
 		}
 	}
-	// resumeSession is the session a limit-interrupted resume continues in place;
-	// the fork template already carries its own, else it's the minted cold one.
+	// resumeSession is the session a limit-interrupted resume continues in place.
+	// Preference order (documented): the ACTUAL work session (captured from the
+	// init line once a spawn runs) ▸ the fork template ▸ the minted cold id. It
+	// starts at template/cold and is upgraded to the real work session below.
+	origForkFrom := o.forkFrom
 	resumeSession := firstNonEmpty(o.forkFrom, o.sessionID)
 	repaused := 0    // usage-limit + connection-loss pauses combined (unbounded)
 	infraStreak := 0 // CONSECUTIVE connection-loss deaths (resets on any other outcome)
 	// resumeInPlace switches this spawn to continue the interrupted session next
-	// iteration, keeping the full bootstrap so a cold-boot fallback still has context.
+	// iteration. When resumeSession is the ACTUAL work session (differs from the
+	// original template id), continue it with resumeContinuePrompt — the interrupted
+	// work is resumed, not redone. When only the template id is known (the init line
+	// never arrived), keep today's behavior byte-for-byte: redo cold with the
+	// fallback bootstrap so a cold-boot fallback still has full context.
 	resumeInPlace := func() {
 		if resumeSession != "" {
 			o.resumeFrom, o.forkFrom = resumeSession, ""
-			if o.fallbackPrompt != "" {
+			if resumeSession != origForkFrom {
+				prompt = resumeContinuePrompt
+			} else if o.fallbackPrompt != "" {
 				prompt = o.fallbackPrompt
 			}
 		}
@@ -302,6 +321,12 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
 		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, o)
 		cancel()
+		// Upgrade the resume target to the ACTUAL work session once a spawn ran under
+		// one — so a later limit/connection resume continues the real interrupted work
+		// (resumeContinuePrompt) instead of redoing it from the template.
+		if out.sessionID != "" {
+			resumeSession = out.sessionID
+		}
 		// A usage-limit death is NOT the agent's fault, so it must not burn an
 		// attempt: arm the conductor-wide gate, then resume this session in place
 		// once it reopens. The re-pause counter is unbounded — a limit can recur.
@@ -487,6 +512,12 @@ loop:
 			if json.Unmarshal(b, &line) != nil {
 				continue
 			}
+			// Capture the ACTUAL work session id (first non-empty wins) — the init
+			// line carries it. A later limit/connection resume continues THIS session
+			// in place rather than redoing the work from a forked template.
+			if out.sessionID == "" && line.SessionID != "" {
+				out.sessionID = line.SessionID
+			}
 			if line.Type == "result" {
 				out.tokens += line.Usage.OutputTokens / 1000 // same 1k scaling appendToAgent uses
 				out.inputTokens += line.Usage.InputTokens
@@ -501,12 +532,9 @@ loop:
 					out.resultErrored = true
 				}
 			}
-			p, rv, sawTool, text := mapAgentLine(c, id, agentID, line)
+			p, sawTool, text := mapAgentLine(c, id, agentID, line)
 			if p != nil {
 				out.partition = p
-			}
-			if rv != nil {
-				out.review = rv
 			}
 			if sawTool {
 				out.sawTool = true
@@ -659,6 +687,23 @@ func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, bas
 		}
 		reason = why
 		if attempt >= attempts {
+			// Tech-lead missing PARTITION: one bounded resume-and-re-ask before the
+			// failure path, and a truthful limit-vs-clean postmortem reason.
+			if isTechLead && why == "did not emit a task partition" {
+				var m, th string
+				if len(opts) > 0 {
+					m, th = opts[0].model, opts[0].thinking
+				}
+				if rep, did := c.repairVerdict(parentCtx, id, agentID, out.sessionID, "PARTITION", workdir, extraDirs, m, th); did {
+					if p := parsePartition(rep.allText); len(p) > 0 {
+						return p
+					}
+					why = noVerdictReason(rep, agentID, "PARTITION")
+				} else {
+					why = noVerdictReason(out, agentID, "PARTITION")
+				}
+				reason = why
+			}
 			msg := failMessage(agentID, isTechLead, why, attempts)
 			log.Printf("candyland: run %s %s failed after %d attempts: %s", id, agentID, attempts, why)
 			c.Update(id, func(r *run.Run) {
@@ -676,6 +721,42 @@ func runAgentResilient(parentCtx context.Context, c *Conductor, id, agentID, bas
 		}
 	}
 	return nil
+}
+
+// repairVerdict re-asks an agent that completed without its protocol line to emit
+// it, by resuming its OWN session (one bounded spawn). Returns the repaired
+// outcome; ok=false when no session id is known or the repair also lacks the line.
+// It is the "one bounded resume-and-re-ask" the doctrine requires before a unit
+// blocks on a missing protocol line — the caller re-parses the returned allText.
+func (c *Conductor) repairVerdict(ctx context.Context, hostID, agentID, sessionID,
+	verdictName, workdir string, extra []string, model, thinking string) (attemptOutcome, bool) {
+	if sessionID == "" {
+		return attemptOutcome{}, false // no session to resume — nothing to re-ask
+	}
+	prompt := "Your previous reply did not include the required " + verdictName +
+		" line. Based on the work you already completed in this session, emit it now. Output ONLY the protocol line."
+	out := streamOnce(ctx, c, hostID, agentID, prompt, workdir, extra,
+		spawnOpts{resumeFrom: sessionID, maxTurns: 2, model: model, thinking: thinking})
+	return out, true
+}
+
+// terminalLimitInterrupted reports whether an outcome's terminal text matches a
+// usage-limit banner/phrase — the honest signal that a missing verdict is a limit
+// death, not agent noncompliance. Used by the truthful-postmortem call sites.
+func terminalLimitInterrupted(out attemptOutcome) bool {
+	text := out.stderr + "\n" + out.lastText + "\n" + out.allText
+	return limitBannerRe.MatchString(text) || limitPhraseRe.MatchString(text)
+}
+
+// noVerdictReason classifies why an agent produced no verdict: a limit-interrupted
+// terminal records the limit death; only a genuinely clean, non-limit terminal
+// records "produced no <verdict> verdict" (so a postmortem never misattributes a
+// limit death as noncompliance).
+func noVerdictReason(out attemptOutcome, agentID, verdictName string) string {
+	if terminalLimitInterrupted(out) {
+		return "usage limit interrupted " + agentID + " before its " + verdictName + " verdict"
+	}
+	return "produced no " + verdictName + " verdict"
 }
 
 func failMessage(agentID string, isTechLead bool, why string, attempts int) string {

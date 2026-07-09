@@ -396,8 +396,6 @@ func TestBootstrapsCarryIncidentDoctrine(t *testing.T) {
 		"intentReviewerBootstrapSlim":  intentReviewerBootstrapSlim,
 		"techManagerBootstrap":         techManagerBootstrap,
 		"techManagerBootstrapSlim":     techManagerBootstrapSlim,
-		"techDoneBootstrap":            techDoneBootstrap,
-		"techDoneBootstrapSlim":        techDoneBootstrapSlim,
 		"partitionReviewBootstrap":     partitionReviewBootstrap,
 		"partitionReviewBootstrapSlim": partitionReviewBootstrapSlim,
 		"decisionBootstrap":            decisionBootstrap,

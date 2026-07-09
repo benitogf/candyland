@@ -231,6 +231,12 @@ func formatBrief(b bus.Brief) string {
 	if b.Intent != "" {
 		fmt.Fprintf(&sb, "intent (the driving ask — the diff must satisfy it):\n%s\n", b.Intent)
 	}
+	// Two-layer intent: the verbatim root is rendered ONLY when it is present and
+	// differs from the task intent. When they coincide (a standalone run) the
+	// section is omitted, which disarms the contradiction channel by construction.
+	if b.RootIntent != "" && b.RootIntent != b.Intent {
+		fmt.Fprintf(&sb, "ROOT INTENT (context only — the top-level goal this unit serves; you may flag contradictions with it, you may NOT demand its completeness):\n%s\n", b.RootIntent)
+	}
 	if b.Attempt > 1 {
 		fmt.Fprintf(&sb, "attempt: %d\n", b.Attempt)
 	}

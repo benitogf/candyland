@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -224,7 +225,38 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	// ── Review: a SEPARATE reviewer agent hard-reviews each integrated diff before
 	//    any PR opens. Blockers drive a bounded fix→re-review loop; only a clean
 	//    review across every repo lets delivery proceed. ──
-	if !c.reviewUntilClean(ctx, id, delivered, r.Branch) {
+	// The reviewer judges intent fidelity, so its brief carries the run's driving
+	// intent — OriginalIntent is the launch prompt captured once at creation; Prompt
+	// is the fallback for records that predate it. Task titles name what the
+	// partition set out to build. (Moved here from reviewUntilClean, which is now the
+	// level-agnostic primitive.)
+	taskIntent := r.OriginalIntent
+	if taskIntent == "" {
+		taskIntent = r.Prompt
+	}
+	var taskTitles []string
+	if cur, ok := c.Get(id); ok {
+		for _, t := range cur.Tasks {
+			taskTitles = append(taskTitles, t.Title)
+		}
+	}
+	if len(taskTitles) > 0 {
+		lead := ""
+		if taskIntent != "" {
+			lead = "\n\n"
+		}
+		taskIntent += lead + "Partitioned tasks (what the loop set out to build):\n- " + strings.Join(taskTitles, "\n- ")
+	}
+	fixModel, fixThinking := c.agentConfig(RoleFix)
+	// A standalone run has no higher layer to contradict, so its root-intent channel
+	// stays DISARMED (RootIntent == "") — the render rule would otherwise arm it because
+	// taskIntent carries the "Partitioned tasks…" suffix and would differ from the bare
+	// OriginalIntent. Only a quest/campaign child carries a genuine root layer.
+	rootIntent := ""
+	if r.QuestID != "" {
+		rootIntent = c.rootIntentFor(id)
+	}
+	if clean, _ := c.reviewUntilClean(ctx, id, delivered, r.Branch, taskIntent, rootIntent, fixModel, fixThinking); !clean {
 		return // findings unresolved (or stopped) — never open a PR on un-reviewed work
 	}
 
@@ -1047,7 +1079,7 @@ const incidentDoctrine = " Separate from and additional to any protocol/verdict 
 	`{"summary":<one line what happened>,"detail":<optional: what you did about it>,"severity":"info"|"warn"|"error"}` +
 	" and keep working. Never stop for an incident; a genuine blocker is a different thing."
 
-const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line. " +
+const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line." + briefGetToolHint + " " +
 	"Then emit exactly one line beginning with `PARTITION ` followed by a JSON array of fork-safe tasks: " +
 	`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
 	"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
@@ -1056,7 +1088,7 @@ const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST 
 	"If the work spans more than one of the run's folders/repos, set each task's \"repo\" to the target folder's name (omit it for the primary repo); each impacted repo gets its own pull request. " +
 	"Then stop." + incidentDoctrine
 
-const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role. " +
+const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role." + briefGetToolHint + " " +
 	"Implement the task until its defining test is green: make the changes with your tools — do not just describe them. " +
 	"If your role is \"fullstack\", implement BOTH the server side and the client side of the slice and keep the API contract consistent between them. " +
 	"When you run the defining test, report the result as one line beginning with `TEST ` " +
@@ -1127,6 +1159,12 @@ type reviewFinding struct {
 	File  string `json:"file"`
 	Line  int    `json:"line,omitempty"`
 	Issue string `json:"issue"`
+	// synthesized marks a blocker the CONDUCTOR fabricated (a narration-bounce of a
+	// self-contradicting REVIEW_CLEAN), not one the reviewer cited. It carries no real
+	// file, so splitFindings must keep it in the fix loop at every level rather than
+	// class it structural and route it to a child run / remediation quest. Unexported
+	// + json:"-" so a reviewer's parsed output can never set it.
+	synthesized bool `json:"-"`
 }
 
 // reviewVerdict is the structured outcome a reviewer emits — either a single line
@@ -1331,146 +1369,367 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 // true only when every repo reviews clean (so the executor opens a PR), false when
 // the round budget is exhausted with blockers still open (recording an honest run
 // error and opening no PR) or the run was stopped.
-func (c *Conductor) reviewUntilClean(ctx context.Context, id string, delivered map[string]string, branch string) bool {
+func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
+	delivered map[string]string, branch string,
+	taskIntent, rootIntent string,
+	fixModel, fixThinking string) (clean bool, structural []reviewFinding) {
 	rounds := maxReviewRounds()
 	reviewerModel, reviewerThinking := c.agentConfig(RoleReviewer)
-	fixModel, fixThinking := c.agentConfig(RoleFix)
-	c.Update(id, func(r *run.Run) {
-		r.Phase = run.PhaseReview
-		r.StatusLine = "Reviewing the integrated changes before opening a pull request…"
-		r.Agents = append(r.Agents, run.Agent{ID: reviewerID, Role: "Reviewer", Emoji: "🔎",
-			Task: "review the integrated diff", State: "working", Activity: "loading review doctrine",
-			Budget: clampReviewBudget(400), Worktree: "wt/review", Model: reviewerModel, Thinking: reviewerThinking})
-	})
-	folders := orderedDelivered(delivered)
-	// The reviewer judges intent fidelity, so its brief carries the run's driving
-	// intent — OriginalIntent is the launch prompt captured once at creation
-	// (types.go); Prompt is the fallback for records that predate it. Task titles
-	// name what the partition set out to build.
-	intent := ""
-	var taskTitles []string
-	if r, ok := c.Get(id); ok {
-		intent = r.OriginalIntent
-		if intent == "" {
-			intent = r.Prompt
-		}
-		for _, t := range r.Tasks {
-			taskTitles = append(taskTitles, t.Title)
-		}
-	}
-	if len(taskTitles) > 0 {
-		lead := ""
-		if intent != "" {
-			lead = "\n\n" // separate from the intent prose; skip the blank lines when there is none
-		}
-		intent += lead + "Partitioned tasks (what the loop set out to build):\n- " + strings.Join(taskTitles, "\n- ")
-	}
+	// isRunHost: a run's own review folds structural findings back into the fix set
+	// (there is no lower tier to decompose them), preserving today's behavior byte-
+	// for-byte. A quest/campaign gate splits them out and returns them for the caller
+	// to route to its decomposition owner.
+	isRunHost := !strings.HasPrefix(hostID, "q") && !strings.HasPrefix(hostID, "c")
 	totalRounds := 0
+	// A run records ReviewRounds only on the all-clean path (byte-equivalence);
+	// a quest/campaign gate accumulates GateRounds on every return (cumulative across
+	// re-entries). `clean` is the named result read at defer time.
+	defer func() { c.recordReviewRounds(hostID, totalRounds, clean) }()
+	// The gate review loop's reviewer/repair/fix spawns consume tokens that must count
+	// against a quest/campaign budget (the retired gate-2 spawn did); fold the total
+	// into TokensUsed on the way out (a no-op at run level, whose tokens are already
+	// tracked on the agent rollup).
+	gateTokens := 0
+	defer func() { c.addGateReviewTokens(hostID, gateTokens) }()
+	c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+		a := ensureAgent(agents, reviewerID)
+		a.Role, a.Emoji, a.Task = "Reviewer", "🔎", "review the integrated diff"
+		a.State, a.Activity = "working", "loading review doctrine"
+		a.Budget, a.Worktree, a.Model, a.Thinking = clampReviewBudget(400), "wt/review", reviewerModel, reviewerThinking
+	})
+	if isRunHost {
+		c.Update(hostID, func(r *run.Run) {
+			r.Phase = run.PhaseReview
+			r.StatusLine = "Reviewing the integrated changes before opening a pull request…"
+		})
+	}
+	folders := orderedDelivered(delivered)
 	for _, repo := range folders {
 		integDir := delivered[repo]
 		base, _ := currentBranch(ctx, repo)
-		// EVERY round forks the reviewer doctrine template (computed once per repo,
-		// before any spawn) with the slim bootstrap — the template already carries
-		// core/review-rigor + truthseeker. When no template resolves the round is
-		// byte-for-byte today's cold spawn: the full kb_get bootstrap, no fork args.
-		// A fork that fails mid-run falls back to the full bootstrap (streamOnce).
+		// EVERY round-1 (and every fallback) forks the reviewer doctrine template
+		// (computed once per repo) with the slim bootstrap — the template already
+		// carries core/review-rigor + truthseeker. When no template resolves the round
+		// is byte-for-byte today's cold spawn: the full kb_get bootstrap, no fork args.
 		tpl, tplOK := c.templateForWorkdir(RoleReviewer, repo, integDir)
 		if tplOK {
 			defer cleanupTemplateCopy(tpl, integDir)
 		}
-		// Record which doctrine path this repo's rounds actually take — the event
-		// must never claim a fork the spawn didn't get (kill switch, failed
-		// creation, or failed copy all degrade to the cold kb_get path).
 		doctrineEvent := "reviewer · kb_get core/review-rigor + truthseeker — " + repoBase(repo)
 		if tplOK {
 			doctrineEvent = "reviewer · doctrine template fork (core/review-rigor + truthseeker) — " + repoBase(repo)
 		}
-		c.Update(id, func(r *run.Run) {
-			appendToAgent(r, reviewerID, run.Event{T: "system", Text: doctrineEvent}, 0)
+		c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+			appendToAgentIn(agents, reviewerID, run.Event{T: "system", Text: doctrineEvent}, 0)
 		})
+		// The reviewer brief carries the diff command + both intent layers. It is
+		// re-put before every FORK spawn (spawnReviewer) so a prior fix pass's brief on
+		// the shared brief/<reviewerID> key can never shadow it; a resume round reads
+		// nothing (it continues the session that already holds this brief).
+		reviewerBrief := bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo),
+			Prompt: "git diff " + base + ".." + branch, Intent: taskIntent, RootIntent: rootIntent}
+
+		// Reviewer session continuity: round 1 forks the template and captures its
+		// session id; round ≥ 2 RESUMES it with a fresh-evidence reverify prompt so the
+		// reviewer does not re-derive the brief/diff/tests it already holds.
+		reviewerSession := ""
+		// Remove EVERY reviewer transcript this repo's rounds minted (each fork and each
+		// fallback fork opens a distinct session), on every exit path — alongside the
+		// template-copy cleanup defer. The closure reads the final session set.
+		var reviewerSessions []string
+		defer func() {
+			for _, s := range reviewerSessions {
+				cleanupTemplateCopy(s, integDir)
+			}
+		}()
+		var pendingReverify []reviewFinding // blockers the fix pass just addressed, to re-verify
+		repoClean := false
 		for round := 1; round <= rounds; round++ {
 			if ctx.Err() != nil {
-				return false // stopped mid-review
+				return false, nil // stopped mid-review
 			}
 			totalRounds++
-			c.Update(id, func(r *run.Run) {
-				r.StatusLine = fmt.Sprintf("Reviewing %s (round %d/%d)…", repoBase(repo), round, rounds)
-				setAgentState(r, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
-			})
-			c.putBrief(reviewerID, bus.Brief{Role: "reviewer", Title: "review " + repoBase(repo), Prompt: "git diff " + base + ".." + branch, Intent: intent})
-			prompt := reviewBootstrap
-			o := spawnOpts{maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking}
-			if tplOK {
-				prompt = reviewBootstrapSlim
-				o.forkFrom, o.fallbackPrompt = tpl, reviewBootstrap
-				o.onForkUnresolved = func() { c.invalidateTemplate(RoleReviewer, repo) }
+			if isRunHost {
+				c.Update(hostID, func(r *run.Run) {
+					r.StatusLine = fmt.Sprintf("Reviewing %s (round %d/%d)…", repoBase(repo), round, rounds)
+				})
 			}
-			out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extraDirsForDelivered(repo, folders), o)
+			c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+				setAgentStateIn(agents, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
+			})
+			out := c.spawnReviewer(ctx, hostID, repo, integDir, extraDirsForDelivered(repo, folders),
+				round, tpl, tplOK, reviewerModel, reviewerThinking, pendingReverify, &reviewerSession, reviewerBrief)
+			gateTokens += out.tokens
+			if reviewerSession != "" && !slices.Contains(reviewerSessions, reviewerSession) {
+				reviewerSessions = append(reviewerSessions, reviewerSession)
+			}
 			if ctx.Err() != nil {
-				return false // stopped mid-review
+				return false, nil
 			}
 			if out.startErr != nil {
-				fail(ctx, c, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The reviewer couldn't start; no PR is opened on an un-reviewed change.")
-				return false
+				c.failReview(ctx, hostID, reviewerID, startFailurePrefix+out.startErr.Error()+". The reviewer couldn't start; no PR is opened on an un-reviewed change.")
+				return false, nil
 			}
-			if out.review == nil {
-				fail(ctx, c, id, reviewerID, "The reviewer produced no verdict for "+repoBase(repo)+" — refusing to open a PR on an un-reviewed change.")
-				return false
+			// collect and persist any INTENT_CONFLICT lines this reviewer flagged
+			// against the root intent (context-only contradiction, not a local blocker).
+			c.captureIntentConflicts(hostID, reviewerID, out.allText)
+			// narration is the text the verdict-integrity gate scans — the ORIGINAL pass
+			// by default; a repair APPENDS its transcript rather than replacing it, so a
+			// blocker-class admission or hedge from the interrupted pass still bounces a
+			// repaired REVIEW_CLEAN (the repair prompt yields little more than the bare
+			// verdict line — scanned alone it would blind the V3 gate).
+			narration := out.allText
+			verdict, ok := parseReview(out.allText)
+			if !ok {
+				// One bounded resume-and-re-ask before blocking on a missing verdict line.
+				if rep, did := c.repairVerdict(ctx, hostID, reviewerID, reviewerSession, "REVIEW_CLEAN/REVIEW_FINDINGS", integDir, extraDirsForDelivered(repo, folders), reviewerModel, reviewerThinking); did {
+					gateTokens += rep.tokens
+					// The repair transcript also carries any conflict the reviewer flagged
+					// while re-asking.
+					c.captureIntentConflicts(hostID, reviewerID, rep.allText)
+					if v, ok2 := parseReview(rep.allText); ok2 {
+						verdict, ok, narration = v, true, out.allText+"\n"+rep.allText
+					} else {
+						c.failReview(ctx, hostID, reviewerID, "The reviewer "+noVerdictReason(rep, reviewerID, "REVIEW")+" for "+repoBase(repo)+" — refusing to open a PR on an un-reviewed change.")
+						return false, nil
+					}
+				} else {
+					c.failReview(ctx, hostID, reviewerID, "The reviewer "+noVerdictReason(out, reviewerID, "REVIEW")+" for "+repoBase(repo)+" — refusing to open a PR on an un-reviewed change.")
+					return false, nil
+				}
 			}
-			verdict := *out.review
-			// V3 verdict-integrity gate: a REVIEW_CLEAN that contradicts its own
-			// narration (a blocker-class admission, or a hedge that means the reviewer
-			// never proved the change works) is NOT accepted as clean. Bounce it back
-			// as a synthesized blocker so the fix→re-review loop demands cited
-			// evidence or an explicit blocker — it costs a round, like any non-clean
-			// verdict, rather than papering over an unproven pass.
+			// V3 verdict-integrity gate (unchanged): a REVIEW_CLEAN that contradicts its
+			// own narration is bounced back as a synthesized blocker.
 			if len(verdict.Blockers) == 0 {
-				if bad, reason := cleanVerdictContradictsNarration(out.allText); bad {
-					c.Update(id, func(r *run.Run) {
-						appendToAgent(r, reviewerID, run.Event{T: "system", Text: "rejected REVIEW_CLEAN for " + repoBase(repo) + ": " + reason}, 0)
+				if bad, reason := cleanVerdictContradictsNarration(narration); bad {
+					c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+						appendToAgentIn(agents, reviewerID, run.Event{T: "system", Text: "rejected REVIEW_CLEAN for " + repoBase(repo) + ": " + reason}, 0)
 					})
-					verdict.Blockers = []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration (" + reason + ") — cite mitigating evidence the change is wired and works, or emit an explicit blocker"}}
+					verdict.Blockers = []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration (" + reason + ") — cite mitigating evidence the change is wired and works, or emit an explicit blocker", synthesized: true}}
 				}
 			}
 			if len(verdict.Blockers) == 0 {
-				c.Update(id, func(r *run.Run) {
-					setAgentState(r, reviewerID, "green", "review clean: "+repoBase(repo))
-					appendToAgent(r, reviewerID, run.Event{T: "system", Text: "review clean: " + repoBase(repo)}, 0)
+				c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+					setAgentStateIn(agents, reviewerID, "green", "review clean: "+repoBase(repo))
+					appendToAgentIn(agents, reviewerID, run.Event{T: "system", Text: "review clean: " + repoBase(repo)}, 0)
 				})
+				repoClean = true
 				break // this repo is clean — review the next
 			}
-			if round == rounds {
-				fail(ctx, c, id, reviewerID, fmt.Sprintf("Review of %s still has %d unresolved %s after %d rounds: %s. No PR is opened until review is clean.",
-					repoBase(repo), len(verdict.Blockers), plural(len(verdict.Blockers), "blocker", "blockers"), rounds, firstFinding(verdict.Blockers)))
-				return false
+			// Split blockers into CITABLE (the fix agent can act on them directly) and
+			// STRUCTURAL (empty file, or a file not present on the branch — no citable
+			// decision to fix). At run level structural is folded back into citable.
+			citable, structuralRound := splitFindings(ctx, integDir, branch, verdict.Blockers)
+			if isRunHost {
+				citable = append(citable, structuralRound...)
+				structuralRound = nil
 			}
-			// Blockers remain and rounds are left: re-engage a fix agent in this repo's
-			// integration worktree to address the cited findings, commit onto the run
-			// branch, then re-review.
-			if !c.fixReviewFindings(ctx, id, repo, integDir, branch, verdict.Blockers, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking, intent) {
-				return false // fix pass failed/stopped — error already recorded (or stopped)
+			if round == rounds && len(citable) > 0 {
+				c.failReview(ctx, hostID, reviewerID, fmt.Sprintf("Review of %s still has %d unresolved %s after %d rounds: %s. No PR is opened until review is clean.",
+					repoBase(repo), len(citable), plural(len(citable), "blocker", "blockers"), rounds, firstFinding(citable)))
+				return false, nil
+			}
+			if len(citable) > 0 {
+				// Re-engage a fix agent on the citable subset, commit onto the branch.
+				fixOK, fixTokens := c.fixReviewFindings(ctx, hostID, repo, integDir, branch, citable, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking, taskIntent)
+				gateTokens += fixTokens
+				if !fixOK {
+					return false, nil
+				}
+				pendingReverify = citable
+			}
+			if len(structuralRound) > 0 {
+				// Non-citable findings need decomposition by the level above — return them
+				// so the caller (quest/campaign gate) can route them into work items and
+				// re-enter reviewUntilClean.
+				return false, structuralRound
 			}
 		}
+		if !repoClean {
+			// Rounds exhausted with no clean verdict and nothing left to escalate.
+			c.failReview(ctx, hostID, reviewerID, fmt.Sprintf("Review of %s did not converge in %d rounds. No PR is opened until review is clean.", repoBase(repo), rounds))
+			return false, nil
+		}
 	}
-	c.Update(id, func(r *run.Run) {
-		r.StatusLine = "Review clean — opening pull requests…"
-		r.ReviewRounds = totalRounds // L2 telemetry: review-round count
-		setAgentState(r, reviewerID, "done", "review clean")
+	if isRunHost {
+		c.Update(hostID, func(r *run.Run) {
+			r.StatusLine = "Review clean — opening pull requests…"
+		})
+	}
+	c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+		setAgentStateIn(agents, reviewerID, "done", "review clean")
 	})
-	return true
+	return true, nil
+}
+
+// reviewContinuityEnabled is the Task-3 kill switch: CANDYLAND_REVIEW_CONTINUITY=0
+// disables reviewer resume rounds (every round forks the template — today's behavior).
+func reviewContinuityEnabled() bool { return os.Getenv("CANDYLAND_REVIEW_CONTINUITY") != "0" }
+
+// spawnReviewer runs one reviewer round. Round 1 (and any fallback) forks the
+// doctrine template with the slim/full bootstrap and captures the session id into
+// *reviewerSession. Round ≥ 2, when continuity is enabled and a session was
+// captured, RESUMES that session with the fresh-evidence reverify prompt so the
+// reviewer does not re-derive context it already holds; a resume that terminal-fails
+// clears the session and retries the same round via the fork path.
+func (c *Conductor) spawnReviewer(ctx context.Context, hostID, repo, integDir string, extra []string,
+	round int, tpl string, tplOK bool, reviewerModel, reviewerThinking string,
+	reverify []reviewFinding, reviewerSession *string, reviewerBrief bus.Brief) attemptOutcome {
+	forkSpawn := func() attemptOutcome {
+		// Re-put the reviewer brief immediately before every FORK spawn: the reviewer
+		// and the fix identity share brief/<reviewerID>, so a prior fix pass leaves the
+		// FIX brief (no diff command) on that key. A cold/fork reviewer round would
+		// otherwise brief_get the fix brief and review blind. (A resume round reads
+		// nothing — it continues the session that already holds the reviewer brief.)
+		c.putBrief(reviewerID, reviewerBrief)
+		prompt := reviewBootstrap
+		o := spawnOpts{maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking}
+		if tplOK {
+			prompt = reviewBootstrapSlim
+			o.forkFrom, o.fallbackPrompt = tpl, reviewBootstrap
+			o.onForkUnresolved = func() { c.invalidateTemplate(RoleReviewer, repo) }
+		}
+		out := streamOnce(ctx, c, hostID, reviewerID, prompt, integDir, extra, o)
+		if out.sessionID != "" {
+			*reviewerSession = out.sessionID
+		}
+		return out
+	}
+	if round >= 2 && reviewContinuityEnabled() && *reviewerSession != "" {
+		out := streamOnce(ctx, c, hostID, reviewerID, reviewReverifyPrompt(reverify), integDir, extra,
+			spawnOpts{resumeFrom: *reviewerSession, maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking})
+		if !out.terminalFailed() && out.startErr == nil {
+			return out
+		}
+		// A resume that terminal-failed: clear the session and retry via the fork path.
+		c.updateAgentHost(hostID, func(agents *[]run.Agent) {
+			appendToAgentIn(agents, reviewerID, run.Event{T: "system", Text: "reviewer resume failed — falling back to a fresh review round"}, 0)
+		})
+		*reviewerSession = ""
+		return forkSpawn()
+	}
+	return forkSpawn()
+}
+
+// splitFindings partitions blockers into CITABLE (a fix agent can act on the cited
+// file directly) and STRUCTURAL (empty file, or a file not present on the branch —
+// no local citable decision). The predicate is `git cat-file -e <branch>:<file>`.
+func splitFindings(ctx context.Context, dir, branch string, blockers []reviewFinding) (citable, structural []reviewFinding) {
+	for _, b := range blockers {
+		// A conductor-synthesized narration-bounce blocker has no real cited file but is
+		// NOT structural — it must be resolved in the review/fix loop at every level, never
+		// routed out to a child run / remediation quest with the reviewer's meta-text as
+		// the objective.
+		if b.synthesized {
+			citable = append(citable, b)
+			continue
+		}
+		if strings.TrimSpace(b.File) == "" || !fileOnBranch(ctx, dir, branch, b.File) {
+			structural = append(structural, b)
+			continue
+		}
+		citable = append(citable, b)
+	}
+	return citable, structural
+}
+
+// gateCleanup tears down a gate's detached review worktrees the proper way — a
+// `git worktree remove` per repo (so the user's real repos carry no prunable
+// registration in .git/worktrees), then removes the parent scratch dir.
+func gateCleanup(ctx context.Context, delivered map[string]string, wtRoot string) {
+	for repo, wt := range delivered {
+		removeWorktree(ctx, repo, wt)
+	}
+	os.RemoveAll(wtRoot)
+}
+
+// branchHasDiff reports whether branch diverges from base in the repo at dir (so a
+// gate has something to review). `git diff --quiet` exits non-zero when a diff exists.
+func branchHasDiff(ctx context.Context, dir, base, branch string) bool {
+	_, err := git(ctx, dir, "diff", "--quiet", base+".."+branch)
+	return err != nil
+}
+
+// fileOnBranch reports whether file exists on branch in the repo at dir.
+func fileOnBranch(ctx context.Context, dir, branch, file string) bool {
+	if strings.TrimSpace(file) == "" {
+		return false
+	}
+	_, err := git(ctx, dir, "cat-file", "-e", branch+":"+file)
+	return err == nil
+}
+
+// failReview records a review-phase failure on the host that owns hostID: a run
+// records the run error (fail), a quest blocks with a postmortem, a campaign blocks
+// via blockCampaign — so the level-agnostic review primitive records honestly at
+// every level rather than assuming a run.
+func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string) {
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.attachQuestPostmortem(hostID, agentID, msg, msg)
+		c.UpdateQuest(hostID, func(q *run.Quest) {
+			if q.Status == "stopped" || q.Status == "done" {
+				return
+			}
+			q.Status = "blocked"
+			q.PauseReason = msg
+		})
+	case strings.HasPrefix(hostID, "c"):
+		c.blockCampaign(hostID, msg)
+	default:
+		fail(ctx, c, hostID, agentID, msg)
+	}
+}
+
+// recordReviewRounds folds the rounds a review loop consumed onto the host: a run
+// records ReviewRounds (set), a quest/campaign gate accumulates GateRounds (cumulative
+// across re-entries).
+func (c *Conductor) recordReviewRounds(hostID string, n int, clean bool) {
+	if n == 0 {
+		return
+	}
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.UpdateQuest(hostID, func(q *run.Quest) { q.GateRounds += n })
+	case strings.HasPrefix(hostID, "c"):
+		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.GateRounds += n })
+	default:
+		// Run-level byte-equivalence: ReviewRounds is set only when the run's
+		// review reached the all-clean path, exactly as before the primitive extraction.
+		if clean {
+			c.Update(hostID, func(r *run.Run) { r.ReviewRounds = n })
+		}
+	}
+}
+
+// addGateReviewTokens folds the gate review loop's token usage into the host budget:
+// a quest/campaign gate charges Quest/Campaign.TokensUsed (which drives the budget
+// pause and effectiveTokenCap), matching the retired gate-2 spawn's accounting. A run
+// is a no-op — its review tokens are already tracked on the agent rollup.
+func (c *Conductor) addGateReviewTokens(hostID string, n int) {
+	if n == 0 {
+		return
+	}
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.UpdateQuest(hostID, func(q *run.Quest) { q.TokensUsed += n })
+	case strings.HasPrefix(hostID, "c"):
+		c.addCampaignTokens(hostID, n)
+	}
 }
 
 // fixReviewFindings re-engages a fix agent in the integration worktree to address
 // the reviewer's cited blockers and commits the fixes onto the run branch. It
-// returns true when the fixes were made and committed, false when the agent failed
-// to act (error recorded) or the run was stopped.
-func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking, intent string) bool {
+// returns ok=true when the fixes were made and committed, false when the agent failed
+// to act (error recorded) or the run was stopped, plus the fix spawn's token usage
+// (for the gate budget accounting).
+func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking, intent string) (bool, int) {
 	// C2 fail-fast: a fix pass with NO findings has nothing to act on. Never let it
 	// run and silently re-derive its own task list (a context-blind agent then
 	// explores the whole tree); record an explicit error and abort the pass.
 	if len(blockers) == 0 {
-		fail(ctx, c, id, reviewerID, "A fix pass was requested for "+repoBase(repo)+" with no review findings — aborting (no PR is opened, and the pass does not silently re-derive work).")
-		return false
+		c.failReview(ctx, id, reviewerID, "A fix pass was requested for "+repoBase(repo)+" with no review findings — aborting (no PR is opened, and the pass does not silently re-derive work).")
+		return false, 0
 	}
 	c.Update(id, func(r *run.Run) {
 		r.StatusLine = fmt.Sprintf("Addressing %d review %s in %s…", len(blockers), plural(len(blockers), "finding", "findings"), repoBase(repo))
@@ -1491,27 +1750,27 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	}
 	out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extra, opts)
 	if ctx.Err() != nil {
-		return false // stopped mid-fix
+		return false, out.tokens // stopped mid-fix
 	}
 	if out.startErr != nil {
-		fail(ctx, c, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
-		return false
+		c.failReview(ctx, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
+		return false, out.tokens
 	}
 	if !out.sawTool {
-		fail(ctx, c, id, reviewerID, "The fix pass made no changes for the review findings in "+repoBase(repo)+" — refusing to open a PR with open blockers.")
-		return false
+		c.failReview(ctx, id, reviewerID, "The fix pass made no changes for the review findings in "+repoBase(repo)+" — refusing to open a PR with open blockers.")
+		return false, out.tokens
 	}
 	if _, err := commitAll(ctx, integDir, "candyland(review): address findings in "+repoBase(repo)); err != nil {
-		fail(ctx, c, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
-		return false
+		c.failReview(ctx, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
+		return false, out.tokens
 	}
 	// The integration worktree is detached; keep the run branch ref (what push/PR
 	// resolve) tracking the review-fix commits that just landed on HEAD.
 	if err := syncBranchRef(ctx, integDir, branch); err != nil {
-		fail(ctx, c, id, reviewerID, "Couldn't update the "+branch+" ref after review fixes for "+repoBase(repo)+": "+err.Error())
-		return false
+		c.failReview(ctx, id, reviewerID, "Couldn't update the "+branch+" ref after review fixes for "+repoBase(repo)+": "+err.Error())
+		return false, out.tokens
 	}
-	return true
+	return true, out.tokens
 }
 
 // orderedDelivered returns the delivered repos in a stable order (map iteration is
@@ -1566,7 +1825,8 @@ func findingLines(blockers []reviewFinding) []string {
 // passes) across every delivered repo, in sequence.
 const reviewerID = "review"
 
-const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
+const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review." + briefGetToolHint + ". " +
+	rootIntentReviewClause +
 	"Load the detritus review doctrine via the kb_get tool: kb_get name=\"roles/reviewer\" AND kb_get name=\"core/review-rigor\" AND kb_get name=\"flows/principles/truthseeker\"; apply that rubric, do NOT improvise your own. " +
 	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
 	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
@@ -1581,7 +1841,8 @@ const reviewBootstrap = "You are a code reviewer. Call the brief_get tool FIRST 
 // in context, so the kb_get load instruction is dropped — everything else is
 // reviewBootstrap verbatim. A spawn with no template (and a fork that fails to
 // resolve) uses the full reviewBootstrap, whose kb_get load stands on its own.
-const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review. " +
+const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FIRST — it names the repo and the exact diff command to review." + briefGetToolHint + ". " +
+	rootIntentReviewClause +
 	"Review the integrated diff with the doctrine's rigor (run the diff command in the brief, read the changed files, hunt for blockers). " +
 	"For any wiring- or assembly-dependent change, do NOT merely read the diff and trust `go test`: ASSEMBLE AND RUN THE BINARY, and TRACE reachability of the changed feature from the program entrypoint. " +
 	"The brief also carries the run's driving INTENT — what was asked for. Verify the diff SATISFIES it: an intent commitment that is missing, only partially delivered, or contradicted is a BLOCKER (issue: \"intent unmet: <commitment>\"); REVIEW_CLEAN asserts intent fidelity as well as defect absence. " +
@@ -1591,7 +1852,7 @@ const reviewBootstrapSlim = "You are a code reviewer. Call the brief_get tool FI
 	" listing only genuine blockers (cite file and line per the doctrine). Do not ask questions." + incidentDoctrine
 
 const reviewFixBootstrap = "You are addressing review findings on an integrated branch before it opens as a pull request. " +
-	"Call the brief_get tool FIRST to read the cited findings (file, line, issue). " +
+	"Call the brief_get tool FIRST to read the cited findings (file, line, issue)." + briefGetToolHint + ". " +
 	"Fix every cited blocker with your editing tools — make the changes, do not just describe them — and keep the existing tests green. " +
 	"The brief also carries the run's driving intent — address the findings in service of it, not just to the letter. " +
 	"Do not ask questions and do not defer; resolve all the findings in this run." + incidentDoctrine
@@ -1643,8 +1904,38 @@ func reviewFixPrompt(blockers []reviewFinding) string {
 	return b.String()
 }
 
+// briefGetToolHint is the exact deferred-tool naming appended to every
+// "Call the brief_get tool FIRST" sentence, so an agent loads the tool by a single
+// ToolSearch selection rather than an expensive keyword search that repeats per round.
+const briefGetToolHint = " (load it with a single ToolSearch call: query \"select:mcp__candyland-comms__brief_get\", then call the tool; do not search by keywords)"
+
+// rootIntentReviewClause is the two-layer-intent instruction appended to the
+// reviewer bootstraps: it authorizes flagging a CONTRADICTION with the root intent as a
+// one-line INTENT_CONFLICT (routed to a ruling one tier up), while forbidding a
+// completeness demand — sibling work the reviewer cannot see owns the rest.
+const rootIntentReviewClause = "If the brief carries a ROOT INTENT section: you can judge whether this diff CONTRADICTS the root intent; you cannot judge whether the root intent is fully delivered — sibling work you cannot see owns the rest. Absence of a root-intent commitment is NEVER a finding. A genuine contradiction is NOT a blocker either: report it as one line `INTENT_CONFLICT ` followed by JSON {\"issue\":\"…\"} in addition to your verdict line, and keep your verdict scoped to the task brief. "
+
+// reviewReverifyBootstrap is the round-≥2 prompt for a RESUMED reviewer session: the
+// fix identity has addressed the cited blockers, so the reviewer re-verifies with
+// fresh evidence WITHOUT re-deriving context it already holds this session.
+const reviewReverifyBootstrap = "The fix identity has addressed your cited blockers (listed below); the fixes are committed on the branch you are reviewing. Re-verify with FRESH evidence: diff the new commits, re-run the acceptance checks you already established in this session, and confirm each cited blocker is resolved and nothing regressed. Do not re-derive context you already hold. Then emit EXACTLY ONE verdict line and stop: REVIEW_CLEAN or REVIEW_FINDINGS <json>. " + rootIntentReviewClause + incidentDoctrine
+
+// reviewReverifyPrompt builds the round-≥2 reverify prompt, carrying the just-fixed
+// blockers rendered exactly as reviewFixPrompt renders them (reuse findingLines).
+func reviewReverifyPrompt(blockers []reviewFinding) string {
+	var b strings.Builder
+	b.WriteString(reviewReverifyBootstrap)
+	b.WriteString("\n\n--- CITED BLOCKERS (now addressed on the branch) ---\n")
+	for _, ln := range findingLines(blockers) {
+		b.WriteString("- ")
+		b.WriteString(ln)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 const conflictBootstrap = "You are the tech lead resolving a git merge conflict while integrating parallel work into one branch. " +
-	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files. " +
+	"Call the brief_get tool FIRST to read which task conflicted and the conflicted files." + briefGetToolHint + " " +
 	"Open each conflicted file and reconcile the two sides so BOTH changes are preserved and the result is correct — " +
 	"remove every git conflict marker (<<<<<<<, =======, >>>>>>>). Use your editing tools to write the resolved files. " +
 	"Do not ask questions and do not leave any conflict unresolved." + incidentDoctrine
@@ -1653,7 +1944,7 @@ const conflictBootstrap = "You are the tech lead resolving a git merge conflict 
 // returns the signals the resilience layer uses to judge compliance: any parsed
 // partition, whether a tool was used (real work), and the latest text (checked
 // for deferral / a question to the user).
-func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, review *reviewVerdict, sawTool bool, text string) {
+func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition []partitionTask, sawTool bool, text string) {
 	switch line.Type {
 	case "assistant":
 		for _, blk := range line.Message.Content {
@@ -1661,10 +1952,6 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			if b.Type == "text" && b.Text != "" {
 				if p := parsePartition(b.Text); p != nil {
 					partition = p
-				}
-				if v, ok := parseReview(b.Text); ok {
-					vv := v
-					review = &vv
 				}
 				if pass, fail, ok := parseTest(b.Text); ok {
 					c.recordAgentEvent(id, func(agents *[]run.Agent) {
@@ -1702,7 +1989,7 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 			a.CacheCreationTokens += l.Usage.CacheCreationInputTokens
 		})
 	}
-	return partition, review, sawTool, text
+	return partition, sawTool, text
 }
 
 // parsePartition extracts the task array from a `PARTITION <json>` line.

@@ -721,6 +721,20 @@ func (c *Conductor) captureIncidents(hostID, agentID, text string) {
 	if len(notes) == 0 {
 		return
 	}
+	// Dedup notes identical in (Summary, Detail, Severity) within this single call:
+	// the allText result-echo double-parse (r121) surfaces the same INCIDENT line
+	// twice, which must record once, not twice.
+	seen := make(map[string]bool, len(notes))
+	deduped := notes[:0]
+	for _, n := range notes {
+		k := n.Summary + "\x00" + n.Detail + "\x00" + n.Severity
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		deduped = append(deduped, n)
+	}
+	notes = deduped
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range notes {
 		notes[i].Agent = agentID
@@ -741,4 +755,189 @@ func (c *Conductor) recordIncidents(hostID string, notes []run.IncidentNote) {
 	default:
 		c.Update(hostID, func(r *run.Run) { r.Incidents = append(r.Incidents, notes...) })
 	}
+}
+
+// unruledConflictIssues returns the Issue text of every conflict not yet ruled on
+// (Ruling == "") — the ones raised this gate round that need a ruling one tier up.
+func unruledConflictIssues(notes []run.IntentConflictNote) []string {
+	var out []string
+	for _, n := range notes {
+		if n.Ruling == "" {
+			out = append(out, n.Issue)
+		}
+	}
+	return out
+}
+
+// stampConflictRulings records the decider's ruling on every not-yet-ruled conflict.
+func stampConflictRulings(notes []run.IntentConflictNote, ruling string) {
+	for i := range notes {
+		if notes[i].Ruling == "" {
+			notes[i].Ruling = ruling
+		}
+	}
+}
+
+// rulingFromAnswer maps a decider's DECISION answer to a conflict ruling: an explicit
+// "fix" converts the contradiction into work; anything else (or an unresolved decider)
+// defaults to "proceed" — never block delivery on a decider that did not rule
+// (mirrors decisionBlocks' "absent an explicit signal, proceed" semantics).
+func rulingFromAnswer(resolved bool, answer string) string {
+	if !resolved {
+		return "proceed"
+	}
+	// The decider is instructed to answer a BARE token, so route on the FIRST token
+	// only — free text like "proceed — no fix needed" or "don't proceed — fix it"
+	// defeats substring matching. Anything but a leading "fix" defaults to proceed
+	// (never block delivery on an ambiguous ruling).
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(answer)))
+	if len(fields) > 0 && fields[0] == "fix" {
+		return "fix"
+	}
+	return "proceed"
+}
+
+// intentConflictQuestion frames the ruling-one-tier-up question for a set of
+// reviewer-flagged root-intent contradictions on branch.
+func intentConflictQuestion(issues []string, branch string) string {
+	return "Reviewer flagged root-intent contradiction(s): " + strings.Join(issues, "; ") +
+		" — for the diff on " + branch + " vs base. Answer `proceed` to ship the diff as-is " +
+		"(the contradiction is acceptable/intended) or `fix` to convert each contradiction into a work item to reconcile it."
+}
+
+// rootIntentFor resolves the verbatim IMMUTABLE top-level intent the unit at hostID
+// serves (two-layer intent briefing): a campaign → its OriginalInput; a campaign-
+// child quest → that campaign's OriginalInput, else the quest's OriginalObjective; a
+// run → its owning quest's root (recursing), else the run's own OriginalIntent. A
+// standalone run returns its own intent, so its task and root layers coincide and the
+// render rule disarms the conflict channel.
+func (c *Conductor) rootIntentFor(hostID string) string {
+	switch {
+	case strings.HasPrefix(hostID, "c"):
+		if cam, ok := c.GetCampaign(hostID); ok {
+			return cam.OriginalInput
+		}
+	case strings.HasPrefix(hostID, "q"):
+		if q, ok := c.GetQuest(hostID); ok {
+			if q.CampaignID != "" {
+				if cam, ok := c.GetCampaign(q.CampaignID); ok {
+					return cam.OriginalInput
+				}
+			}
+			return q.OriginalObjective
+		}
+	default:
+		if r, ok := c.Get(hostID); ok {
+			if r.QuestID != "" {
+				return c.rootIntentFor(r.QuestID)
+			}
+			return firstNonEmpty(r.OriginalIntent, r.Prompt)
+		}
+	}
+	return ""
+}
+
+// parseIntentConflicts extracts every `INTENT_CONFLICT <json>` line a reviewer
+// flagged (contradictions with the root intent). Like INCIDENT lines, several may
+// appear; all parseable ones with a non-empty issue are collected in order.
+func parseIntentConflicts(text string) []run.IntentConflictNote {
+	var notes []run.IntentConflictNote
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "INTENT_CONFLICT ") {
+			continue
+		}
+		var n run.IntentConflictNote
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "INTENT_CONFLICT ")), &n) != nil {
+			continue
+		}
+		if strings.TrimSpace(n.Issue) == "" {
+			continue
+		}
+		notes = append(notes, n)
+	}
+	return notes
+}
+
+// conflictRulingHostFor resolves the unit whose GATE actually rules conflicts
+// captured under hostID: a quest-child run's conflicts belong to its owning quest
+// (no run-level routing exists — the quest delivery gate rules them), and a
+// campaign-owned quest's belong to the campaign (those quests skip their own gate;
+// campaign gate 2 rules instead). Without this forwarding a child-run reviewer's
+// conflict would sit unruled on the run record forever.
+func (c *Conductor) conflictRulingHostFor(hostID string) string {
+	if !strings.HasPrefix(hostID, "q") && !strings.HasPrefix(hostID, "c") {
+		if r, ok := c.Get(hostID); ok && r.QuestID != "" {
+			hostID = r.QuestID
+		}
+	}
+	if strings.HasPrefix(hostID, "q") {
+		if q, ok := c.GetQuest(hostID); ok && q.CampaignID != "" {
+			return q.CampaignID
+		}
+	}
+	return hostID
+}
+
+// captureIntentConflicts parses any reviewer-flagged root-intent conflicts from a
+// transcript and records them on the unit whose gate will rule them (stamping the
+// agent and time), the intent-layer sibling of captureIncidents. A no-op when none
+// are present.
+func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
+	notes := parseIntentConflicts(text)
+	if len(notes) == 0 {
+		return
+	}
+	hostID = c.conflictRulingHostFor(hostID)
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Dedup by Issue and force the conductor to OWN Ruling: a reviewer never sets it.
+	// `seen` is pre-loaded with the Issues already recorded UNRULED on the host, so a
+	// fork round (kill-switch / resume-fallback) that re-flags the same contradiction
+	// isn't recorded — or asked/counted — twice; within one capture it also collapses
+	// the allText result-echo double-parse.
+	seen := make(map[string]bool, len(notes))
+	for _, iss := range c.unruledConflictIssuesFor(hostID) {
+		seen[iss] = true
+	}
+	deduped := notes[:0]
+	for _, n := range notes {
+		if seen[n.Issue] {
+			continue
+		}
+		seen[n.Issue] = true
+		n.Agent, n.At, n.Ruling = agentID, now, "" // Ruling is conductor-owned; drop any reviewer value
+		deduped = append(deduped, n)
+	}
+	notes = deduped
+	if len(notes) == 0 {
+		return
+	}
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.UpdateQuest(hostID, func(q *run.Quest) { q.IntentConflicts = append(q.IntentConflicts, notes...) })
+	case strings.HasPrefix(hostID, "c"):
+		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.IntentConflicts = append(cam.IntentConflicts, notes...) })
+	default:
+		c.Update(hostID, func(r *run.Run) { r.IntentConflicts = append(r.IntentConflicts, notes...) })
+	}
+}
+
+// unruledConflictIssuesFor returns the Issue text of every conflict already recorded
+// UNRULED on the host — the cross-round dedup basis for captureIntentConflicts.
+func (c *Conductor) unruledConflictIssuesFor(hostID string) []string {
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		if q, ok := c.GetQuest(hostID); ok {
+			return unruledConflictIssues(q.IntentConflicts)
+		}
+	case strings.HasPrefix(hostID, "c"):
+		if cam, ok := c.GetCampaign(hostID); ok {
+			return unruledConflictIssues(cam.IntentConflicts)
+		}
+	default:
+		if r, ok := c.Get(hostID); ok {
+			return unruledConflictIssues(r.IntentConflicts)
+		}
+	}
+	return nil
 }

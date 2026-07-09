@@ -104,6 +104,19 @@ type IncidentNote struct {
 	At       string `json:"at,omitempty"`       // RFC3339 when recorded
 }
 
+// IntentConflictNote is one contradiction a reviewer flagged between the diff it
+// reviewed and the verbatim ROOT INTENT it was shown (context only — a reviewer
+// judges contradiction with the root, never its completeness). Unlike a blocker,
+// a conflict does not enter the local fix loop: it pauses the unit and requests a
+// ruling ONE tier up (Ruling is the decider's disposition — "proceed" or "fix").
+// It is persisted on the run/quest/campaign record (see conductor.captureIntentConflicts).
+type IntentConflictNote struct {
+	Agent  string `json:"agent,omitempty"`  // the reviewer id that flagged the conflict
+	Issue  string `json:"issue"`            // one line describing the contradiction with the root intent
+	Ruling string `json:"ruling,omitempty"` // the decider's disposition one tier up (proceed|fix)
+	At     string `json:"at,omitempty"`     // RFC3339 when recorded
+}
+
 // Task is one fork-safe slice of the partition.
 type Task struct {
 	ID    string   `json:"id"`
@@ -198,6 +211,11 @@ type Run struct {
 	// incidents this run's agents voluntarily reported (INCIDENT lines). Persisted so
 	// the mining data-access path surfaces them alongside escalations/postmortems.
 	Incidents []IncidentNote `json:"incidents,omitempty"`
+	// IntentConflicts is the audit trail of contradictions a reviewer flagged
+	// against the verbatim root intent (two-layer intent briefing). A standalone
+	// run cannot emit conflicts (its task and root layers coincide → the channel is
+	// disarmed by the render rule), so this is empty for standalone runs.
+	IntentConflicts []IntentConflictNote `json:"intentConflicts,omitempty"`
 	// Watch is the babysit post-delivery watch-phase state, present only on a
 	// "babysit"-delivery run and only once its PR is open. It carries the watched
 	// PR, the watch lifecycle state, the terminal outcome, and the tick log.
@@ -520,6 +538,12 @@ type Quest struct {
 	// Incidents is the self-acknowledged-incident audit trail this quest's agents
 	// (its quest-lead and, routed by host id, its child runs) voluntarily reported.
 	Incidents []IncidentNote `json:"incidents,omitempty"`
+	// IntentConflicts is the audit trail of contradictions a reviewer flagged at the
+	// quest delivery gate against the verbatim root intent (two-layer briefing).
+	IntentConflicts []IntentConflictNote `json:"intentConflicts,omitempty"`
+	// GateRounds is how many review→fix→re-review rounds the quest DELIVERY gate
+	// consumed (cumulative across re-entries), the quest analogue of Run.ReviewRounds.
+	GateRounds int `json:"gateRounds,omitempty"`
 	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
 	// exported trace carries TraceVersion so a future store can detect/migrate.
 	TraceVersion int `json:"traceVersion"`
@@ -709,6 +733,12 @@ type Campaign struct {
 	// Incidents is the self-acknowledged-incident audit trail the campaign's own
 	// coordinating agents voluntarily reported (INCIDENT lines).
 	Incidents []IncidentNote `json:"incidents,omitempty"`
+	// IntentConflicts is the audit trail of contradictions a reviewer flagged at the
+	// campaign gate 2 against the verbatim root intent (two-layer briefing).
+	IntentConflicts []IntentConflictNote `json:"intentConflicts,omitempty"`
+	// GateRounds is how many review→fix→re-review rounds the campaign gate 2
+	// consumed (cumulative), the campaign analogue of Run.ReviewRounds.
+	GateRounds int `json:"gateRounds,omitempty"`
 	// TraceVersion is the schema version of this Campaign record, mirroring how a
 	// Run's exported trace and a Quest carry TraceVersion for future migration.
 	TraceVersion int `json:"traceVersion"`
@@ -721,7 +751,7 @@ type Campaign struct {
 // the Audit verbatim, adding nothing the UI doesn't already see except TraceVersion.
 //
 // REDACTION SEAM: before any future sync to a central store, sensitive payloads
-// (e.g. Event.Text/Input, Run.Prompt/OriginalIntent) must be redacted here. This
+// (e.g. Event.Text/Input, Run.Prompt/OriginalIntent, IntentConflictNote.Issue) must be redacted here. This
 // is local export only today — no redaction is applied. Do NOT add a central
 // store/sync from this struct; that is a separate, later phase.
 type RunTrace struct {

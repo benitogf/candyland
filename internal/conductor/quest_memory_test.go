@@ -239,7 +239,7 @@ func TestEscalationBriefCarriesPriorDecisionsOnBus(t *testing.T) {
 // literal: the fork refactor split the constant but must not change a byte of
 // it, and the no-template spawn must carry exactly this prompt.
 const wantColdQuestLeadBootstrap = "You are the quest lead driving one tick of an iterative work loop. " +
-	"Call the brief_get tool FIRST to read the quest's objective, scope, safety boundary, and verification — it is no longer on your command line. " +
+	"Call the brief_get tool FIRST to read the quest's objective, scope, safety boundary, and verification — it is no longer on your command line." + briefGetToolHint + ". " +
 	"Load and APPLY the detritus doctrine via the kb_get tool: kb_get name=\"core/loop\" (loop fundamentals: cadence, skip-streak, durability), " +
 	"kb_get name=\"core/todo-audit\" (how to discover, prioritize, and fork-gate work items), and kb_get name=\"core/completion\" (the three dispositions and the definition of done). " +
 	"Do NOT improvise your own rubric — use the doctrine you loaded. " +

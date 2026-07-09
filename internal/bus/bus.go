@@ -125,6 +125,12 @@ type Brief struct {
 	Attempt  int      `json:"attempt,omitempty"`  // 1-based attempt number
 	Findings []string `json:"findings,omitempty"` // reviewer-cited blockers a fix pass must address (review phase)
 	Intent   string   `json:"intent,omitempty"`   // the run's driving intent — what was asked for (reviewer verifies the diff against it; fix acts in service of it)
+	// RootIntent is the verbatim immutable top-level intent this unit serves —
+	// context only. A reviewer may flag a CONTRADICTION with it (INTENT_CONFLICT),
+	// but may NEVER demand its completeness (sibling work it cannot see owns the
+	// rest). Rendered as a labelled section only when non-empty AND different from
+	// Intent (a standalone run's layers coincide → the conflict channel is disarmed).
+	RootIntent string `json:"rootIntent,omitempty"`
 }
 
 // Bus carries the bus state: who the single-writer orchestrator is, the

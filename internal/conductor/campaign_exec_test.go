@@ -55,10 +55,6 @@ var campIntentReviewer = role("intent reviewer", `echo '{"type":"assistant","mes
 echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added in handler.go\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$CANDYLAND_TEST_VERDICT\\\",\\\"evidence\\\":[\\\"totals column not wired\\\"]}]}\"}]}}"
 `+emitResult("reviewed", 1))
 
-// campTechDone always confirms technical done (gate 2a) — the intent review is the
-// lever the oracles flip.
-var campTechDone = role("technical sign-off", emitTechDone(true, "integrated green on the campaign branch"))
-
 // campChildPipeline is the run-level pipeline every child quest drives: a tech lead
 // PARTITION, a coder that writes a PID-named file + a green TEST, and a clean reviewer.
 var campChildTechLead = role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`))
@@ -67,12 +63,12 @@ var campChildCoder = coder(writeWorktreeFile("work_$$.txt"), emitTest(1, 0))
 // campaignClaude drives the whole two-manager campaign supervisor with no real model:
 // the tech manager emits a ONE-quest QUESTS partition, the intent manager AGREES at
 // gate 1, the child quest drives its discover→run→review→branch pipeline, and gate 2
-// dual sign-off (tech done + intent review) decides delivery.
+// (the per-commitment intent review + the review-loop primitive over the campaign
+// branch) decides delivery.
 var campaignClaude = stubClaude(
 	campIntentLead,
 	role("intent manager", emitPartitionReview(true, "the quest covers both commitments")),
 	campIntentReviewer,
-	campTechDone,
 	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export end to end","folders":[],"deps":[]}]`)),
 	campQuestLead,
 	roleCleanReviewer,
@@ -95,7 +91,7 @@ func setCampaignFixtures(t *testing.T, c2Verdict string) {
 //   - the BRIEF GATE fails the inconsistent first brief and routes back, then passes;
 //   - the tech manager decomposes into a child QUEST (not a bare run) via QUESTS parse;
 //   - GATE 1 (the intent manager) agrees the partition covers the commitments;
-//   - GATE 2 dual sign-off runs (tech done + per-commitment intent review);
+//   - GATE 2 runs the per-commitment intent review + the review-loop primitive over the branch;
 //   - a `partial` verdict ANNOTATES the PR but the PR STILL OPENS (campaign done).
 func TestCampaignDecomposesIntoQuestAndDelivers(t *testing.T) {
 	c, repo := deliveryConductor(t, campaignClaude)
@@ -155,8 +151,13 @@ func TestCampaignDecomposesIntoQuestAndDelivers(t *testing.T) {
 	if byID["c1"].Verdict != "satisfied" || byID["c2"].Verdict != "partial" {
 		t.Errorf("gate 2 verdicts wrong: %+v", cam.IntentReview.Verdicts)
 	}
+	// GATE 2 ran the review-loop primitive over the campaign branch (Task 8): a
+	// recorded review gate (GateRounds ≥ 1), not a secondhand technical attestation.
+	if cam.GateRounds < 1 {
+		t.Errorf("campaign gate 2 must record a review gate (GateRounds ≥ 1), got %d", cam.GateRounds)
+	}
 
-	// DELIVERY: no `missed` and tech done → ONE PR per repo; the `partial` annotated it.
+	// DELIVERY: no `missed` and a clean gate-2 review → ONE PR per repo; the `partial` annotated it.
 	if len(cam.PRs) != 1 || cam.PRs[0].URL == "" {
 		t.Fatalf("a clean-gate-2 campaign must open one PR, got %+v", cam.PRs)
 	}
@@ -230,7 +231,6 @@ var campaignRemediationClaude = stubClaude(
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
 echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INTENT_REVIEW {\\\"verdicts\\\":[{\\\"commitmentId\\\":\\\"c1\\\",\\\"verdict\\\":\\\"satisfied\\\",\\\"evidence\\\":[\\\"endpoint added\\\"]},{\\\"commitmentId\\\":\\\"c2\\\",\\\"verdict\\\":\\\"$verdict\\\",\\\"evidence\\\":[\\\"totals column\\\"]}]}\"}]}}"
 `+emitResult("reviewed", 1)),
-	campTechDone,
 	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export","folders":[],"deps":[]}]`)),
 	campQuestLead,
 	roleCleanReviewer,
@@ -297,7 +297,6 @@ var campaignGate1Claude = stubClaude(
   `+emitPartitionReview(false, "the partition misses commitment c2")+`fi
 `),
 	campIntentReviewer,
-	campTechDone,
 	role("tech manager", `echo "spawn" >> "$CANDYLAND_TECHMGR_LOG"
 `+emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export","folders":[],"deps":[]}]`)),
 	campQuestLead,
@@ -350,7 +349,6 @@ var campaignGate1MalformedClaude = stubClaude(
 	campIntentLead,
 	role("intent manager", emitPartitionReview(true, "should never be consulted on a malformed partition")),
 	campIntentReviewer,
-	campTechDone,
 	role("tech manager", `echo "spawn" >> "$CANDYLAND_TECHMGR_LOG"
 `+emitQuestsLine(`[{"id":"q1","title":"a","objective":"do a","folders":[],"deps":[]},{"id":"q1","title":"b","objective":"do b","folders":[],"deps":[]}]`)),
 	campQuestLead,
@@ -410,7 +408,6 @@ var campaignConcurrencyClaude = stubClaude(
 	campIntentLead,
 	role("intent manager", emitPartitionReview(true, "both quests are needed")),
 	campIntentReviewer,
-	campTechDone,
 	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"alpha work","objective":"do alpha","folders":["alpha"],"deps":[]},{"id":"q2","title":"beta work","objective":"do beta","folders":["beta"],"deps":[]}]`)),
 	campQuestLead,
 	roleCleanReviewer,
@@ -480,7 +477,6 @@ var campaignDepsClaude = stubClaude(
 	campIntentLead,
 	role("intent manager", emitPartitionReview(true, "the ordering is sound")),
 	campIntentReviewer,
-	campTechDone,
 	role("tech manager", emitQuestsLine(`[{"id":"q1","title":"alpha first","objective":"do alpha first","folders":["alpha"],"deps":[]},{"id":"q2","title":"beta second","objective":"do beta after alpha","folders":["beta"],"deps":["q1"]}]`)),
 	campQuestLead,
 	roleCleanReviewer,
@@ -548,9 +544,9 @@ func TestCampaignBriefGate(t *testing.T) {
 	}
 }
 
-// parseIntentBrief / parseIntentReview / parseQuests / parsePartitionVerdict /
-// parseTechDone are the fenced agent-verdict conventions. Pin them so the contract the
-// stub and a real agent share can't drift silently.
+// parseIntentBrief / parseIntentReview / parseQuests / parsePartitionVerdict are the
+// fenced agent-verdict conventions. Pin them so the contract the stub and a real agent
+// share can't drift silently.
 func TestParseCampaignVerdicts(t *testing.T) {
 	brief, ok := parseIntentBrief(`preamble
 INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
@@ -577,11 +573,6 @@ INTENT_BRIEF {"restatedGoal":"g","commitments":[{"id":"c1","statement":"s"}]}`)
 	pv, ok := parsePartitionVerdict(`PARTITION_REVIEW {"agree":false,"reason":"gap"}`)
 	if !ok || pv.Agree || pv.Reason != "gap" {
 		t.Fatalf("PARTITION_REVIEW must parse: ok=%v pv=%+v", ok, pv)
-	}
-
-	td, ok := parseTechDone(`TECH_DONE {"done":true,"reason":"green"}`)
-	if !ok || !td.Done || td.Reason != "green" {
-		t.Fatalf("TECH_DONE must parse: ok=%v td=%+v", ok, td)
 	}
 }
 
@@ -669,11 +660,9 @@ var relaunchReuseClaude = stubClaude(
 `+emitText(`INTENT_BRIEF {\"restatedGoal\":\"x\",\"commitments\":[{\"id\":\"c1\",\"statement\":\"x\"}]}`)+emitResult("brief", 1)),
 	role("intent manager", emitPartitionReview(true, "covers the commitments")),
 	campIntentReviewer,
-	// campTechDone ("technical sign-off") MUST precede the "tech manager" tripwire:
-	// the gate-2 sign-off prompt contains both substrings, so the sign-off branch has
-	// to win. Only the DECOMPOSE spawn (which lacks "technical sign-off") falls through
-	// to the tripwire — which a reuse-relaunch must never reach.
-	campTechDone,
+	// The "tech manager" tripwire fires only on a DECOMPOSE spawn — which a
+	// reuse-relaunch must never reach (gate 2 is now a code-review spawn, not a
+	// tech-manager sign-off, so no other spawn carries the "tech manager" substring).
 	role("tech manager", `touch "$CANDYLAND_TECH_TRIP"
 `+emitQuestsLine(`[{"id":"q1","title":"csv export","objective":"implement csv export end to end","folders":[],"deps":[]}]`)),
 	campQuestLead,

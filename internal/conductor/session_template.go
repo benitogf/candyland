@@ -512,11 +512,12 @@ func (c *Conductor) invalidateTemplate(role, repo string) {
 	log.Printf("candyland: session template %s: dropped after an unresolved fork (next spawn recreates)", key)
 }
 
-// cleanupTemplateCopy removes the transcript copy a worktree spawn used —
-// worktrees are throwaway, and nothing else ever deletes these files, so
-// leaving them accumulates one orphan jsonl per worktree per run, forever.
-// Only the copied template file is removed; transcripts the forked session
-// itself wrote stay untouched. Best-effort.
+// cleanupTemplateCopy removes the <sessionID>.jsonl transcript under workdir's
+// project dir — worktrees are throwaway and nothing else deletes these files, so
+// they otherwise accumulate one orphan jsonl per session per run, forever. Callers
+// pass whichever session id they own: a forked template copy (template callers) or
+// the reviewer's own per-round session (the review loop cleaning its resumed
+// transcript). It removes exactly the one named transcript. Best-effort.
 func cleanupTemplateCopy(sessionID, workdir string) {
 	if sessionID == "" {
 		return
