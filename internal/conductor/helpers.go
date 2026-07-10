@@ -30,8 +30,8 @@ func isDone(state string) bool { return state == "green" || state == "done" }
 // stopped run. Genuinely terminal agents (green/done/blocked) keep their real
 // outcome — only in-flight ones (idle, working, retrying, integrating) become
 // "stopped". Each stop path calls it at its race-safe join point — the run
-// executor in the stopped <-done branch (fanOut fully unwound), the quest and
-// campaign drives in an exit defer (all their agent writes are synchronous in the
+// executor in the stopped <-done branch (fanOut fully unwound), the quest
+// drive in an exit defer (all its agent writes are synchronous in the
 // drive goroutine) — plus in Stop itself for the no-live-drive case, where the
 // drive's exit defer re-stamps last if one was running.
 func stopInFlightAgents(agents []run.Agent) {

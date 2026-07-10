@@ -162,14 +162,14 @@ func (c *Conductor) UpdateQuest(id string, mutate func(*run.Quest)) bool {
 //     branch — convergence does not apply, so this returns "".
 //   - A CONVERGE quest accumulates its child runs onto quest/<id> and opens ONE PR
 //     per repo at terminal.
-//   - A perFinding quest (adventure) has no shared branch — each child run opens its
+//   - A perFinding quest has no shared branch — each child run opens its
 //     own PR — so this returns "".
 func QuestBranch(q run.Quest) string {
 	if isTargetedReviewQuest(q) {
 		return "" // feedback/review works the target PR's head branch
 	}
 	if q.Convergence == run.ConvergePerFinding {
-		return "" // adventure: a PR per finding, no shared branch
+		return "" // perFinding: a PR per finding, no shared branch
 	}
 	return "quest/" + q.ID // bounded quest: accumulate on quest/<id>
 }

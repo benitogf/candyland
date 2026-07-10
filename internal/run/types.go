@@ -366,7 +366,7 @@ type WatchState struct {
 //     per-quest branch quest/<id> (deliver: branch, no child PRs); when the quest
 //     meets its objective (terminal) it opens ONE PR per impacted repo from that
 //     branch.
-//   - "perFinding" (an ADVENTURE, open-ended freeseeking): each accepted finding
+//   - "perFinding" (open-ended freeseeking): each accepted finding
 //     is its own child run with deliver: pr — its own PR — and the loop is perpetual.
 //
 // EXCEPTION (convergence does not apply): a quest with a target PR
@@ -375,7 +375,7 @@ type Convergence string
 
 const (
 	ConvergeConverge   Convergence = "converge"   // bounded: accumulate on quest/<id>, one PR per repo at terminal
-	ConvergePerFinding Convergence = "perFinding" // adventure: a PR per accepted finding, perpetual
+	ConvergePerFinding Convergence = "perFinding" // perFinding: a PR per accepted finding, perpetual
 )
 
 // QuestSpec is the launch input for a quest — a Candyland-native iterative loop
@@ -397,7 +397,7 @@ type QuestSpec struct {
 	Scope   string   `json:"scope,omitempty"`   // human-readable bound on what work is in-scope
 	// Convergence is the delivery policy: "converge" (bounded — the default; child
 	// runs accumulate on quest/<id>, one PR per repo at terminal) or "perFinding"
-	// (adventure — a PR per accepted finding, perpetual). Empty defaults to
+	// (perFinding — a PR per accepted finding, perpetual). Empty defaults to
 	// "converge" at creation. It does not apply to feedback/review quests (see the
 	// exception on Convergence).
 	Convergence Convergence `json:"convergence,omitempty"`
@@ -487,7 +487,7 @@ type Quest struct {
 	Deliver     Delivery `json:"deliver"`
 	// Convergence is the quest's delivery policy: "converge" (bounded — child runs
 	// accumulate on quest/<id>, one PR per repo opens at terminal) or "perFinding"
-	// (adventure — a PR per accepted finding, perpetual). Stamped from the spec at
+	// (perFinding — a PR per accepted finding, perpetual). Stamped from the spec at
 	// creation (defaulted to "converge"). Always serialized so the UI can key on it.
 	Convergence Convergence `json:"convergence"`
 	// TargetPR is the existing PR number "feedback"/"review" child runs update in

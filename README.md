@@ -59,7 +59,7 @@ Everything candyland tracks is one of two first-class records; the single
   - **converge** (bounded — the default): child runs accumulate on the
     `quest/<id>` branch and, when the objective is met, the quest opens **one PR
     per impacted repo** and terminates.
-  - **perFinding** (an **adventure** — open-ended freeseeking): each accepted
+  - **perFinding** (open-ended freeseeking): each accepted
     finding is its own child run that opens **its own PR**, and the loop runs
     perpetually until it is stopped or discovery goes dry. It is the sidecar
     homologue of the in-session janitor loop.

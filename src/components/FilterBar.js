@@ -21,7 +21,6 @@ import { noFilters, folderOf } from '../data/filters'
 const STATUS_OPTIONS = {
     runs: ['planning', 'running', 'paused', 'done', 'cancelled'],
     quests: ['running', 'paused', 'stopped', 'blocked', 'done', 'surfaced-only'],
-    adventures: ['running', 'paused', 'stopped', 'blocked', 'done', 'surfaced-only'],
 }
 
 const Select = ({ label, value, onChange, width = 150, children }) => (

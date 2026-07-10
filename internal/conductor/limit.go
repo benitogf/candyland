@@ -220,7 +220,7 @@ func (c *Conductor) limitDeadline() time.Time {
 
 // armLimit opens the conductor-wide gate until resetAt (never pulling it earlier)
 // and, for a run host, persists the paused status + resumeAt so the dashboard shows
-// the wait and a restart can re-arm the gate from storage. Quest/campaign hosts
+// the wait and a restart can re-arm the gate from storage. Quest hosts
 // only move the gate — their status lifecycle is owned elsewhere.
 func (c *Conductor) armLimit(hostID string, resetAt time.Time) {
 	c.reArmLimit(resetAt)
@@ -244,7 +244,7 @@ func (c *Conductor) pauseInfraLocal(hostID string, resumeAt time.Time) {
 
 // pausePersist records the non-terminal auto-pause on a run host: status paused,
 // the resumeAt marker, an incremented RePauses counter, and the human PauseReason
-// the UI reads. Quest/campaign hosts only move the gate — their status lifecycle is
+// the UI reads. Quest hosts only move the gate — their status lifecycle is
 // owned elsewhere — so this is a no-op for them.
 func (c *Conductor) pausePersist(hostID, reason string, resumeAt time.Time) {
 	if !isRunID(hostID) {
@@ -305,8 +305,8 @@ func (c *Conductor) awaitLimit(ctx context.Context) {
 }
 
 // isRunID reports whether an ooo host id is a run (r<N>), as opposed to a quest
-// (q<N>) or campaign (c<N>). Runs own the paused/resumeAt status the limit gate
-// persists; the other hosts only move the gate.
+// (q<N>). Runs own the paused/resumeAt status the limit gate persists; the quest
+// host only moves the gate.
 func isRunID(id string) bool {
-	return !strings.HasPrefix(id, "q") && !strings.HasPrefix(id, "c")
+	return !strings.HasPrefix(id, "q")
 }

@@ -26,7 +26,7 @@ import { CopyPrLink } from '../components/CopyPr'
 import { PauseChip } from '../components/StatusBits'
 
 // ── The one work/history section ─────────────────────────────────────────────
-// A single section that PIVOTS by level — Runs/Tasks · Quests · Adventures —
+// A single section that PIVOTS by level — Runs/Tasks · Quests —
 // without navigating to a different top-level page. The pivot and the shared
 // filters live in the URL query string, so pivoting between levels (or following
 // a parent/child link) keeps the active filters. There is no separate "Quests"
@@ -35,7 +35,6 @@ import { PauseChip } from '../components/StatusBits'
 const LEVELS = [
     { key: 'runs', label: 'Runs / Tasks' },
     { key: 'quests', label: 'Quests' },
-    { key: 'adventures', label: 'Adventures' },
 ]
 
 const statusText = (r) => {
