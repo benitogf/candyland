@@ -73,10 +73,8 @@ func TestOverlappingPartitionRejectedBeforeSpawn(t *testing.T) {
 	if feedback == "" {
 		t.Fatal("the overlapping partition must trigger a re-plan")
 	}
-	for _, want := range []string{"shared.txt", "a", "b"} {
-		if !strings.Contains(feedback, want) {
-			t.Errorf("re-plan feedback must name %q, got %q", want, feedback)
-		}
+	if !strings.Contains(feedback, `tasks "a" and "b" both declare shared.txt`) {
+		t.Errorf("re-plan feedback must name the overlapping file and both task ids, got %q", feedback)
 	}
 
 	// Zero coders spawned on the rejected attempt: only the 2 disjoint tasks ran.
@@ -121,6 +119,42 @@ func TestSingleTaskPartitionAcceptedAndBriefCarriesPrompt(t *testing.T) {
 	}
 	if br.Prompt != prompt {
 		t.Errorf("the coder brief must carry the run's full prompt, got %q", br.Prompt)
+	}
+}
+
+// The disjointness gate keys overlap by the RESOLVED repo (empty, path, and
+// basename spellings of the same folder collapse to one key space), and a task
+// re-declaring its own file (or the same file under a different normalization)
+// is not an overlap.
+func TestValidateDisjointFiles(t *testing.T) {
+	folders := []string{"/tmp/work/alpha", "/tmp/work/beta"}
+
+	// Cross-spelling overlap: "" (primary), the basename, and the full path all
+	// resolve to alpha — the shared file must be caught despite the spellings.
+	for _, spelling := range []string{"alpha", "/tmp/work/alpha"} {
+		got := validateDisjointFiles([]partitionTask{
+			{ID: "a", Files: []string{"shared.txt"}},
+			{ID: "b", Files: []string{"./shared.txt"}, Repo: spelling},
+		}, folders)
+		if !strings.Contains(got, `tasks "a" and "b" both declare shared.txt`) {
+			t.Errorf("repo spelled %q must still collide with the primary, got %q", spelling, got)
+		}
+	}
+
+	// A single task declaring the same file twice (post-normalization) is valid —
+	// no false positive burning a re-plan round.
+	if got := validateDisjointFiles([]partitionTask{
+		{ID: "a", Files: []string{"a.txt", "./a.txt"}},
+	}, folders); got != "" {
+		t.Errorf("a task's duplicate declaration of its own file must pass, got %q", got)
+	}
+
+	// The same file in genuinely DIFFERENT repos is not an overlap.
+	if got := validateDisjointFiles([]partitionTask{
+		{ID: "a", Files: []string{"main.go"}, Repo: "alpha"},
+		{ID: "b", Files: []string{"main.go"}, Repo: "beta"},
+	}, folders); got != "" {
+		t.Errorf("same path in different repos must pass, got %q", got)
 	}
 }
 

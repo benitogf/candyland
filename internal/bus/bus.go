@@ -316,7 +316,7 @@ func (b *Bus) RegisterGlobal(server *ooo.Server) {
 // --- coordination reaction (the conductor's in-process orchestration hook) ---
 
 // EventHandler reacts to a committed worker event — the conductor's coordination
-// hook (acknowledge + auto-unblock; not re-planning, which is stdout-driven).
+// hook (acknowledges with a directive; not re-planning, which is stdout-driven).
 type EventHandler func(server *ooo.Server, ev Envelope)
 
 // RegisterReactor wires the coordination reaction to the global storage-level

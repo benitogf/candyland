@@ -247,7 +247,13 @@ func formatBrief(b bus.Brief) string {
 		}
 	}
 	if b.Prompt != "" {
-		fmt.Fprintf(&sb, "\n%s", b.Prompt)
+		// The prompt IS the tech lead's instruction; for every other role it is
+		// context beside the task fields, so label it to match coderBootstrap.
+		if b.Role == "tech-lead" {
+			fmt.Fprintf(&sb, "\n%s", b.Prompt)
+		} else {
+			fmt.Fprintf(&sb, "\nrun prompt (context only — work ONLY within your files boundary):\n%s", b.Prompt)
+		}
 	}
 	if s := strings.TrimSpace(sb.String()); s != "" {
 		return s

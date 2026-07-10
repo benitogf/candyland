@@ -648,7 +648,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 	// coder spawns — one cheap tech-lead round instead of N burned coder budgets.
 	// The integrate-time conflict resolver stays as last resort (coders can
 	// still touch undeclared files).
-	if replan := validateDisjointFiles(tasks); replan != "" {
+	if replan := validateDisjointFiles(tasks, folders); replan != "" {
 		return attemptDeliveryResult{replan: replan}
 	}
 
@@ -2045,22 +2045,26 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 }
 
 // validateDisjointFiles statically checks that the partition's declared Files
-// are pairwise disjoint WITHIN each target repo (tasks may target different
-// repos via their repo field; tasks with no declared files pass). It returns a
-// re-plan feedback naming the exact overlapping files and offending task ids,
-// or "" when the partition is valid.
-func validateDisjointFiles(tasks []partitionTask) string {
+// are pairwise disjoint WITHIN each target repo — resolved via resolveRepo, so
+// spelling the same repo as "", a path, or a basename can't split the key space
+// (tasks with no declared files pass). A task re-declaring its OWN file is not
+// an overlap. It returns a re-plan feedback naming the exact overlapping files
+// and offending task ids, or "" when the partition is valid.
+func validateDisjointFiles(tasks []partitionTask, folders []string) string {
 	type ownerKey struct{ repo, file string }
 	owner := map[ownerKey]string{}
 	var overlaps []string
 	for _, t := range tasks {
+		repo := resolveRepo(t, folders)
 		for _, f := range t.Files {
-			k := ownerKey{t.Repo, path.Clean(filepath.ToSlash(strings.TrimSpace(f)))}
+			k := ownerKey{repo, path.Clean(filepath.ToSlash(strings.TrimSpace(f)))}
 			if k.file == "" || k.file == "." {
 				continue
 			}
 			if prev, taken := owner[k]; taken {
-				overlaps = append(overlaps, fmt.Sprintf("tasks %q and %q both declare %s", prev, t.ID, k.file))
+				if prev != t.ID {
+					overlaps = append(overlaps, fmt.Sprintf("tasks %q and %q both declare %s", prev, t.ID, k.file))
+				}
 				continue
 			}
 			owner[k] = t.ID
