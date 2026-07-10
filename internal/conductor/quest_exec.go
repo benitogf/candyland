@@ -619,10 +619,12 @@ func childRunPRs(r run.Run, branch string) []run.PR {
 // the rollups, and stamps token usage onto the quest in a single durable update.
 func (c *Conductor) recordTick(id string, rec run.Tick, addTokens int, items []run.WorkItem) {
 	rec.EndedAt = time.Now().UTC().Format(time.RFC3339)
+	accounting := run.SumRunAccounting(c.QuestChildRuns(id))
 	c.UpdateQuest(id, func(q *run.Quest) {
 		q.Ticks = append(q.Ticks, rec)
 		q.WorkItems = append(q.WorkItems, items...)
 		q.TokensUsed += addTokens
+		q.Accounting = accounting
 		if len(rec.LaunchedRunIDs) > 0 || len(items) > 0 {
 			q.LastProgress = rec.EndedAt
 		}
@@ -668,10 +670,12 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 			fmt.Sprintf("%d work item(s) could not converge after %d attempts each", q.ItemsBlocked, maxItemAttempts()),
 			questBlockedEvidence(q))
 	}
+	accounting := run.SumRunAccounting(c.QuestChildRuns(id))
 	c.UpdateQuest(id, func(q *run.Quest) {
 		if q.Status == "stopped" {
 			return // a concurrent Stop is authoritative
 		}
+		q.Accounting = accounting
 		if prs != nil {
 			q.PRs = mergeTerminalPRs(q.PRs, prs)
 			recomputeQuestRollups(q) // fold the terminal PRs into PRsOpened

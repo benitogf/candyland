@@ -1678,7 +1678,11 @@ func (c *Conductor) addCampaignTokens(id string, tokens int) {
 	if tokens == 0 {
 		return
 	}
-	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.TokensUsed += tokens })
+	accounting := run.SumRunAccounting(c.CampaignChildRuns(id))
+	c.UpdateCampaign(id, func(cam *run.Campaign) {
+		cam.TokensUsed += tokens
+		cam.Accounting = accounting
+	})
 }
 
 func (c *Conductor) campaignTokensUsed(id string) int {

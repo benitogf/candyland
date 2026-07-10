@@ -148,6 +148,24 @@ func SumTokenAccounting(agents []Agent) TokenAccounting {
 	return acc
 }
 
+// SumRunAccounting aggregates the weighted breakdown across a set of runs (each
+// run's own agent rollup), summing the raw split first so the weighted total and
+// cost round once. It is how a quest rolls its child runs' accounting up onto its
+// own record.
+func SumRunAccounting(runs []Run) TokenAccounting {
+	var acc TokenAccounting
+	for i := range runs {
+		ra := runs[i].TokenAccounting()
+		acc.InputTokens += ra.InputTokens
+		acc.CacheReadTokens += ra.CacheReadTokens
+		acc.CacheCreationTokens += ra.CacheCreationTokens
+		acc.OutputTokens += ra.OutputTokens
+	}
+	acc.WeightedTokens = WeightedTokens(acc.InputTokens, acc.CacheReadTokens, acc.CacheCreationTokens, acc.OutputTokens)
+	acc.CostUsd = WeightedCostUsd(acc.WeightedTokens)
+	return acc
+}
+
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last
 // breath" of §1/§3) MUST carry to be valid. A blocked write without ALL of these
 // fields is incomplete and is rejected/bounced back to the agent (see
@@ -813,6 +831,12 @@ type Campaign struct {
 	Notes       []string `json:"notes,omitempty"`
 	TokenBudget int      `json:"tokenBudget,omitempty"`
 	TokensUsed  int      `json:"tokensUsed"`
+	// Accounting is the campaign's weighted token breakdown (raw split, weighted
+	// total, corrected cost) rolled up across its child runs — the campaign analogue
+	// of Run.Accounting and Quest.Accounting, so the dashboard reads weighted tokens
+	// and the corrected cost off the campaign record rather than re-weighting flat
+	// tokensUsed client-side.
+	Accounting TokenAccounting `json:"accounting"`
 	// Deliver is how the campaign's child runs ship their work: "pr" (the default —
 	// children commit onto the campaign branch, the campaign opens one PR per impacted
 	// repo at the end) or "feedback"/"review" (children land on the EXISTING TargetPR
