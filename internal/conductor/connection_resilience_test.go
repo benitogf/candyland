@@ -117,6 +117,58 @@ func TestClassifyInfra(t *testing.T) {
 	}
 }
 
+// Tokens burned by a dead resume leg are really spent, so the resolving outcome
+// must report the SUM across every leg — not just the final one. A first leg
+// that emits usage then dies on a connection error, resumed by a green second
+// leg, must return the combined usage; dropping the first leg silently
+// understates the cost of every interrupted attempt.
+func TestResumeLegsMergeUsage(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "leg1-done")
+	stub := "#!/usr/bin/env bash\n" +
+		"if [[ ! -f \"" + marker + "\" ]]; then\n" +
+		"  touch \"" + marker + "\"\n" +
+		"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"x\"}}]}}'\n" +
+		"  echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"leg1\",\"usage\":{\"output_tokens\":2000,\"input_tokens\":1000,\"cache_read_input_tokens\":10,\"cache_creation_input_tokens\":20}}'\n" +
+		"  echo 'API Error: Unable to connect to API (ConnectionRefused)' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"y\"}}]}}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"resumed green\",\"usage\":{\"output_tokens\":3000,\"input_tokens\":500,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":7}}'\n"
+	writeFakeClaude(t, stub)
+	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "2000")
+	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
+	t.Setenv("CANDYLAND_INFRA_BACKOFF_MS", "5")
+
+	c := New(nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan attemptOutcome, 1)
+	go func() { done <- streamOnce(ctx, c, id, "a", "go on", t.TempDir(), nil) }()
+
+	var out attemptOutcome
+	select {
+	case out = <-done:
+	case <-ctx.Done():
+		t.Fatal("streamOnce never returned — the infra retry likely hung")
+	}
+
+	// output_tokens are /1000-scaled: (2000+3000)/1000 = 5.
+	if out.tokens != 5 {
+		t.Errorf("tokens = %d, want 5 (both legs summed)", out.tokens)
+	}
+	if out.inputTokens != 1500 {
+		t.Errorf("inputTokens = %d, want 1500 (1000+500)", out.inputTokens)
+	}
+	if out.cacheReadTokens != 15 {
+		t.Errorf("cacheReadTokens = %d, want 15 (10+5)", out.cacheReadTokens)
+	}
+	if out.cacheWriteTokens != 27 {
+		t.Errorf("cacheWriteTokens = %d, want 27 (20+7)", out.cacheWriteTokens)
+	}
+}
+
 // A single sporadic connection loss pauses only its own run; a sustained outage
 // (>= infraGateThreshold consecutive) arms the conductor-wide gate that blocks every
 // spawn — the fleet-wide half, mirroring the usage-limit gate.

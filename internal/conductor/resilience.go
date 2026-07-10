@@ -140,6 +140,18 @@ type attemptOutcome struct {
 	sessionID string
 }
 
+// addUsage folds one leg's raw token counts into this outcome. A resume (a
+// usage-limit or connection-loss pause) throws away everything about the dead
+// leg EXCEPT the tokens it already burned — those were really spent, so the
+// final outcome must report the SUM across all legs, or cost/telemetry silently
+// understates every interrupted attempt.
+func (out *attemptOutcome) addUsage(leg attemptOutcome) {
+	out.tokens += leg.tokens
+	out.inputTokens += leg.inputTokens
+	out.cacheReadTokens += leg.cacheReadTokens
+	out.cacheWriteTokens += leg.cacheWriteTokens
+}
+
 // terminalFailed reports that the spawn reached a NON-success terminal: it failed
 // to start, exited non-zero, stalled, or the harness emitted a result line with a
 // non-success subtype. A successful spawn (clean exit, success subtype) is never a
@@ -289,6 +301,9 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	resumeSession := firstNonEmpty(o.forkFrom, o.sessionID)
 	repaused := 0    // usage-limit + connection-loss pauses combined (unbounded)
 	infraStreak := 0 // CONSECUTIVE connection-loss deaths (resets on any other outcome)
+	// Tokens burned by dead resume legs. Each paused leg is discarded except its
+	// usage; the resolving outcome folds this back in so it reports the sum.
+	var priorLegs attemptOutcome
 	// resumeInPlace switches this spawn to continue the interrupted session next
 	// iteration. When resumeSession is the ACTUAL work session (differs from the
 	// original template id), continue it with resumeContinuePrompt — the interrupted
@@ -338,6 +353,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 				appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
 					"usage limit reached (pause %d) — resuming at %s", repaused, resetAt.UTC().Format(time.RFC3339))}, 0)
 			})
+			priorLegs.addUsage(out)
 			resumeInPlace()
 			continue
 		}
@@ -360,6 +376,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 				appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
 					"connection lost (pause %d, streak %d) — retrying at %s", repaused, infraStreak, resumeAt.UTC().Format(time.RFC3339))}, 0)
 			})
+			priorLegs.addUsage(out)
 			resumeInPlace()
 			if systemic {
 				continue // fleet-gated: the awaitLimit at the top of the loop handles the wait
@@ -377,6 +394,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// here, so this is the single choke point where a non-terminal self-report is
 		// persisted onto the run/quest/campaign the id belongs to.
 		c.captureIncidents(id, agentID, out.allText)
+		out.addUsage(priorLegs)
 		return out
 	}
 }
@@ -418,10 +436,7 @@ func (c *Conductor) spawnWithForkFallback(attemptCtx, parentCtx context.Context,
 	cold.forkFrom, cold.resumeFrom = "", ""
 	fb := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(cold.fallbackPrompt, extraDirs, busCfg, cold), workdir, busCfg)
 	// The failed fork's (rare) usage still belongs to this attempt's accounting.
-	fb.tokens += out.tokens
-	fb.inputTokens += out.inputTokens
-	fb.cacheReadTokens += out.cacheReadTokens
-	fb.cacheWriteTokens += out.cacheWriteTokens
+	fb.addUsage(out)
 	return fb
 }
 
