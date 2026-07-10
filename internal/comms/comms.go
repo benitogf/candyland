@@ -247,12 +247,15 @@ func formatBrief(b bus.Brief) string {
 		}
 	}
 	if b.Prompt != "" {
-		// The prompt IS the tech lead's instruction; for every other role it is
-		// context beside the task fields, so label it to match coderBootstrap.
-		if b.Role == "tech-lead" {
-			fmt.Fprintf(&sb, "\n%s", b.Prompt)
-		} else {
+		// The context-only label claims a files boundary, so gate on exactly
+		// that: only a task brief WITH Files (a coder) gets the labeled form.
+		// Every boundary-less brief — tech-lead plan, reviewer diff command,
+		// quest-lead tick directive, escalation question — renders the prompt
+		// bare, because there the prompt IS the instruction.
+		if len(b.Files) > 0 {
 			fmt.Fprintf(&sb, "\nrun prompt (context only — work ONLY within your files boundary):\n%s", b.Prompt)
+		} else {
+			fmt.Fprintf(&sb, "\n%s", b.Prompt)
 		}
 	}
 	if s := strings.TrimSpace(sb.String()); s != "" {
