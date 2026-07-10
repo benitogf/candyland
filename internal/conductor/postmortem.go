@@ -143,13 +143,3 @@ func (c *Conductor) attachQuestPostmortem(id, agentID, failingCapability, eviden
 	}
 	return c.UpdateQuest(id, func(q *run.Quest) { q.Postmortem = pm })
 }
-
-// attachCampaignPostmortem persists a schema-valid postmortem on a campaign's record
-// — the E2 invariant for a blocked campaign (mirrors attachQuestPostmortem).
-func (c *Conductor) attachCampaignPostmortem(id, agentID, failingCapability, evidence string, mechanism ...string) bool {
-	pm := c.blockerPostmortemFor(agentID, "", failingCapability, evidence, 1, "campaign "+id, mechanism...)
-	if ok, _ := validatePostmortem(pm); !ok {
-		return false
-	}
-	return c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Postmortem = pm })
-}

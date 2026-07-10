@@ -6,7 +6,7 @@ import LinkIcon from '@mui/icons-material/Link'
 import { useToast } from '../feedback'
 import { referenceText } from '../lib/reference'
 
-// One-click copy of a task/quest/campaign reference — a stable handle plus a
+// One-click copy of a task/quest reference — a stable handle plus a
 // resolvable API URL — ready to paste into a VSCode Claude session. Lives inside
 // clickable Work-list rows, so it stops click propagation to avoid navigating
 // into the item, and never fails silently: a clipboard rejection (denied

@@ -9,7 +9,7 @@ import StopCircleIcon from '@mui/icons-material/StopCircle'
 
 // Stop is terminal and irreversible, and it CASCADES to children — so it always
 // goes through this confirmation. `scope` names exactly what will be stopped
-// (e.g. "this campaign and its 3 quests / 7 runs") so the user sees the blast
+// (e.g. "this quest and its 7 runs") so the user sees the blast
 // radius before confirming. Callers pass what/scope; the dialog owns nothing but
 // the confirm gate.
 const ConfirmStopDialog = ({ open, what, scope, onConfirm, onCancel }) => (

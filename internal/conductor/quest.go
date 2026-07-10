@@ -37,10 +37,9 @@ func (c *Conductor) publishQuest(q run.Quest) {
 // CreateQuest registers a new quest (status: running) and persists it, returning
 // the minted id. It mirrors Create: it mints a sequential id, captures the launch
 // objective once onto OriginalObjective (never rewritten — the quest analogue of
-// Run.OriginalIntent), stamps TraceVersion + timestamps, defaults Deliver to "pr",
-// and carries the parent
-// CampaignID from the spec. The tick loop that drives the quest is a later phase;
-// CreateQuest only seeds and persists the initial state.
+// Run.OriginalIntent), stamps TraceVersion + timestamps, and defaults Deliver to
+// "pr". The tick loop that drives the quest is a later phase; CreateQuest only
+// seeds and persists the initial state.
 func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 	c.mu.Lock()
 	c.questSeq++
@@ -64,8 +63,6 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 	q := run.Quest{
 		ID:                id,
 		Title:             title,
-		CampaignID:        spec.CampaignID,
-		PartitionItemID:   spec.PartitionItemID,
 		OriginalObjective: spec.Objective,
 		Objective:         spec.Objective,
 		Folders:           spec.Folders,
@@ -88,7 +85,7 @@ func (c *Conductor) CreateQuest(spec run.QuestSpec) string {
 		TraceVersion: run.TraceVersion,
 	}
 	c.publishQuest(q)
-	log.Printf("candyland: quest %s created (campaign %q, deliver %s)", id, q.CampaignID, deliver)
+	log.Printf("candyland: quest %s created (deliver %s)", id, deliver)
 	return id
 }
 
@@ -157,58 +154,24 @@ func (c *Conductor) UpdateQuest(id string, mutate func(*run.Quest)) bool {
 	return true
 }
 
-// ListQuests returns every persisted quest, deep-copied. It scans the quests/*
-// keyspace, mirroring how ReconcileOrphans walks runs/*.
-func (c *Conductor) ListQuests() []run.Quest {
-	if c.server == nil {
-		return nil
-	}
-	keys, err := c.server.Storage.Keys()
-	if err != nil {
-		log.Printf("candyland: list quests: %v", err)
-		return nil
-	}
-	var quests []run.Quest
-	for _, k := range keys {
-		if !strings.HasPrefix(k, "quests/") {
-			continue
-		}
-		obj, err := c.server.Storage.Get(k)
-		if err != nil {
-			continue
-		}
-		var q run.Quest
-		if err := json.Unmarshal(obj.Data, &q); err != nil {
-			continue
-		}
-		quests = append(quests, cloneQuest(q))
-	}
-	return quests
-}
-
 // QuestBranch derives the shared branch a quest's child runs accumulate their
 // commits on (the same name in each impacted repo — never a scalar branch on the
-// spec). It is the single definition of the format, mirroring CampaignBranch:
+// spec). It is the single definition of the format:
 //
 //   - A feedback/review quest (target PR) works that PR's HEAD branch, not an owned
 //     branch — convergence does not apply, so this returns "".
-//   - A campaign-child quest (CampaignID set) integrates onto the CAMPAIGN branch
-//     campaign/<campaignID> and opens no PR — regardless of its convergence policy.
-//   - A standalone CONVERGE quest accumulates its child runs onto quest/<id> and
-//     opens ONE PR per repo at terminal.
-//   - A standalone perFinding quest (adventure) has no shared branch — each child
-//     run opens its own PR — so this returns "".
+//   - A CONVERGE quest accumulates its child runs onto quest/<id> and opens ONE PR
+//     per repo at terminal.
+//   - A perFinding quest has no shared branch — each child run opens its
+//     own PR — so this returns "".
 func QuestBranch(q run.Quest) string {
 	if isTargetedReviewQuest(q) {
 		return "" // feedback/review works the target PR's head branch
 	}
-	if q.CampaignID != "" {
-		return "campaign/" + q.CampaignID // campaign-child integrates onto the campaign branch
-	}
 	if q.Convergence == run.ConvergePerFinding {
-		return "" // adventure: a PR per finding, no shared branch
+		return "" // perFinding: a PR per finding, no shared branch
 	}
-	return "quest/" + q.ID // standalone bounded quest: accumulate on quest/<id>
+	return "quest/" + q.ID // bounded quest: accumulate on quest/<id>
 }
 
 // reconcileQuestSeq seeds the quest-id sequence past the highest persisted id, so a

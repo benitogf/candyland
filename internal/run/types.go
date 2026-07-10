@@ -169,7 +169,7 @@ func SumRunAccounting(runs []Run) TokenAccounting {
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last
 // breath" of §1/§3) MUST carry to be valid. A blocked write without ALL of these
 // fields is incomplete and is rejected/bounced back to the agent (see
-// conductor.validatePostmortem). It is persisted on the run/quest/campaign record
+// conductor.validatePostmortem). It is persisted on the run/quest record
 // and rendered in the detail view so a blocker is fully explained, never a bare stop.
 type Postmortem struct {
 	Attempts           []string `json:"attempts"`           // each attempt made and its result
@@ -200,7 +200,7 @@ type Escalation struct {
 // — distinct from a terminal Postmortem (a capability failure that stops the flow)
 // and from an Escalation (a decision handed up a tier). It is a NON-TERMINAL
 // self-report: the agent emits a `INCIDENT <json>` line and keeps working. It is
-// persisted on the run/quest/campaign record and retrievable via the same
+// persisted on the run/quest record and retrievable via the same
 // data-access path /learn mines (see conductor.captureIncidents).
 type IncidentNote struct {
 	Agent    string `json:"agent,omitempty"`    // the agent id that self-reported the incident
@@ -215,7 +215,7 @@ type IncidentNote struct {
 // judges contradiction with the root, never its completeness). Unlike a blocker,
 // a conflict does not enter the local fix loop: it pauses the unit and requests a
 // ruling ONE tier up (Ruling is the decider's disposition — "proceed" or "fix").
-// It is persisted on the run/quest/campaign record (see conductor.captureIntentConflicts).
+// It is persisted on the run/quest record (see conductor.captureIntentConflicts).
 type IntentConflictNote struct {
 	Agent  string `json:"agent,omitempty"`  // the reviewer id that flagged the conflict
 	Issue  string `json:"issue"`            // one line describing the contradiction with the root intent
@@ -247,17 +247,15 @@ type PR struct {
 type Run struct {
 	ID    string `json:"id"`
 	Title string `json:"title"` // optional; UI derives a label when empty
-	// QuestID/CampaignID are parent links for later quest/campaign grouping. They
-	// stay empty for standalone runs today; the fields exist now so a later phase
-	// can populate them without a schema migration.
-	QuestID    string `json:"questId,omitempty"`
-	CampaignID string `json:"campaignId,omitempty"`
+	// QuestID is the parent link for quest grouping. It stays empty for standalone
+	// runs; a quest-owned child run carries its owning quest's id.
+	QuestID string `json:"questId,omitempty"`
 	// Deliver is how the run ships its work: "pr" (the default — open one PR per
-	// impacted repo) or "branch" (a campaign/quest-owned child run — commit + push
-	// onto the campaign branch (campaign/<id> — the same name in each impacted repo)
-	// and open NO PR; the parent opens the PR at the end after intent review). Empty ==
-	// "pr" (a standalone run). A branch-delivered run's branch is that campaign branch
-	// (set by the parent at launch).
+	// impacted repo) or "branch" (a quest-owned child run — commit + push onto the
+	// shared quest branch (quest/<id> — the same name in each impacted repo) and open
+	// NO PR; the quest opens the PR at the end at terminal). Empty == "pr" (a
+	// standalone run). A branch-delivered run's branch is that quest branch (set by
+	// the quest at launch).
 	// (always serialized — no omitempty — so the frontend can key UI on r.deliver
 	// even for a standalone "pr" run, where the field would otherwise be absent).
 	Deliver Delivery `json:"deliver"`
@@ -287,7 +285,7 @@ type Run struct {
 	// from a paused run's reset time (see conductor.tracked).
 	ResumeAt string `json:"resumeAt,omitempty"`
 	// PauseReason is the human-readable cause of a non-terminal auto-pause, mirroring
-	// Quest/Campaign. Two forms the UI distinguishes: "usage limit — auto-resume at <t>"
+	// Quest. Two forms the UI distinguishes: "usage limit — auto-resume at <t>"
 	// (a usage/session limit) and "connection lost — retrying" (a network/infra death).
 	// Cleared when the run resumes. Empty for a user stop.
 	PauseReason string `json:"pauseReason,omitempty"`
@@ -374,9 +372,8 @@ type Spec struct {
 	// Deliver is how the run ships its work: "pr" (the default — open one PR per
 	// impacted repo) or "feedback"/"review" (update an EXISTING PR in place —
 	// base the work on that PR's head branch and push back, opening NO new PR).
-	// Empty == "pr". Mirrors the same fields on CampaignSpec/QuestSpec so a
-	// standalone run (POST /api/runs) can address PR feedback too, not only
-	// quest/campaign children.
+	// Empty == "pr". Mirrors the same fields on QuestSpec so a standalone run
+	// (POST /api/runs) can address PR feedback too, not only quest children.
 	Deliver Delivery `json:"deliver,omitempty"`
 	// TargetPR is the existing PR number a "feedback"/"review" run updates in
 	// place (0 for "pr"). Required (> 0) when Deliver is feedback/review.
@@ -395,16 +392,16 @@ const (
 	PhasePR        = 3
 )
 
-// Delivery is how a quest's child runs ship their work. A standalone quest opens
-// a PR per child run ("pr"); a campaign-owned quest commits onto the campaign branch
-// ("branch") derived as campaign/<campaignID> — the same name in each impacted repo
+// Delivery is how a quest's child runs ship their work. A perFinding quest opens
+// a PR per child run ("pr"); a converge quest commits onto the shared quest branch
+// ("branch") derived as quest/<id> — the same name in each impacted repo
 // (NOT a scalar branch name — settled decision). The derivation lives in
 // conductor.QuestBranch.
 type Delivery string
 
 const (
-	DeliverPR     Delivery = "pr"     // standalone quest: one PR per child run
-	DeliverBranch Delivery = "branch" // campaign-owned: commit onto campaign/<campaignID>
+	DeliverPR     Delivery = "pr"     // perFinding quest: one PR per child run
+	DeliverBranch Delivery = "branch" // converge quest: commit onto quest/<id>
 	// DeliverFeedback updates an EXISTING PR in place: the run bases its work on
 	// that PR's head branch and pushes back onto it, opening NO new PR. The target
 	// PR number rides on TargetPR. Multi-repo: each repo's findings land on that
@@ -486,19 +483,17 @@ type WatchState struct {
 //   - "converge" (the default, a BOUNDED quest): child runs commit onto a shared
 //     per-quest branch quest/<id> (deliver: branch, no child PRs); when the quest
 //     meets its objective (terminal) it opens ONE PR per impacted repo from that
-//     branch — the same terminal shape a campaign uses.
-//   - "perFinding" (an ADVENTURE, open-ended freeseeking): each accepted finding
+//     branch.
+//   - "perFinding" (open-ended freeseeking): each accepted finding
 //     is its own child run with deliver: pr — its own PR — and the loop is perpetual.
 //
-// EXCEPTIONS (convergence does not apply): a quest with a target PR
-// (feedback/review) works that PR's head branch and opens no new PR; a
-// campaign-child quest (CampaignID set) integrates onto the campaign branch and
-// opens no PR regardless of policy.
+// EXCEPTION (convergence does not apply): a quest with a target PR
+// (feedback/review) works that PR's head branch and opens no new PR.
 type Convergence string
 
 const (
 	ConvergeConverge   Convergence = "converge"   // bounded: accumulate on quest/<id>, one PR per repo at terminal
-	ConvergePerFinding Convergence = "perFinding" // adventure: a PR per accepted finding, perpetual
+	ConvergePerFinding Convergence = "perFinding" // perFinding: a PR per accepted finding, perpetual
 )
 
 // QuestSpec is the launch input for a quest — a Candyland-native iterative loop
@@ -520,9 +515,9 @@ type QuestSpec struct {
 	Scope   string   `json:"scope,omitempty"`   // human-readable bound on what work is in-scope
 	// Convergence is the delivery policy: "converge" (bounded — the default; child
 	// runs accumulate on quest/<id>, one PR per repo at terminal) or "perFinding"
-	// (adventure — a PR per accepted finding, perpetual). Empty defaults to
-	// "converge" at creation. It does not apply to feedback/review or campaign-child
-	// quests (see the exceptions on Convergence).
+	// (perFinding — a PR per accepted finding, perpetual). Empty defaults to
+	// "converge" at creation. It does not apply to feedback/review quests (see the
+	// exception on Convergence).
 	Convergence Convergence `json:"convergence,omitempty"`
 	// Safety is the safety boundary: the files/areas a quest's child runs must not
 	// touch (the quest-level analogue of a coder's fork-safe boundary).
@@ -530,18 +525,13 @@ type QuestSpec struct {
 	Verify      []string `json:"verify,omitempty"`      // verification command(s) every child run must pass green
 	Stop        string   `json:"stop,omitempty"`        // stop/pause criteria (when to halt the loop)
 	TokenBudget int      `json:"tokenBudget,omitempty"` // cap on total tokens across all ticks/child runs
-	// Deliver is "pr" (standalone) or "branch" (campaign-owned). Empty defaults to
-	// "pr" at creation. When "branch", the branch is campaign/<campaignID> — the same
-	// name in each impacted repo.
+	// Deliver is "pr" (standalone) or "branch" (converge quest). Empty defaults to
+	// "pr" at creation. When "branch", the branch is quest/<id> — the same name in
+	// each impacted repo.
 	Deliver Delivery `json:"deliver,omitempty"`
 	// TargetPR is the existing PR number a "feedback"/"review" quest's child runs
 	// update in place (required >0 for those modes; 0 for "pr"/"branch").
 	TargetPR int `json:"targetPr,omitempty"`
-	// CampaignID is the parent campaign link, set when this quest is launched under a
-	// campaign. Empty for a standalone quest.
-	CampaignID string `json:"campaignId,omitempty"`
-	// the campaign partition item this quest was launched for (relaunch reuse); empty for standalone quests
-	PartitionItemID string `json:"partitionItemId,omitempty"`
 }
 
 // WorkItem is one unit of work a quest's discovery surfaced and triage decided on.
@@ -576,7 +566,7 @@ type Tick struct {
 
 // Quest is the full persisted state of a quest — the object stored at ooo key
 // quests/<id>. It mirrors Run (the stored run object) for a quest's iterative loop:
-// stable id + optional parent campaign link, the objective fields carried from the
+// stable id, the objective fields carried from the
 // spec, lifecycle status, budget/delivery, the work items and ticks the
 // loop accumulates, rollup counters for the dashboard, and the schema version. The
 // tick loop that populates Ticks/WorkItems is a later phase — this is the model and
@@ -585,10 +575,7 @@ type Quest struct {
 	ID string `json:"id"`
 	// Title is a short display label the UI renders instead of the full objective.
 	// Stamped at creation (spec.Title, else derived from the objective).
-	Title      string `json:"title,omitempty"`
-	CampaignID string `json:"campaignId,omitempty"` // parent campaign link; empty for a standalone quest
-	// the campaign partition item this quest was launched for (relaunch reuse); empty for standalone quests
-	PartitionItemID string `json:"partitionItemId,omitempty"`
+	Title string `json:"title,omitempty"`
 	// OriginalObjective is the launch objective, set ONCE at creation and never
 	// rewritten — the quest analogue of Run.OriginalIntent. Final review compares
 	// the quest's output against this, not against a mutated objective.
@@ -623,7 +610,7 @@ type Quest struct {
 	Deliver    Delivery        `json:"deliver"`
 	// Convergence is the quest's delivery policy: "converge" (bounded — child runs
 	// accumulate on quest/<id>, one PR per repo opens at terminal) or "perFinding"
-	// (adventure — a PR per accepted finding, perpetual). Stamped from the spec at
+	// (perFinding — a PR per accepted finding, perpetual). Stamped from the spec at
 	// creation (defaulted to "converge"). Always serialized so the UI can key on it.
 	Convergence Convergence `json:"convergence"`
 	// TargetPR is the existing PR number "feedback"/"review" child runs update in
@@ -636,8 +623,8 @@ type Quest struct {
 	WorkItems  []WorkItem `json:"workItems"`
 	Ticks      []Tick     `json:"ticks"`
 	// PRs is a converge quest's TERMINAL delivery: one PR per impacted repo, opened
-	// from quest/<id> when the quest meets its objective (mirrors Campaign.PRs). A
-	// perFinding quest opens PRs per child run (recorded on ticks), not here.
+	// from quest/<id> when the quest meets its objective. A perFinding quest opens
+	// PRs per child run (recorded on ticks), not here.
 	PRs []PR `json:"prs,omitempty"`
 	// Rollup fields for the dashboard, recomputed from WorkItems/Ticks by the loop.
 	PRsOpened      int `json:"prsOpened"`
@@ -669,207 +656,6 @@ type Quest struct {
 	GateRounds int `json:"gateRounds,omitempty"`
 	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
 	// exported trace carries TraceVersion so a future store can detect/migrate.
-	TraceVersion int `json:"traceVersion"`
-}
-
-// Commitment is one checkable assertion the campaign commits to delivering. The
-// intent-lead derives commitments from the original input during the brief phase;
-// each is later judged by intent review (see CommitmentVerdict). Storing the
-// assertion now lets a later phase attach a verdict without a schema migration.
-type Commitment struct {
-	ID        string `json:"id"`
-	Statement string `json:"statement"` // one checkable assertion (the unit intent review judges)
-}
-
-// IntentBrief is the intent-lead's restatement of the campaign's original input
-// into a structured plan: the goal as understood, scope split by domain, the
-// questions resolved vs still open, a draft task list, dependencies, a rough
-// sizing, suggested review routing, and the checkable commitments. It is built by
-// the brief phase (a later task); this is the data shape it persists to.
-type IntentBrief struct {
-	RestatedGoal      string       `json:"restatedGoal,omitempty"`
-	ScopeByDomain     []string     `json:"scopeByDomain,omitempty"`
-	ResolvedQuestions []string     `json:"resolvedQuestions,omitempty"`
-	OpenQuestions     []string     `json:"openQuestions,omitempty"`
-	DraftTasks        []string     `json:"draftTasks,omitempty"`
-	Dependencies      []string     `json:"dependencies,omitempty"`
-	RoughSizing       string       `json:"roughSizing,omitempty"`
-	ReviewRouting     []string     `json:"reviewRouting,omitempty"` // suggested human review areas/reviewers (suggestions only, not agents)
-	Commitments       []Commitment `json:"commitments,omitempty"`
-}
-
-// GateResult is the outcome of a campaign gate (the post-brief BriefGate and the
-// post-plan PlanGate). It records whether the gate passed, why, and when it was
-// decided. The gates' execution is a later phase; this is the result shape they
-// persist. DecidedAt is empty until the gate has run (Passed==false then means
-// "not yet decided", not "failed").
-type GateResult struct {
-	Passed    bool   `json:"passed"`
-	Reason    string `json:"reason,omitempty"`
-	DecidedAt string `json:"decidedAt,omitempty"` // RFC3339 set when the gate decides
-}
-
-// CommitmentVerdict is intent review's judgment of one Commitment: whether the
-// campaign's delivered work satisfied it, and the evidence. A "missed" verdict
-// blocks that repo's PR; a "partial" annotates it (the gate logic is a later
-// phase — this only carries the data). It is the core/intent-review output shape.
-type CommitmentVerdict struct {
-	CommitmentID string   `json:"commitmentId"`
-	Verdict      string   `json:"verdict"`            // satisfied|partial|missed
-	Evidence     []string `json:"evidence,omitempty"` // what backs the verdict
-}
-
-// IntentReview is the final per-commitment judgment of a campaign's delivered
-// work against its original input, holding one CommitmentVerdict per commitment.
-// A "missed" blocks the affected repo's PR; a "partial" annotates it. The review
-// itself runs in a later phase; this is the persisted output shape.
-type IntentReview struct {
-	Verdicts   []CommitmentVerdict `json:"verdicts,omitempty"`
-	ReviewedAt string              `json:"reviewedAt,omitempty"` // RFC3339 set when the review completes
-}
-
-// QuestPartitionItem is one child quest of the tech manager's settled QUESTS
-// partition. It is parsed from the tech manager's `QUESTS <json>` line and
-// persisted on the campaign (Campaign.Partition) so a relaunch reuses the
-// approved partition instead of re-paying decomposition.
-type QuestPartitionItem struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Objective string   `json:"objective"`
-	Folders   []string `json:"folders"`
-	Deps      []string `json:"deps"`
-}
-
-// CampaignSpec is the launch input for a campaign — the program-level container
-// above quests and runs. Candyland owns the full intent→delivery cycle for a
-// campaign (validation, decomposition into child quests/runs, review, per-repo
-// delivery). This spec carries only the settled launch parameters; the supervisor
-// /intent-lead flow, gates, and intent review are later phases. It mirrors how
-// run.Spec/QuestSpec carry launch input for their persisted-state counterparts.
-type CampaignSpec struct {
-	// Input is the original instruction. It is captured ONCE onto
-	// Campaign.OriginalInput at creation and never rewritten (final intent review
-	// compares delivered work against this).
-	Input string `json:"input"`
-	// Title is an optional short display label. Empty at launch → CreateCampaign
-	// derives one from the input (mirrors QuestSpec.Title).
-	Title       string   `json:"title,omitempty"`
-	Folders     []string `json:"folders,omitempty"`     // target folders/repos (optional; folders[0] = the git repo children branch in)
-	TokenBudget int      `json:"tokenBudget,omitempty"` // cap on total tokens across the whole campaign
-	// Deliver is how the campaign's child runs ship their work. Empty defaults to
-	// "pr" (the campaign opens one PR per impacted repo at the end; children commit
-	// onto the campaign branch). "feedback"/"review" land on an EXISTING PR
-	// (TargetPR) instead of opening a new one — the child runs carry that mode.
-	Deliver Delivery `json:"deliver,omitempty"`
-	// TargetPR is the existing PR number a "feedback"/"review" campaign's child runs
-	// update in place (required >0 for those modes; 0 for "pr").
-	TargetPR int `json:"targetPr,omitempty"`
-}
-
-// Campaign is the full persisted state of a campaign — the object stored at ooo
-// key campaigns/<id>. It is the program-level container above quests and runs:
-// the immutable original input, the intent-lead's structured brief, the post-brief
-// and post-plan gates, the child quests/runs, the final per-repo delivery (one PR
-// per repo after intent review — children commit to the campaign branch
-// (campaign/<id> — the same name in each impacted repo) and open no PR), the
-// suggested human review routing, the final intent review,
-// lifecycle status, budget, timestamps, and the schema version. The
-// supervisor/intent-lead flow, gate execution, and intent review that populate
-// these fields are later phases — this is the model and its persistence only.
-type Campaign struct {
-	ID string `json:"id"`
-	// Title is a short display label the UI renders instead of the full input.
-	// Stamped at creation (spec.Title, else derived from the input).
-	Title string `json:"title,omitempty"`
-	// OriginalInput is the launch input, set ONCE at creation and never rewritten —
-	// the campaign analogue of Run.OriginalIntent. Final intent review compares the
-	// campaign's delivered work against this, not a mutated input.
-	OriginalInput string `json:"originalInput"`
-	// Folders are the campaign's target folders/repos, carried from the spec
-	// (folders[0] = the git repo children branch in). The supervisor runs its
-	// intent-lead/reviewer agents and launches child runs against these.
-	Folders []string `json:"folders,omitempty"`
-	// IntentBrief is the intent-lead's structured restatement of OriginalInput.
-	// Empty until the brief phase (a later task) populates it.
-	IntentBrief IntentBrief `json:"intentBrief"`
-	// BriefGate (the deterministic post-brief consistency check) and PlanGate (gate 1:
-	// the intent manager's agentic review of the tech manager's quest partition) are
-	// the pre-launch campaign gates; these hold the results.
-	BriefGate GateResult `json:"briefGate"`
-	PlanGate  GateResult `json:"planGate"`
-	// Partition is the gate-1-approved QUESTS partition, stamped when PlanGate
-	// passes. A relaunch reuses it (with the settled IntentBrief) instead of
-	// re-running the intent lead / tech manager. Empty until gate 1 passes.
-	Partition []QuestPartitionItem `json:"partition,omitempty"`
-	// QuestIDs/RunIDs are the campaign's children, linked as they are launched (a
-	// later phase). Children commit onto the campaign branch (campaign/<id> — the same
-	// name in each impacted repo) and open no PR.
-	QuestIDs []string `json:"questIds"`
-	RunIDs   []string `json:"runIds"`
-	// PRs is the final delivery: one PR per impacted repo, opened at the end after
-	// intent review (reusing the run PR type). The branch the children commit to —
-	// campaign/<id>, the same name in each impacted repo — is derived by
-	// conductor.CampaignBranch.
-	PRs []PR `json:"prs,omitempty"`
-	// ReviewRouting is the suggested human review areas/reviewers (suggestions only,
-	// not agents) — mirrors IntentBrief.ReviewRouting at the campaign level.
-	ReviewRouting []string `json:"reviewRouting,omitempty"`
-	// IntentReview is the final per-commitment judgment of delivered work. Empty
-	// until the intent-review phase (a later task) populates it.
-	IntentReview IntentReview `json:"intentReview"`
-	// Status is the lifecycle state: running|paused|stopped|blocked|done.
-	// PauseReason carries the transient human-readable reason when paused/blocked
-	// (delivery/block overwrite or clear it). Notes carries DURABLE non-blocking
-	// notes (e.g. a token-cap degrade-to-partial) that delivery/block never clear,
-	// so an operator still learns the campaign delivered partial after a clean PR.
-	Status      string `json:"status"`
-	PauseReason string `json:"pauseReason,omitempty"`
-	// StopReason records why/who stopped the campaign (e.g. "manual stop from
-	// dashboard"), persisted by StopCampaign (q4 fix). Empty until stopped.
-	StopReason  string   `json:"stopReason,omitempty"`
-	Archived    bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
-	Notes       []string `json:"notes,omitempty"`
-	TokenBudget int      `json:"tokenBudget,omitempty"`
-	TokensUsed  int      `json:"tokensUsed"`
-	// Accounting is the campaign's weighted token breakdown (raw split, weighted
-	// total, corrected cost) rolled up across its child runs — the campaign analogue
-	// of Run.Accounting and Quest.Accounting, so the dashboard reads weighted tokens
-	// and the corrected cost off the campaign record rather than re-weighting flat
-	// tokensUsed client-side.
-	Accounting TokenAccounting `json:"accounting"`
-	// Deliver is how the campaign's child runs ship their work: "pr" (the default —
-	// children commit onto the campaign branch, the campaign opens one PR per impacted
-	// repo at the end) or "feedback"/"review" (children land on the EXISTING TargetPR
-	// instead of the campaign branch — see the campaign child-quest launch). Set at
-	// creation, defaulted to "pr" when empty. Always serialized (no omitempty) so the
-	// frontend can key UI on cam.deliver even for a default "pr" campaign.
-	Deliver Delivery `json:"deliver"`
-	// TargetPR is the existing PR number "feedback"/"review" child runs update in
-	// place (0 for "pr"). Stamped from the spec at creation.
-	TargetPR int `json:"targetPr,omitempty"`
-	// Agents are the campaign's OWN coordinating agents (the supervisor's intent-lead
-	// and intent-reviewer) — distinct from the agents of its child quests/runs. The
-	// recording path routes their state+events here so the dashboard can show what the
-	// campaign itself is doing, beyond its children. Non-nil at creation so it marshals
-	// to [] not null (matching Run.Agents).
-	Agents    []Agent `json:"agents"`
-	CreatedAt string  `json:"createdAt"` // RFC3339 set once at creation
-	UpdatedAt string  `json:"updatedAt"` // RFC3339 set on every persisted mutation
-	// L2 telemetry: the recorded upward decision-escalation audit trail, and the
-	// schema-valid postmortem attached when the campaign terminates blocked (§3).
-	Escalations []Escalation `json:"escalations,omitempty"`
-	Postmortem  *Postmortem  `json:"postmortem,omitempty"`
-	// Incidents is the self-acknowledged-incident audit trail the campaign's own
-	// coordinating agents voluntarily reported (INCIDENT lines).
-	Incidents []IncidentNote `json:"incidents,omitempty"`
-	// IntentConflicts is the audit trail of contradictions a reviewer flagged at the
-	// campaign gate 2 against the verbatim root intent (two-layer briefing).
-	IntentConflicts []IntentConflictNote `json:"intentConflicts,omitempty"`
-	// GateRounds is how many review→fix→re-review rounds the campaign gate 2
-	// consumed (cumulative), the campaign analogue of Run.ReviewRounds.
-	GateRounds int `json:"gateRounds,omitempty"`
-	// TraceVersion is the schema version of this Campaign record, mirroring how a
-	// Run's exported trace and a Quest carry TraceVersion for future migration.
 	TraceVersion int `json:"traceVersion"`
 }
 

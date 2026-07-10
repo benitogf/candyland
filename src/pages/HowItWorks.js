@@ -66,14 +66,10 @@ flowchart TB
 
 const HIERARCHY = `
 flowchart TB
-  C["🎥 Campaign<br/>intent manager + tech manager · two convergence gates<br/>one PR per repo from the campaign branch"]:::hl
-  Q["🧭 Quest — bounded<br/>quest-lead tick loop: discover · triage · launch<br/>objective met → one PR per impacted repo"]
-  A["🧭 Adventure — open-ended<br/>freeseeking sibling: each accepted finding<br/>is its own run · its own PR · runs until stopped/dry"]
+  Q["🧭 Quest — persistent loop<br/>quest-lead tick loop: discover · triage · launch<br/>converge → one PR per impacted repo · perFinding → one PR per accepted finding"]:::hl
   R["🛠️ Run<br/>tech lead + coders + reviewer → one PR (or a shared-branch commit)"]
   T["✅ Task<br/>one fork-safe slice, defined by a failing test"]
-  C -->|"partitions into child"| Q
   Q -->|"launches"| R
-  A -->|"launches"| R
   R -->|"partitions into"| T
   classDef hl fill:#ff5fa2,stroke:#ff5fa2,color:#150d20,font-weight:bold;
 `
@@ -218,23 +214,15 @@ const pillars = [
 const concepts = [
     {
         title: 'Conductor',
-        body: 'A pure-Go orchestrator that spends no model tokens. It drives campaigns, quests, and runs through bounded stages, spawns each agent as a process, runs the tests it gates on, and owns realtime state. The dashboard talks to it; the agents supply the judgment.',
-    },
-    {
-        title: 'Campaign',
-        body: 'The program level, run by two roles. An intent manager owns intent gating end-to-end: it restates your goal into a brief (scope, commitments) and later runs the final per-commitment intent review. A tech manager owns the technical work: it partitions the brief into child quests (concurrent by default, dependencies only where real), the integration strategy across the shared campaign branch, and remediation when a commitment misses. Two convergence gates sit between them: the intent manager signs off the quest partition against the brief before work launches, and done requires dual sign-off — technical done from the tech manager plus a clean intent review. Children commit onto the shared campaign branch; the campaign opens one PR per impacted repo at the end. A missed commitment feeds a bounded remediation quest, never a silent park.',
+        body: 'A pure-Go orchestrator that spends no model tokens. It drives quests and runs through bounded stages, spawns each agent as a process, runs the tests it gates on, and owns realtime state. The dashboard talks to it; the agents supply the judgment.',
     },
     {
         title: 'Quest',
-        body: 'A bounded objective driven by a quest-lead: each tick discovers and triages work and launches child runs for accepted items, with the children committing onto the quest branch. When the objective is met the quest opens one PR per impacted repo and terminates.',
-    },
-    {
-        title: 'Adventure',
-        body: 'The open-ended freeseeking sibling of a quest. It runs the same tick machinery but with a per-finding delivery policy: each accepted finding is its own run and its own PR. It is perpetual — it keeps discovering until you stop it or it runs dry.',
+        body: 'A persistent loop driven by a quest-lead: each tick discovers and triages work and launches child runs for accepted items, with the children committing onto the quest branch. It has two delivery modes — converge (loop until clean, one PR per impacted repo) and perFinding (each accepted finding is its own run and its own PR).',
     },
     {
         title: 'Run',
-        body: 'One bounded build. A tech lead partitions it, coders build the slices in parallel, a reviewer checks the integrated diff, and it opens a PR — or, as a campaign/quest child, commits to the shared branch and opens none itself.',
+        body: 'One bounded build. A tech lead partitions it, coders build the slices in parallel, a reviewer checks the integrated diff, and it opens a PR — or, as a quest child, commits to the shared branch and opens none itself.',
     },
     {
         title: 'Plan contract — the seam',
@@ -314,7 +302,7 @@ const DeveloperGuide = () => (
             </Typography>
             <Typography variant="h6" color="text.secondary" sx={{ fontWeight: 400, maxWidth: 840 }}>
                 Candyland is a solo orchestration sidecar. detritus launches work over REST; a pure-Go
-                conductor drives it through a hierarchy — campaigns coordinate quests, quests launch runs,
+                conductor drives it through a hierarchy — quests launch runs,
                 and each run splits a feature across focused coders in parallel — while candyland shows every
                 agent live. You stop juggling sessions by hand, watch and audit the work here, and review the
                 pull requests it opens.
@@ -369,21 +357,19 @@ const DeveloperGuide = () => (
         {/* 1b. The work hierarchy */}
         <Section
             kicker="the work hierarchy"
-            title="Campaigns, quests, adventures, runs, tasks"
-            intro="Candyland drives work at four nested levels. A campaign is the whole intent→delivery cycle for a program: an intent manager settles the brief, a tech manager partitions it into child quests, and two convergence gates sit between them. A quest is a bounded objective its lead ticks through, launching runs, until the objective is met. An adventure is the quest's open-ended freeseeking sibling. A run is one bounded build — a tech lead and coders. A task is a single fork-safe slice inside a run. The conductor moves work down the levels; the intelligence at each level is an agent."
+            title="Quests, runs, tasks"
+            intro="Candyland drives work at nested levels. A quest is a persistent loop its lead ticks through, launching runs, until its objective is met or it is stopped. A run is one bounded build — a tech lead and coders. A task is a single fork-safe slice inside a run. The conductor moves work down the levels; the intelligence at each level is an agent."
         >
-            <DiagramCard caption="A campaign's tech manager partitions the brief into child quests; a quest (or adventure) launches runs; a run partitions into tasks. Each level's decisions are made by an agent, spawned by the pure-Go conductor.">
+            <DiagramCard caption="A quest launches runs; a run partitions into tasks. Each level's decisions are made by an agent, spawned by the pure-Go conductor.">
                 <MermaidDiagram chart={HIERARCHY} />
             </DiagramCard>
             <SpecNote>
-                Delivery differs by level. Bounded work converges: a standalone <strong>run</strong> or
-                <strong> quest</strong> iterates on its own branch and opens <strong>one PR per impacted
-                repo</strong> when the objective is met. Work spawned <em>under a campaign</em> commits onto
-                the shared campaign branch and opens no PR of its own — the campaign opens one PR per impacted
-                repo only after both gates pass: technical done from the tech manager plus a clean
-                per-commitment intent review from the intent manager. A missed commitment feeds back as a
-                bounded remediation quest rather than parking. Only open-ended freeseeking (an
-                <strong> adventure</strong>) produces many PRs — one per accepted finding.
+                Delivery differs by level and by the quest's mode. Bounded work converges: a standalone
+                <strong> run</strong> or a <strong>converge</strong> quest iterates on its own branch and opens
+                <strong> one PR per impacted repo</strong> when the objective is met. Work spawned <em>under a
+                quest</em> commits onto the shared quest branch and opens no PR of its own — the quest opens the
+                PR when the objective is met. A <strong>perFinding</strong> quest instead produces many PRs — one
+                per accepted finding.
             </SpecNote>
         </Section>
 

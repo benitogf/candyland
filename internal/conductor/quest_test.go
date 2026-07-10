@@ -27,7 +27,7 @@ func newQuestServer(t *testing.T) (*Conductor, *ooo.Server) {
 }
 
 // CreateQuest persists a quest and GetQuest round-trips it, including the settled
-// launch fields (Deliver, CampaignID, TokenBudget, objective).
+// launch fields (Deliver, TokenBudget, objective).
 func TestCreateQuestRoundTrips(t *testing.T) {
 	c, _ := newQuestServer(t)
 
@@ -40,7 +40,6 @@ func TestCreateQuestRoundTrips(t *testing.T) {
 		Stop:        "no items two ticks running",
 		TokenBudget: 5000,
 		Deliver:     run.DeliverBranch,
-		CampaignID:  "c7",
 	})
 	if id != "q1" {
 		t.Fatalf("first quest id = %q, want q1", id)
@@ -55,9 +54,6 @@ func TestCreateQuestRoundTrips(t *testing.T) {
 	}
 	if q.Deliver != run.DeliverBranch {
 		t.Errorf("deliver = %q, want %q", q.Deliver, run.DeliverBranch)
-	}
-	if q.CampaignID != "c7" {
-		t.Errorf("campaignId = %q, want c7", q.CampaignID)
 	}
 	if q.TokenBudget != 5000 {
 		t.Errorf("tokenBudget = %d, want 5000", q.TokenBudget)
@@ -83,9 +79,6 @@ func TestCreateQuestDefaults(t *testing.T) {
 	}
 	if q.Deliver != run.DeliverPR {
 		t.Errorf("default deliver = %q, want %q", q.Deliver, run.DeliverPR)
-	}
-	if q.CampaignID != "" {
-		t.Errorf("standalone quest campaignId = %q, want empty", q.CampaignID)
 	}
 }
 
@@ -164,21 +157,14 @@ func TestCoalesceQuestAgentWrites(t *testing.T) {
 }
 
 // QuestBranch derives the shared branch a quest's child runs accumulate on:
-// campaign/<id> for a campaign-child quest (any policy), quest/<id> for a standalone
-// converge quest, and "" for a perFinding (adventure) or feedback/review quest.
+// quest/<id> for a converge quest, and "" for a perFinding or
+// feedback/review quest.
 func TestQuestBranchDerivation(t *testing.T) {
-	// Campaign-child quest → the campaign branch, regardless of convergence policy.
-	if b := QuestBranch(run.Quest{ID: "q1", CampaignID: "c42", Deliver: run.DeliverBranch}); b != "campaign/c42" {
-		t.Errorf("campaign-child quest branch = %q, want campaign/c42", b)
-	}
-	if b := QuestBranch(run.Quest{ID: "q1", CampaignID: "c42", Convergence: run.ConvergePerFinding}); b != "campaign/c42" {
-		t.Errorf("campaign-child quest (perFinding) branch = %q, want campaign/c42", b)
-	}
 	// Standalone converge quest → its own quest/<id> branch.
 	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergeConverge}); b != "quest/q7" {
 		t.Errorf("standalone converge quest branch = %q, want quest/q7", b)
 	}
-	// Standalone perFinding (adventure) quest → no shared branch (a PR per finding).
+	// Standalone perFinding quest → no shared branch (a PR per finding).
 	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergePerFinding}); b != "" {
 		t.Errorf("perFinding quest branch = %q, want empty", b)
 	}

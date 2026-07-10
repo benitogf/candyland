@@ -1,15 +1,14 @@
 // Shared filtering for the one work/history section. The same filter set is
-// applied to whichever level the section is pivoted to (runs · quests ·
-// campaigns), so filters carry across a pivot. Filters live in the URL query
+// applied to whichever level the section is pivoted to (runs · quests), so
+// filters carry across a pivot. Filters live in the URL query
 // string (see usePivotFilters) so a pivot link preserves them.
 //
 // The filter keys (all optional, all strings in the URL):
 //   q         text search (matches id/title/objective/intent/folder/branch)
-//   parent    'none' = no-parent (runs with no questId/campaignId) — this is the
-//             DEFAULT so the Work list leads with top-level work and children are
-//             reached by drilling into their parent; 'any' = show every item flat
-//             (children included); a campaign id (cN) or quest id (qN) filters to
-//             that parent's children
+//   parent    'none' = no-parent (runs with no questId) — this is the DEFAULT so
+//             the Work list leads with top-level work and children are reached by
+//             drilling into their parent; 'any' = show every item flat (children
+//             included); a quest id (qN) filters to that parent's children
 //   repo      folder/repo substring
 //   status    exact status (running|paused|done|cancelled|stopped|blocked|…)
 //   pr        PR state: 'open' (has a PR) | 'none' (no PR)
@@ -21,8 +20,8 @@ const lc = (s) => String(s || '').toLowerCase()
 // timestamp field, so they only match when no date bound is set (handled below).
 const itemTime = (item) => item.createdAt || item.updatedAt || item.endedAt || ''
 
-// Does this item have an opened PR? Runs/quests/campaigns all expose prUrl
-// and/or a prs[] array (campaigns also roll up prsOpened on quests).
+// Does this item have an opened PR? Runs/quests all expose prUrl and/or a prs[]
+// array (quests also roll up prsOpened).
 const hasPR = (item) => {
     if (item.prUrl) return true
     if (Array.isArray(item.prs) && item.prs.some((p) => p && p.url)) return true
@@ -53,28 +52,25 @@ export const readFilters = (params) => ({
 export const noFilters = (f) => (!f.parent || f.parent === 'none') && !f.repo && !f.status && !f.pr && !f.from && !f.to
 
 // Apply the shared filters to one item. `level` tells us how to read parent
-// links: a run's parent is questId/campaignId, a quest's parent is campaignId,
-// a campaign has no parent.
+// links: a run's parent is questId; a quest has no parent.
 export const matchFilters = (item, f, level, textFields) => {
     // text search
     if (f.q) {
         const needle = lc(f.q)
         if (!textFields.some((s) => lc(s).includes(needle))) return false
     }
-    // parent: 'none' (the default) surfaces items executed outside any
-    // quest/campaign; 'any' flattens (no parent narrowing); a specific id filters
-    // to that parent's children.
+    // parent: 'none' (the default) surfaces items executed outside any quest;
+    // 'any' flattens (no parent narrowing); a specific id filters to that
+    // parent's children.
     if (f.parent === 'none') {
-        if (level === 'runs' && (item.questId || item.campaignId)) return false
-        if (level === 'quests' && item.campaignId) return false
-        // campaigns have no parent — always "no parent", so they pass
+        if (level === 'runs' && item.questId) return false
+        // quests have no parent — always "no parent", so they pass
     } else if (f.parent && f.parent !== 'any') {
         // An item matches a specific parent scope when it is a CHILD of that
         // parent OR when it IS that parent — nothing is its own parent, so a
         // pivot back to an item's own level (or a ParentLink landing) would
         // otherwise drop the selected item and show an empty table.
-        const parents = [item.questId, item.campaignId].filter(Boolean)
-        if (item.id !== f.parent && !parents.includes(f.parent)) return false
+        if (item.id !== f.parent && item.questId !== f.parent) return false
     }
     // repo / folder
     if (f.repo && !lc(folderOf(item)).includes(lc(f.repo))) return false

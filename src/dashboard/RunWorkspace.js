@@ -53,10 +53,10 @@ const Meter = ({ label, right, value, color }) => (
 // General run summary — budget + completion. Applies to any run (no per-task
 // assumptions), replaces the earlier per-agent chart.
 const OverviewPanel = ({ run }) => {
-    // A task-run is a child launched by a quest/campaign — the parent owns the
+    // A task-run is a child launched by a quest — the parent owns the
     // program-level delivery narrative, so we drop the "one PR" system framing
     // here and keep the view to this run's own info only.
-    const isTaskRun = !!(run.questId || run.campaignId)
+    const isTaskRun = !!run.questId
     return (
     <Box>
         {run.prompt && (
@@ -126,11 +126,11 @@ const panelFor = (key, run) => {
 
 // ── Header controls — Stop / Restart, gated by status. Candyland keeps a lean,
 //    flow-level control surface (no per-agent control, no resume). ────────────
-// A branch-delivered child commits to the shared campaign branch and opens no PR
-// of its own — the parent opens the PR. Show this as a POSITIVE outcome, never a
+// A branch-delivered child commits to the shared branch and opens no PR of its
+// own — the parent opens the PR. Show this as a POSITIVE outcome, never a
 // missing-PR. Branch label falls back to the run's branch.
 const BranchDelivered = ({ run }) => (
-    <Tooltip title="Committed to the campaign branch — the parent campaign opens the PR">
+    <Tooltip title="Committed to the shared branch — the parent opens the PR">
         <Chip
             icon={<CallMergeIcon />}
             label={`committed to ${run.branch || 'branch'}`}
@@ -233,14 +233,12 @@ const CancelControl = ({ onCancel }) => (
 const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
     const navigate = useNavigate()
     const isPlanning = !!planning
-    // The task-run's place in the IA: a child launched by a quest or campaign.
-    // Its parent context is a link UP (never embedded), so this view stays scoped
-    // to run-level info only — matching how the quest view links up to a campaign.
+    // The task-run's place in the IA: a child launched by a quest. Its parent
+    // context is a link UP (never embedded), so this view stays scoped to
+    // run-level info only.
     const parent = run.questId
         ? { kind: 'quest', id: run.questId, path: `/quest/${run.questId}` }
-        : run.campaignId
-            ? { kind: 'campaign', id: run.campaignId, path: `/campaign/${run.campaignId}` }
-            : null
+        : null
     const active = TABS.some((t) => t.key === tab) ? tab : TABS[0].key
     const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder

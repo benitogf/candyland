@@ -1,4 +1,4 @@
-// Rollup: the substance of the quest/campaign detail views. Instead of restating
+// Rollup: the substance of the quest detail view. Instead of restating
 // intent, these helpers aggregate a parent's children into the numbers that say
 // how far the work has actually gotten — progress across children, per-repo
 // delivery state, aggregate agent activity, review/verdict rollups, and timing.

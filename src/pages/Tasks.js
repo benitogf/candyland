@@ -17,8 +17,8 @@ import Typography from '@mui/material/Typography'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
 
 import { PHASES, STATUS_COLOR } from '../meta/run'
-import { runLabel, questLabel, campaignLabel } from '../util'
-import { useRuns, useQuests, useCampaigns, deliverOf } from '../data/ooo'
+import { runLabel, questLabel } from '../util'
+import { useRuns, useQuests, deliverOf } from '../data/ooo'
 import { readFilters, matchFilters, folderOf } from '../data/filters'
 import FilterBar from '../components/FilterBar'
 import CopyReference from '../components/CopyReference'
@@ -26,17 +26,15 @@ import { CopyPrLink } from '../components/CopyPr'
 import { PauseChip } from '../components/StatusBits'
 
 // ── The one work/history section ─────────────────────────────────────────────
-// A single section that PIVOTS by level — Runs/Tasks · Quests · Campaigns —
+// A single section that PIVOTS by level — Runs/Tasks · Quests —
 // without navigating to a different top-level page. The pivot and the shared
 // filters live in the URL query string, so pivoting between levels (or following
 // a parent/child link) keeps the active filters. There is no separate "Quests"
-// or "Campaigns" nav item; this is the whole work history, one section.
+// nav item; this is the whole work history, one section.
 
 const LEVELS = [
     { key: 'runs', label: 'Runs / Tasks' },
     { key: 'quests', label: 'Quests' },
-    { key: 'adventures', label: 'Adventures' },
-    { key: 'campaigns', label: 'Campaigns' },
 ]
 
 const statusText = (r) => {
@@ -90,16 +88,16 @@ const DeliveryChip = ({ label, title }) => (
 // PR cell. A run's delivery SHAPE (deliver) is its own terminal state — each is
 // distinct from "has a PR" and from a PR-less (failed/pending) run, so none ever
 // reads as a missing PR:
-//   branch   — committed to a shared campaign branch; the parent opens the PR.
+//   branch   — committed to a shared branch; the parent opens the PR.
 //   feedback — updated an existing PR in place (links that PR).
 //   review   — reviewed a PR; findings applied to it, or no actionable findings.
-// `shape` is only passed for runs; quests/campaigns fall through to count/url.
+// `shape` is only passed for runs; quests fall through to count/url.
 const PrCell = ({ url, count, shape }) => {
     const num = url ? url.split('/').pop() : null
     return (
         <TableCell onClick={(e) => e.stopPropagation()}>
             {shape === 'branch'
-                ? <DeliveryChip label="committed" title="Committed to the campaign branch — the parent opens the PR" />
+                ? <DeliveryChip label="committed" title="Committed to the shared branch — the parent opens the PR" />
                 : shape === 'feedback'
                     ? (url
                         ? <CopyPrLink url={url} label={`updated PR #${num}`} />
@@ -169,10 +167,9 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
                         <SummaryText summary={r.summary} />
                     </TableCell>
                     <TableCell>
-                        {r.campaignId && <ParentLink id={r.campaignId} level="campaigns" onPivot={onPivot} />}
-                        {r.campaignId && r.questId && ' · '}
-                        {r.questId && <ParentLink id={r.questId} level="quests" onPivot={onPivot} />}
-                        {!r.campaignId && !r.questId && <Typography variant="caption" color="text.secondary">—</Typography>}
+                        {r.questId
+                            ? <ParentLink id={r.questId} level="quests" onPivot={onPivot} />
+                            : <Typography variant="caption" color="text.secondary">—</Typography>}
                     </TableCell>
                     <TableCell><FolderText folder={folderOf(r)} /></TableCell>
                     <PrCell url={r.prUrl} shape={deliverOf(r)} />
@@ -183,15 +180,13 @@ const RunsTable = ({ rows, onOpen, onPivot }) => (
 )
 
 // Clicking a quest row drills the section down to that quest's child runs
-// (parent-filtered), rather than opening the quest's overview modal. The
-// campaign parent link still pivots up via onPivot.
-const QuestsTable = ({ rows, onDrill, onPivot, onOpen }) => (
+// (parent-filtered), rather than opening the quest's overview modal.
+const QuestsTable = ({ rows, onDrill, onOpen }) => (
     <>
         <TableHead>
             <TableRow>
                 <TableCell sx={{ fontWeight: 700 }}>Objective</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>Campaign</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Progress</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>PRs</TableCell>
             </TableRow>
@@ -212,11 +207,6 @@ const QuestsTable = ({ rows, onDrill, onPivot, onOpen }) => (
                         <SummaryText summary={q.summary} />
                     </TableCell>
                     <TableCell>
-                        {q.campaignId
-                            ? <ParentLink id={q.campaignId} level="campaigns" onPivot={onPivot} />
-                            : <Typography variant="caption" color="text.secondary">standalone</Typography>}
-                    </TableCell>
-                    <TableCell>
                         <Typography variant="caption" color="text.secondary">{q.itemsCompleted || 0} done · {q.itemsBlocked || 0} blocked</Typography>
                     </TableCell>
                     <PrCell count={q.prsOpened || 0} />
@@ -226,47 +216,12 @@ const QuestsTable = ({ rows, onDrill, onPivot, onOpen }) => (
     </>
 )
 
-// Clicking a campaign row drills the section down to that campaign's child
-// quests (parent-filtered), rather than opening the campaign's overview modal.
-const CampaignsTable = ({ rows, onDrill, onOpen }) => (
-    <>
-        <TableHead>
-            <TableRow>
-                <TableCell sx={{ fontWeight: 700 }}>Intent</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>Children</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>PRs</TableCell>
-            </TableRow>
-        </TableHead>
-        <TableBody>
-            {rows.map((c) => (
-                <TableRow key={c.id} hover onClick={() => onDrill('quests', c.id)} sx={{ cursor: 'pointer' }}>
-                    <TableCell>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 600, ...clamp2 }}>{campaignLabel(c)}</Typography>
-                            <CopyReference kind="campaign" id={c.id} />
-                            <OpenDetailButton kind="campaign" id={c.id} onOpen={onOpen} />
-                        </Box>
-                    </TableCell>
-                    <TableCell><StatusChip item={c} status={c.status} text={statusText(c)} /></TableCell>
-                    <TableCell>
-                        <Typography variant="caption" color="text.secondary">{(c.questIds || []).length} quests · {(c.runIds || []).length} runs</Typography>
-                    </TableCell>
-                    <PrCell count={(c.prs || []).length} />
-                </TableRow>
-            ))}
-        </TableBody>
-    </>
-)
+const COLSPAN = { runs: 5, quests: 4 }
 
-const COLSPAN = { runs: 5, quests: 5, adventures: 5, campaigns: 4 }
-
-// Text fields each level is searched over. Adventures are perFinding quests, so
-// they share the quest text fields.
+// Text fields each level is searched over.
 const textFieldsFor = (item, level) => {
     if (level === 'runs') return [runLabel(item), item.status, folderOf(item), item.prompt, item.branch, item.id]
-    if (level === 'quests' || level === 'adventures') return [item.objective, item.originalObjective, item.status, folderOf(item), item.id]
-    return [item.originalInput, item.intentBrief?.restatedGoal, item.status, item.id]
+    return [item.objective, item.originalObjective, item.status, folderOf(item), item.id]
 }
 
 const Tasks = () => {
@@ -277,16 +232,9 @@ const Tasks = () => {
 
     const runs = useRuns()
     const quests = useQuests()
-    const campaigns = useCampaigns()
-    // Adventures are the perFinding quests; the Quests level shows ONLY the
-    // non-perFinding (converge) quests. This is a strict partition — a perFinding
-    // quest appears under Adventures and never under Quests.
-    const items = level === 'runs' ? runs
-        : level === 'campaigns' ? campaigns
-            : level === 'adventures' ? quests.filter((q) => q.convergence === 'perFinding')
-                : quests.filter((q) => q.convergence !== 'perFinding')
-    // Adventures reuse the quest data shape for filtering/text-search.
-    const dataLevel = level === 'adventures' ? 'quests' : level
+    // The Quests level shows every quest regardless of delivery mode — both
+    // converge and perFinding quests are first-class here.
+    const items = level === 'runs' ? runs : quests
 
     // Each run delivery SHAPE (branch / feedback / review) is its OWN PR state,
     // distinct from has-PR and from a PR-less/failed run. Handle them here on top of
@@ -300,12 +248,12 @@ const Tasks = () => {
             if (level === 'runs') {
                 const shape = deliverOf(it)
                 const shaped = shape !== 'pr'
-                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, dataLevel, textFieldsFor(it, dataLevel))
+                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, level, textFieldsFor(it, level))
                 if (prState === 'none' && shaped) return false
             }
-            return matchFilters(it, filters, dataLevel, textFieldsFor(it, dataLevel))
+            return matchFilters(it, filters, level, textFieldsFor(it, level))
         }),
-        [items, filters, level, dataLevel, prState],
+        [items, filters, level, level, prState],
     )
 
     // Pivot/filter mutations all go through the URL so links preserve filters.
@@ -342,17 +290,17 @@ const Tasks = () => {
 
     const openDetail = (kind, id) => navigate(`/${kind}/${id}`)
 
-    // When the list is scoped to a specific parent (a drill-down from a campaign/
-    // quest row, or a parent link), surface it as a removable chip — the Parent
+    // When the list is scoped to a specific parent (a drill-down from a quest
+    // row, or a parent link), surface it as a removable chip — the Parent
     // dropdown alone is too easy to miss, and there was no obvious way to get back
     // to the unscoped list. 'none'/'any' are not a parent scope, so no chip.
     const scopedParent = filters.parent && filters.parent !== 'none' && filters.parent !== 'any' ? filters.parent : ''
     const parentEntity = scopedParent
-        ? campaigns.find((c) => c.id === scopedParent) || quests.find((q) => q.id === scopedParent)
+        ? quests.find((q) => q.id === scopedParent)
         : null
-    const parentKind = scopedParent ? (scopedParent[0] === 'c' ? 'campaign' : 'quest') : ''
+    const parentKind = scopedParent ? 'quest' : ''
     const parentTitle = parentEntity
-        ? (parentEntity.intentBrief?.restatedGoal || parentEntity.originalInput || parentEntity.objective || parentEntity.originalObjective || '')
+        ? (parentEntity.objective || parentEntity.originalObjective || '')
         : ''
 
     const empty = items.length === 0
@@ -363,7 +311,7 @@ const Tasks = () => {
         <Box>
             <Typography variant="h5" sx={{ fontWeight: 800 }}>Work</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Every run, quest, and campaign in any state. Pivot the level; filters carry across.
+                Every run and quest in any state. Pivot the level; filters carry across.
             </Typography>
 
             <ToggleButtonGroup
@@ -377,7 +325,6 @@ const Tasks = () => {
                 filters={filters}
                 runs={runs}
                 quests={quests}
-                campaigns={campaigns}
                 onChange={setFilter}
                 onClear={clearFilters}
             />
@@ -400,8 +347,7 @@ const Tasks = () => {
                     {filtered.length === 0
                         ? <TableBody><TableRow><TableCell colSpan={COLSPAN[level]} sx={{ color: 'text.secondary' }}>{empty}</TableCell></TableRow></TableBody>
                         : level === 'runs' ? <RunsTable rows={filtered} onOpen={openDetail} onPivot={pivotToParent} />
-                            : (level === 'quests' || level === 'adventures') ? <QuestsTable rows={filtered} onDrill={pivotToChildren} onPivot={pivotToParent} onOpen={openDetail} />
-                                : <CampaignsTable rows={filtered} onDrill={pivotToChildren} onOpen={openDetail} />}
+                            : <QuestsTable rows={filtered} onDrill={pivotToChildren} onOpen={openDetail} />}
                 </Table>
             </Card>
         </Box>

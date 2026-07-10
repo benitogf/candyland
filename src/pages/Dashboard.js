@@ -14,9 +14,9 @@ import CallMergeIcon from '@mui/icons-material/CallMerge'
 
 import { candy } from '../config'
 import { PHASES, STATUS_COLOR } from '../meta/run'
-import { runLabel, questLabel, campaignLabel } from '../util'
-import { useRuns, useQuests, useCampaigns, recency } from '../data/ooo'
-import { archiveRun, archiveQuest, archiveCampaign } from '../data/api'
+import { runLabel, questLabel } from '../util'
+import { useRuns, useQuests, recency } from '../data/ooo'
+import { archiveRun, archiveQuest } from '../data/api'
 import { useToast } from '../feedback'
 import { PauseChip } from '../components/StatusBits'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
@@ -69,11 +69,11 @@ const RunCard = ({ run, onOpen, onDismiss }) => (
     </Card>
 )
 
-// A running campaign/quest PARENT. The dashboard is a calm, MINIMAL overview: a
-// short title plus the AGGREGATED state (how many child runs and their combined
-// green count) — never a per-child or per-agent breakdown. The full breakdown
-// lives in the campaign/quest detail view, which the card drills into via
-// onOpenParent. This keeps the landing scannable.
+// A running quest PARENT. The dashboard is a calm, MINIMAL overview: a short
+// title plus the AGGREGATED state (how many child runs and their combined green
+// count) — never a per-child or per-agent breakdown. The full breakdown lives in
+// the quest detail view, which the card drills into via onOpenParent. This keeps
+// the landing scannable.
 const ParentCard = ({ parent, kind, title, children, onOpenParent, onDismiss }) => {
     const greenT = children.reduce((n, r) => n + (r.tasksGreen || 0), 0)
     const totalT = children.reduce((n, r) => n + (r.tasksTotal || 0), 0)
@@ -193,14 +193,10 @@ const BabysitCard = ({ run, onOpen, onDismiss }) => {
     )
 }
 
-const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) => {
-    // Parents: running campaigns, then running quests NOT owned by a shown campaign
-    // (a campaign-owned quest's runs already aggregate under the campaign).
-    const runningCampaigns = campaigns.filter(isParentRunning)
-    const campaignIds = new Set(runningCampaigns.map((c) => c.id))
-    const runningQuests = quests.filter((q) => isParentRunning(q) && !(q.campaignId && campaignIds.has(q.campaignId)))
+const Landing = ({ runs, quests, onOpen, onOpenParent, onDismiss }) => {
+    // Parents: running quests.
+    const runningQuests = quests.filter(isParentRunning)
 
-    const childrenOfCampaign = (c) => runs.filter((r) => r.campaignId === c.id)
     const childrenOfQuest = (q) => runs.filter((r) => r.questId === q.id)
 
     // The landing is a calm overview of ACTIVE work only. Standalone runs that are
@@ -210,28 +206,16 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) =
     // filter them out of the generic run flow to avoid a double render. A babysit
     // run stays surfaced through its terminal outcome (merged/stopped) until it's
     // dismissed, unlike a normal run which drops off the landing once terminal.
-    const babysits = runs.filter((r) => !r.campaignId && !r.questId && isBabysit(r))
-    const running = runs.filter((r) => !r.campaignId && !r.questId && !isBabysit(r) && !isTerminal(r))
+    const babysits = runs.filter((r) => !r.questId && isBabysit(r))
+    const running = runs.filter((r) => !r.questId && !isBabysit(r) && !isTerminal(r))
 
-    const nothing = runningCampaigns.length === 0 && runningQuests.length === 0 && running.length === 0 && babysits.length === 0
+    const nothing = runningQuests.length === 0 && running.length === 0 && babysits.length === 0
 
     // Interleave all active work by recency (ooo envelope `updated`, falling back
     // to `created`) so the MOST RECENTLY changed item leads regardless of its type
-    // — campaigns, quests, and standalone runs share one newest-first ordering
-    // rather than being grouped by type (which sank a just-launched run below older
-    // programs).
+    // — quests and standalone runs share one newest-first ordering rather than
+    // being grouped by type (which sank a just-launched run below older programs).
     const entries = [
-        ...runningCampaigns.map((c) => ({
-            r: recency(c),
-            node: (
-                <ParentCard
-                    key={`campaign-${c.id}`} parent={c} kind="campaign"
-                    title={campaignLabel(c)}
-                    children={childrenOfCampaign(c)} onOpenParent={onOpenParent}
-                    onDismiss={() => onDismiss('campaign', c.id)}
-                />
-            ),
-        })),
         ...runningQuests.map((q) => ({
             r: recency(q),
             node: (
@@ -252,12 +236,12 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) =
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
                 <Typography variant="overline" color="secondary">what's going on</Typography>
                 <Typography variant="caption" color="text.secondary">
-                    {runningCampaigns.length + runningQuests.length} active program{runningCampaigns.length + runningQuests.length === 1 ? '' : 's'} · {running.length} standalone running{babysits.length ? ` · ${babysits.length} watching` : ''}
+                    {runningQuests.length} active program{runningQuests.length === 1 ? '' : 's'} · {running.length} standalone running{babysits.length ? ` · ${babysits.length} watching` : ''}
                 </Typography>
             </Box>
 
             {nothing ? (
-                <Typography variant="body2" color="text.secondary">Nothing running. Launch a run, quest, or campaign from detritus to see it here.</Typography>
+                <Typography variant="body2" color="text.secondary">Nothing running. Launch a run or quest from detritus to see it here.</Typography>
             ) : (
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, 1fr)' }, gap: 2 }}>
                     {entries.map((e) => e.node)}
@@ -267,19 +251,17 @@ const Landing = ({ runs, campaigns, quests, onOpen, onOpenParent, onDismiss }) =
     )
 }
 
-const ARCHIVE = { run: archiveRun, quest: archiveQuest, campaign: archiveCampaign }
+const ARCHIVE = { run: archiveRun, quest: archiveQuest }
 
 const Dashboard = () => {
     const navigate = useNavigate()
     const toast = useToast()
     const { runId, tab } = useParams()
     const liveRuns = useRuns()
-    const liveCampaigns = useCampaigns()
     const liveQuests = useQuests()
 
     // Archived items are cleared from the dashboard but kept in the Work history.
     const runs = liveRuns.filter((r) => !r.archived)
-    const campaigns = liveCampaigns.filter((c) => !c.archived)
     const quests = liveQuests.filter((q) => !q.archived)
 
     // Dismiss = archive: hide from the dashboard, keep in Work. ooo pushes the
@@ -290,7 +272,6 @@ const Dashboard = () => {
         <Box>
             <Landing
                 runs={runs}
-                campaigns={campaigns}
                 quests={quests}
                 onOpen={(id) => navigate(`/run/${id}`)}
                 onOpenParent={(kind, id) => navigate(`/${kind}/${id}`)}

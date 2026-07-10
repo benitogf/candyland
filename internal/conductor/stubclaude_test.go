@@ -4,8 +4,8 @@ import "strings"
 
 // === Deterministic stub-`claude` harness ==================================
 //
-// The conductor never calls a real model in tests. Every run/quest/campaign
-// flow is regression-tested against a STUB `claude` — an executable bash script
+// The conductor never calls a real model in tests. Every run/quest flow is
+// regression-tested against a STUB `claude` — an executable bash script
 // the executor spawns instead of the real CLI (the executor honours the
 // CANDYLAND_CLAUDE override; see writeFakeClaude). The stub speaks the same
 // contract the real claude does:
@@ -16,19 +16,18 @@ import "strings"
 //     turns carrying `text`/`tool_use` content and a terminal `result` line;
 //   - it signals each stage with the SAME fenced verdict lines a real agent
 //     emits and the conductor parses: PARTITION / TEST / REVIEW_CLEAN for a run,
-//     WORKITEMS(/_NONE) for a quest lead, INTENT_BRIEF / INTENT_REVIEW for a
-//     campaign supervisor.
+//     WORKITEMS(/_NONE) for a quest lead.
 //
 // Because the spawned process is real and the I/O contract is real, these tests
 // exercise the genuine executor (partition → worktrees → integrate → push → PR,
-// or the quest/campaign supervisor loops) with NO Anthropic tokens — the only
+// or the quest supervisor loops) with NO Anthropic tokens — the only
 // thing replaced is the model's judgement, which the stub scripts deterministically.
 //
 // # Writing a deterministic regression test
 //
 // Build a stub by composing per-role fragments with stubClaude(...) and hand it
 // to deliveryConductor (single repo), multiRepoConductor (N repos), or the
-// quest/campaign helpers. A role fragment is the bash that runs when the spawn's
+// quest helpers. A role fragment is the bash that runs when the spawn's
 // prompt matches a role; stubClaude dispatches on `$prompt` in role order and
 // runs the first match, falling through to the coder fragment (the default, no
 // role keyword). Example:
@@ -43,11 +42,11 @@ import "strings"
 // To script per-tick or per-stage behaviour (e.g. fail a gate ONCE then pass),
 // branch inside a fragment on a marker file whose path the test sets via t.Setenv
 // — the established CANDYLAND_*_FIXTURE convention (touch on first call, test
-// `-f` on later calls). See questTickClaude / campaignClaude for worked oracles.
+// `-f` on later calls). See questTickClaude for a worked oracle.
 //
 // Keep stubs minimal: emit only the envelopes and verdict lines the asserted
 // transition needs. The fenced-line conventions are pinned independently by the
-// parse* tests (TestParseWorkItems, TestParseCampaignVerdicts, …), so a stub and
+// parse* tests (TestParseWorkItems, …), so a stub and
 // a real agent can never drift on the contract silently.
 
 // stubClaude composes role fragments into a complete, executable stub-`claude`
@@ -92,7 +91,7 @@ type stubFragment struct {
 }
 
 // role builds a fragment that runs `body` when the spawn prompt contains
-// `keyword` (e.g. "tech lead", "intent lead", "code reviewer").
+// `keyword` (e.g. "tech lead", "quest lead", "code reviewer").
 func role(keyword, body string) stubFragment { return stubFragment{keyword: keyword, body: body} }
 
 // coder builds the DEFAULT fragment — the branch that runs for any spawn whose
@@ -126,25 +125,6 @@ func emitResult(result string, outTokens int) string {
 // followed by a terminal result line.
 func emitPartition(tasksJSON string) string {
 	return emitText("PARTITION "+escapeJSON(tasksJSON)) + emitResult("ok", 1)
-}
-
-// emitQuestsLine emits the tech-manager QUESTS verdict (the JSON array of child
-// quests) followed by a terminal result line — the campaign-altitude analogue of
-// emitPartition.
-func emitQuestsLine(questsJSON string) string {
-	return emitText("QUESTS "+escapeJSON(questsJSON)) + emitResult("quests", 2)
-}
-
-// emitPartitionReview emits the intent-manager gate-1 verdict {agree,reason}.
-func emitPartitionReview(agree bool, reason string) string {
-	return emitText(`PARTITION_REVIEW {\"agree\":`+boolStr(agree)+`,\"reason\":\"`+reason+`\"}`) + emitResult("gate1", 1)
-}
-
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }
 
 // emitTest emits a coder's TEST verdict with the given pass/fail counts.

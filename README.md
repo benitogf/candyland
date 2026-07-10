@@ -1,7 +1,7 @@
 # 🍬 Candyland
 
 An **observe-only sidecar** for [detritus](https://github.com/benitogf/detritus)'s
-autonomous build flows. You launch a run, quest, adventure, or campaign from your detritus
+autonomous build flows. You launch a run or a quest from your detritus
 session; candyland drives the agents out of process and shows every agent's live
 state, output, and trace — so you watch (and stop) the work in a dashboard instead
 of juggling sessions by hand, and review one finished PR.
@@ -35,7 +35,7 @@ and **no per-agent comms MCP process** — the comms tools are served by the sin
 app process over HTTP, keyed by the agent id in the path.
 
 ```
-detritus session ──REST (/api/runs|quests|campaigns)──▶  candyland app process
+detritus session ──REST (/api/runs|quests)──────────▶  candyland app process
                                                           ├─ ooo bus  ◀──ws── React UI
                                                           ├─ REST API
                                                           ├─ HTTP MCP /mcp/comms/{agentID}
@@ -47,48 +47,32 @@ detritus session ──REST (/api/runs|quests|campaigns)──▶  candyland app
 
 ## The work hierarchy
 
-Everything candyland tracks is one of four first-class records; the single
-**Work** UI section pivots between them (Runs/Tasks · Quests · Campaigns) with
-filters.
+Everything candyland tracks is one of two first-class records; the single
+**Work** UI section pivots between them (Runs/Tasks · Quests) with filters.
 
 - **Run** — one bounded build. A tech lead partitions the work; one coder per
   fork-safe task runs in its own git worktree; the diffs integrate; a reviewer
   passes; one PR per impacted repo opens (or a commit onto a shared branch).
-- **Quest** — a **bounded** iterative objective. Its quest lead ticks
-  discover → triage → launch (a child run per accepted item runs onto the
-  `quest/<id>` branch), and when the objective is met it opens **one PR per
-  impacted repo** and terminates.
-- **Adventure** — an **open-ended freeseeking** loop. Same machinery as a
-  quest, different delivery policy: it opens a **PR per accepted finding** and
-  runs perpetually until it is stopped or discovery goes dry. It is the sidecar
-  homologue of the in-session janitor loop.
-- **Campaign** — a program-level intent, run by two agents. The **intent
-  manager** produces the **intent brief** (restated goal + commitments) and runs
-  the **final per-commitment intent review**; the **tech manager** decomposes
-  the brief into **child quests** (concurrent by default), owns integration, and
-  targets remediation. Two **convergence gates** sit between them — gate 1
-  (partition-vs-brief, before any work launches) and gate 2 (per-commitment
-  intent review plus the same review→fix→re-review loop that gates runs and
-  quests, run over the campaign branch, before delivery). Child quests commit onto the
-  shared `campaign/<id>` branch and open no PR; the campaign opens **one PR per
-  repo** at the delivery gate. A `missed` commitment feeds a bounded
-  **remediation quest**; a `partial` annotates without blocking.
+- **Quest** — an iterative objective. Its quest lead ticks
+  discover → triage → launch (a child run per accepted item), and its
+  **convergence** policy decides how it ships:
+  - **converge** (bounded — the default): child runs accumulate on the
+    `quest/<id>` branch and, when the objective is met, the quest opens **one PR
+    per impacted repo** and terminates.
+  - **perFinding** (open-ended freeseeking): each accepted
+    finding is its own child run that opens **its own PR**, and the loop runs
+    perpetually until it is stopped or discovery goes dry. It is the sidecar
+    homologue of the in-session janitor loop.
 
-A relaunch does not repeat itself. A campaign resumed after a pause or block
-reuses its already-settled intent brief and gate-1-approved partition instead of
-re-running the managers, and reuses its existing child quests (reusing a delivered
-one, resuming a paused one) rather than minting duplicates. Within a quest tick,
-an item a prior drive — or, for a campaign child, any sibling — already delivered
-on the shared branch is deduped from the durable ledger and closed without a new
-run, provided that branch still exists.
+A relaunch does not repeat itself. Within a quest tick, an item a prior drive
+already delivered on the shared branch is deduped from the durable ledger and
+closed without a new run, provided that branch still exists.
 
 Launched from the detritus session over REST:
 
 ```bash
 detritus --candyland-run <prompt-file>     [folder ...] # one bounded build run
-detritus --quest-run     <objective-file>  [folder ...] # a bounded iterative quest
-detritus --adventure-run <objective-file>  [folder ...] # an open-ended freeseeking loop
-detritus --campaign-run  <input-file>      [folder ...] # a program campaign
+detritus --quest-run     <objective-file>  [folder ...] # an iterative quest (converge or perFinding)
 ```
 
 ## The review loop
@@ -147,8 +131,8 @@ reuse entirely, so every spawn starts cold (the pre-template behavior).
 
 ## Traces
 
-Every run, quest, and campaign carries a stable id, parent links (a child run's
-`questId`/`campaignId`; a quest's `campaignId`), and a versioned trace schema
+Every run and quest carries a stable id, parent links (a child run's
+`questId`), and a versioned trace schema
 (`traceVersion`). A run's full normalized trace — the run plus its audit — is
 exportable locally:
 
@@ -222,21 +206,20 @@ npm run validate                  # mermaid diagrams parse
 
 ### Deterministic regression tests (no model calls)
 
-The conductor's run/quest/campaign flows are regression-tested with **no Anthropic
+The conductor's run/quest flows are regression-tested with **no Anthropic
 tokens**. A run spawns a **stub `claude`** (an executable bash script the executor
 uses when `CANDYLAND_CLAUDE` is set) that speaks the real CLI contract: it is
 invoked as `claude -p <prompt> …`, writes newline-delimited stream-json envelopes,
 and signals each stage with the same fenced verdict lines a real agent emits —
-`PARTITION` / `TEST` / `REVIEW_CLEAN` for a run, `WORKITEMS` for a quest lead,
-`INTENT_BRIEF` / `INTENT_REVIEW` for a campaign supervisor. Because the spawned
-process and the I/O contract are real, these tests exercise the genuine executor
-(partition → worktrees → integrate → review → push → PR, and the quest/campaign
-supervisor loops) — only the model's judgement is replaced by a deterministic script.
+`PARTITION` / `TEST` / `REVIEW_CLEAN` for a run, `WORKITEMS` for a quest lead.
+Because the spawned process and the I/O contract are real, these tests exercise
+the genuine executor (partition → worktrees → integrate → review → push → PR, and
+the quest supervisor loop) — only the model's judgement is replaced by a deterministic script.
 
 To write one, compose per-role fragments with the harness in
 [`internal/conductor/stubclaude_test.go`](internal/conductor/stubclaude_test.go)
 and hand the result to `deliveryConductor` (single repo), `multiRepoConductor`
-(N repos), or the quest/campaign helpers:
+(N repos), or the quest helpers:
 
 ```go
 script := stubClaude(
@@ -252,7 +235,7 @@ Fragments dispatch on the spawn prompt in order; a keyword-less `coder(...)`
 fragment is the default that catches every coder spawn. To script per-tick or
 per-stage behaviour (e.g. fail a gate once then pass), branch inside a fragment on
 a marker file whose path the test sets via `t.Setenv` — the `CANDYLAND_*_FIXTURE`
-convention (`questTickClaude` / `campaignClaude` are worked oracles). The fenced
+convention (`questTickClaude` is a worked oracle). The fenced
 verdict conventions are pinned independently by the `parse*` tests, so a stub and a
 real agent can't drift on the contract silently.
 

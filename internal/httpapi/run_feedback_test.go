@@ -9,7 +9,7 @@ import (
 )
 
 // A standalone run (POST /api/runs) can address feedback on an existing PR, just
-// like quests/campaigns: feedback/review delivery requires a targetPr, and the
+// like quests: feedback/review delivery requires a targetPr, and the
 // created run carries Deliver + TargetPR through so the executor updates the PR
 // in place instead of opening a new one.
 func TestRunCreateFeedbackRequiresTargetPR(t *testing.T) {

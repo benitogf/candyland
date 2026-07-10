@@ -1,15 +1,15 @@
 import { domain, ssl } from '../config'
 
 // One-click copy-reference: build a stable, pasteable reference to a task / quest
-// / campaign item. The reference resolves back to that item's stored snapshot via
+// item. The reference resolves back to that item's stored snapshot via
 // GET /api/reference/{kind}/{id} — the server's referenceCollections (internal/
 // httpapi/reference.go) maps these same kinds to their storage collections, so a
 // copied reference always resolves to the run's stored data.
 //
-// The dashboard opens items by kind 'run' | 'quest' | 'campaign'; the reference
-// handle labels a run as 'task' (its UI name). The server accepts both 'task' and
-// 'run' for runs, so either resolves.
-const REFERENCE_KIND = { run: 'task', quest: 'quest', campaign: 'campaign' }
+// The dashboard opens items by kind 'run' | 'quest'; the reference handle labels
+// a run as 'task' (its UI name). The server accepts both 'task' and 'run' for
+// runs, so either resolves.
+const REFERENCE_KIND = { run: 'task', quest: 'quest' }
 
 export const referenceKind = (kind) => REFERENCE_KIND[kind] || kind
 

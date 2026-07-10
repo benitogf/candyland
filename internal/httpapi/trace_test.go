@@ -51,10 +51,10 @@ func TestTraceEndpointStableShape(t *testing.T) {
 	if trace.Run.OriginalIntent != "build the thing" {
 		t.Errorf("originalIntent = %q, want %q", trace.Run.OriginalIntent, "build the thing")
 	}
-	// Parent-link fields exist (empty for a standalone run) so a later phase can
-	// populate them without a migration.
-	if trace.Run.QuestID != "" || trace.Run.CampaignID != "" {
-		t.Errorf("standalone run should have empty parent links, got quest=%q campaign=%q", trace.Run.QuestID, trace.Run.CampaignID)
+	// Parent-link field exists (empty for a standalone run) so a later phase can
+	// populate it without a migration.
+	if trace.Run.QuestID != "" {
+		t.Errorf("standalone run should have empty parent link, got quest=%q", trace.Run.QuestID)
 	}
 	// A freshly created, never-finished run has no audit attached.
 	if trace.Audit != nil {

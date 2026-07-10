@@ -15,7 +15,7 @@ const monoStack =
 // accent (primary) is cyan.
 //
 // This theme is the single source of truth for spacing, typography, and visual
-// hierarchy across the dashboard, quest, campaign, and task-run views. The MUI
+// hierarchy across the dashboard, quest, and task-run views. The MUI
 // spacing unit is the default 8px; views compose spacing from that grid (mb: 2
 // = 16px, etc.) and inherit the type scale and component defaults defined here
 // rather than restyling ad hoc.

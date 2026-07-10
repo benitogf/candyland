@@ -18,7 +18,7 @@ import (
 func TestDetachedWorktreeIntegratesPastBranchHolder(t *testing.T) {
 	repo := newGitRepo(t)
 	ctx := context.Background()
-	branch := "campaign/c1"
+	branch := "quest/c1"
 
 	// A DIRTY holder of the branch — the case addWorktree refuses to force-remove.
 	held := filepath.Join(t.TempDir(), "held")
@@ -70,7 +70,7 @@ func TestDetachedWorktreeIntegratesPastBranchHolder(t *testing.T) {
 // A real "already used by worktree" refusal is classified retryable, ordinary
 // errors are not — so the run re-plans on a collision instead of hard-blocking.
 func TestIsWorktreeCollision(t *testing.T) {
-	if !isWorktreeCollision(errors.New("fatal: 'campaign/c1' is already used by worktree at '/x'")) {
+	if !isWorktreeCollision(errors.New("fatal: 'quest/c1' is already used by worktree at '/x'")) {
 		t.Fatal("git's branch-checkout collision must classify as retryable")
 	}
 	if isWorktreeCollision(errors.New("fatal: not a git repository")) {
@@ -103,7 +103,7 @@ func TestAddWorktreeRestartable(t *testing.T) {
 	removeWorktree(ctx, repo, wt)
 }
 
-// Campaign/quest children share ONE branch (quest/<id> or campaign/<id>) and integrate
+// Quest children share ONE branch (quest/<id>) and integrate
 // sequentially, each via its own integration worktree. If a sibling's worktree
 // (or any stale/foreign checkout) still holds the shared branch at a different
 // path, a plain `worktree add -B` fails with "already used by worktree" — the
@@ -112,7 +112,7 @@ func TestAddWorktreeRestartable(t *testing.T) {
 func TestAddWorktreeSharedBranchOtherHolder(t *testing.T) {
 	repo := newGitRepo(t)
 	ctx := context.Background()
-	shared := "campaign/c1"
+	shared := "quest/c1"
 
 	first := filepath.Join(t.TempDir(), "r1", "integrate")
 	if err := addWorktree(ctx, repo, first, shared, "main"); err != nil {
@@ -235,7 +235,7 @@ func TestPushBranchRebaseRetry(t *testing.T) {
 func TestAddWorktreeSharedBranchSpareDirtyHolder(t *testing.T) {
 	repo := newGitRepo(t)
 	ctx := context.Background()
-	shared := "campaign/c1"
+	shared := "quest/c1"
 
 	held := filepath.Join(t.TempDir(), "held")
 	if err := addWorktree(ctx, repo, held, shared, "main"); err != nil {

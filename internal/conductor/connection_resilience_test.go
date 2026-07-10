@@ -13,7 +13,7 @@ import (
 // The REAL usage-limit death is Claude Code's own banner, and it commonly arrives
 // on a CLEAN exit (the banner is the process's final result, not an error). The
 // pre-fix classifier gated on a process death and so missed it — the exact
-// misclassification (campaigns c4/c5, 2026-07-07) that terminated live work as
+// misclassification (the 2026-07-07 outage) that terminated live work as
 // "produced no verdict". The banner must classify regardless of exit state, while
 // the ambiguous quota phrases still require a death (so a reviewer's transcript
 // mentioning them is not misread).
@@ -89,7 +89,8 @@ func TestClassifyInfra(t *testing.T) {
 		want bool
 	}{
 		// Real infra deaths carry a death signal (non-zero exit → runErr+stderr, or a
-		// non-success result subtype). The connection error is in the process stderr.
+		// non-success result subtype). The connection errors below are the ones
+		// observed in the 2026-07-07 outage; each is in the process stderr.
 		{"unable to connect (ConnectionRefused)", attemptOutcome{runErr: errStub, stderr: "API Error: Unable to connect to API (ConnectionRefused)"}, true},
 		{"auth 401 flap", attemptOutcome{runErr: errStub, stderr: "Failed to authenticate. API Error: 401 Invalid authentication credentials"}, true},
 		{"connection refused in stderr with exit", attemptOutcome{runErr: errStub, stderr: "dial tcp 1.2.3.4:443: connection refused"}, true},

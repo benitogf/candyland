@@ -16,13 +16,12 @@ import (
 // at the lowest tier with authority (never by a human), and the escalation +
 // resolution is RECORDED on the record (feeding L2 telemetry / the read-only audit):
 //
-//	coder → tech-lead → quest-lead → campaign tech-manager → intent-manager
+//	coder → tech-lead → quest-lead
 //
 // The coder → tech-lead hop already exists (the bus reactor). This adds the upward
-// hops it mirrors: run tech-lead → owning quest-lead, and quest-lead → tech-manager
-// → intent-manager. At the top tier (standalone-run = tech-lead, standalone-quest =
-// quest-lead, campaign = intent-manager) the decider applies the smith rule: decide
-// + record. It NEVER pauses for a human.
+// hop it mirrors: run tech-lead → owning quest-lead. At the top tier (standalone-run
+// = tech-lead, quest = quest-lead) the decider applies the smith rule: decide +
+// record. It NEVER pauses for a human.
 
 // decisionBootstrap is the CONSTANT prompt for a tier resolving a decision escalated
 // from below. Like the other bootstraps it carries no context on argv — the
@@ -57,7 +56,7 @@ func parseDecision(text string) (string, bool) {
 // settings role key + brief Role, also the recorded tier name) under the bus identity
 // `deciderID` (distinct so the standalone-run top tier reuses the real "tl" agent
 // rather than showing a phantom second agent), records the resolution on the host
-// record (run/quest/campaign, by id-kind), and returns the Escalation plus whether it
+// record (run/quest, by id-kind), and returns the Escalation plus whether it
 // RESOLVED (the decider emitted an actual DECISION verdict). It NEVER pauses for a
 // human: a decider that emits no verdict yields a recorded fallback with
 // resolved=false, so the caller decides the terminal disposition — a real capability
@@ -115,21 +114,16 @@ func escalationBriefPrompt(question string, prior []run.Escalation) string {
 
 // hostEscalations reads the escalations already recorded on the record that
 // owns hostID, switching on the id-kind prefix exactly as recordEscalation
-// persists them: quest (q<N>), campaign (c<N>), else run.
+// persists them: quest (q<N>), else run.
 func (c *Conductor) hostEscalations(hostID string) []run.Escalation {
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		if q, ok := c.GetQuest(hostID); ok {
 			return q.Escalations
 		}
-	case strings.HasPrefix(hostID, "c"):
-		if cam, ok := c.GetCampaign(hostID); ok {
-			return cam.Escalations
-		}
-	default:
-		if r, ok := c.Get(hostID); ok {
-			return r.Escalations
-		}
+		return nil
+	}
+	if r, ok := c.Get(hostID); ok {
+		return r.Escalations
 	}
 	return nil
 }
@@ -151,16 +145,13 @@ func decisionBlocks(answer string) bool {
 
 // recordEscalation persists an Escalation on the record that OWNS hostID, detected
 // by id-kind prefix (mirrors updateAgentHost): run (r<N>) → Run.Escalations, quest
-// (q<N>) → Quest.Escalations, campaign (c<N>) → Campaign.Escalations.
+// (q<N>) → Quest.Escalations.
 func (c *Conductor) recordEscalation(hostID string, esc run.Escalation) {
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		c.UpdateQuest(hostID, func(q *run.Quest) { q.Escalations = append(q.Escalations, esc) })
-	case strings.HasPrefix(hostID, "c"):
-		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.Escalations = append(cam.Escalations, esc) })
-	default:
-		c.Update(hostID, func(r *run.Run) { r.Escalations = append(r.Escalations, esc) })
+		return
 	}
+	c.Update(hostID, func(r *run.Run) { r.Escalations = append(r.Escalations, esc) })
 }
 
 // escalateRunDecision escalates a run tech-lead's decision ONE tier up: to the owning
@@ -175,18 +166,8 @@ func (c *Conductor) escalateRunDecision(ctx context.Context, r run.Run, question
 	return c.escalateDecision(ctx, r.ID, "tech-lead", "tl", RoleTechLead, question, workdir, extra)
 }
 
-// escalateQuestDecision escalates a quest-lead's decision ONE tier up: to the
-// campaign tech-manager when the quest is a campaign child, else the quest-lead is
-// the top tier and decides+records itself. Recorded on the quest record.
+// escalateQuestDecision escalates a quest-lead's decision: the quest-lead is the
+// top tier and decides+records itself. Recorded on the quest record.
 func (c *Conductor) escalateQuestDecision(ctx context.Context, q run.Quest, question, workdir string, extra []string) (run.Escalation, bool) {
-	if q.CampaignID != "" {
-		return c.escalateDecision(ctx, q.ID, "quest-lead", techManagerID, RoleTechManager, question, workdir, extra)
-	}
 	return c.escalateDecision(ctx, q.ID, "quest-lead", questLeadID, RoleQuestLead, question, workdir, extra)
-}
-
-// escalateCampaignDecision escalates a tech-manager's decision ONE tier up to the
-// intent-manager — the campaign top tier, which decides+records. On the campaign record.
-func (c *Conductor) escalateCampaignDecision(ctx context.Context, cam run.Campaign, question, workdir string, extra []string) (run.Escalation, bool) {
-	return c.escalateDecision(ctx, cam.ID, "tech-manager", intentManagerID, RoleIntentManager, question, workdir, extra)
 }

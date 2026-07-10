@@ -113,9 +113,8 @@ func prBase(ctx context.Context, repo string) string {
 //
 // A branch can be checked out in only ONE worktree, so `worktree add -B` also
 // fails with "already used by worktree" when `branch` is held at a DIFFERENT
-// path — e.g. a sibling child run's leftover integration worktree (campaign/quest
-// children share one branch: quest/<id> for a standalone quest's children,
-// campaign/<id> for a campaign's), or a stale/foreign checkout of that branch.
+// path — e.g. a sibling child run's leftover integration worktree (a quest's
+// children share one branch: quest/<id>), or a stale/foreign checkout of that branch.
 // Clearing only wtDir misses those, so addWorktree detaches every OTHER worktree
 // on this branch first, making the add idempotent w.r.t. the branch. An OTHER-path
 // holder with uncommitted changes is left untouched (the add then fails honestly
@@ -306,7 +305,7 @@ func abortMerge(repo string) {
 
 // maxPushRetries bounds the rebase-retry loop when a push is rejected because
 // origin advanced under us — the shared-branch race where a sibling child pushed
-// onto quest/<id> (or campaign/<id>) first. Quest children launch SERIALLY so the
+// onto quest/<id> first. Quest children launch SERIALLY so the
 // window is small; the retry closes it deterministically. The ceiling stops a
 // pathological ping-pong, never legitimate convergence.
 const maxPushRetries = 3
@@ -462,7 +461,7 @@ func openPR(ctx context.Context, repo, base, head, title, body string) (string, 
 }
 
 // existingOpenPR returns the URL of an already-open PR whose head is `head`, if
-// any — re-finishing a quest/campaign delivery must reuse it, never error on a
+// any — re-finishing a quest delivery must reuse it, never error on a
 // duplicate `gh pr create`. A gh/list error or no match returns ("", false).
 func existingOpenPR(ctx context.Context, repo, head string) (string, bool) {
 	out, err := runCmd(ctx, repo, ghBin(), "pr", "list", "--head", head, "--state", "open", "--json", "url")

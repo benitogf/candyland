@@ -24,7 +24,7 @@ import (
 // "exactly one creation" (caching, singleflight) and "zero spawns" (kill switch).
 
 // TestMain defaults the session-reuse kill switch OFF for the whole package:
-// the pre-existing run/quest/campaign tests sequence their stub-claude scripts
+// the pre-existing run/quest tests sequence their stub-claude scripts
 // by invocation count, and an implicit synchronous template creation at a spawn
 // site would corrupt that accounting. Template/fork tests opt back in
 // deliberately (templateConductor sets CANDYLAND_SESSION_REUSE=1). An explicit

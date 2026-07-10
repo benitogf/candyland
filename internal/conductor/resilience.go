@@ -288,7 +288,7 @@ func claudeArgs(prompt string, extraDirs []string, busCfg string, o spawnOpts) [
 // template session to fork); omit it for the historical uncapped behavior used
 // by the tech-lead/coder/conflict spawns.
 func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, workdir string, extraDirs []string, opts ...spawnOpts) attemptOutcome {
-	// A parent (quest/campaign) host coalesces its coordinating-agent writes; flush
+	// A parent (quest) host coalesces its coordinating-agent writes; flush
 	// AND evict the buffer when the attempt ends so the stream boundary is durable
 	// regardless of where the coalesce window fell, and no permanent per-id entry
 	// lingers retaining the lead's per-token history for the process lifetime. The
@@ -411,9 +411,9 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		}
 		// The attempt resolved (not a limit/infra pause): capture any self-acknowledged
 		// incidents this agent reported in its transcript onto the host record. Every
-		// agent — run coders/tech-lead, quest-lead, campaign leads — funnels through
+		// agent — run coders/tech-lead, quest-lead — funnels through
 		// here, so this is the single choke point where a non-terminal self-report is
-		// persisted onto the run/quest/campaign the id belongs to.
+		// persisted onto the run/quest the id belongs to.
 		out.mergeLeg(priorLegs)
 		c.captureIncidents(id, agentID, out.allText)
 		return out

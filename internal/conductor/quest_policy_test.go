@@ -81,7 +81,7 @@ func TestPRBaseIsDefaultBranchNotCheckout(t *testing.T) {
 	}
 }
 
-// q4 fix 2: stopping a quest/campaign persists a stopReason. An empty request
+// q4 fix 2: stopping a quest persists a stopReason. An empty request
 // reason defaults to "manual stop"; an explicit reason is kept.
 func TestStopPersistsReason(t *testing.T) {
 	c, _ := newQuestServer(t)
@@ -96,13 +96,6 @@ func TestStopPersistsReason(t *testing.T) {
 	c.StopQuest(q2, "manual stop from dashboard")
 	if q, _ := c.GetQuest(q2); q.StopReason != "manual stop from dashboard" {
 		t.Errorf("quest stopReason = %q, want %q", q.StopReason, "manual stop from dashboard")
-	}
-
-	cc, _ := newCampaignServer(t)
-	c1 := cc.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{"/repo"}})
-	cc.StopCampaign(c1, "manual stop from dashboard")
-	if cam, _ := cc.GetCampaign(c1); cam.StopReason != "manual stop from dashboard" {
-		t.Errorf("campaign stopReason = %q, want %q", cam.StopReason, "manual stop from dashboard")
 	}
 }
 
@@ -163,18 +156,5 @@ func TestQuestTitleStamped(t *testing.T) {
 	}
 	if derived.Title != "refactor the payment pipeline" {
 		t.Errorf("derived title = %q, want %q", derived.Title, "refactor the payment pipeline")
-	}
-}
-
-// Campaign Title is stamped the same way (explicit wins, else derived from input).
-func TestCampaignTitleStamped(t *testing.T) {
-	c, _ := newCampaignServer(t)
-	explicit, _ := c.GetCampaign(c.CreateCampaign(run.CampaignSpec{Input: "big input", Title: "Payments epic"}))
-	if explicit.Title != "Payments epic" {
-		t.Errorf("explicit campaign title = %q, want %q", explicit.Title, "Payments epic")
-	}
-	derived, _ := c.GetCampaign(c.CreateCampaign(run.CampaignSpec{Input: "Goal: overhaul billing\n\ndetail"}))
-	if derived.Title != "overhaul billing" {
-		t.Errorf("derived campaign title = %q, want %q", derived.Title, "overhaul billing")
 	}
 }

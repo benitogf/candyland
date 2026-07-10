@@ -35,20 +35,6 @@ func TestBlockedQuestCarriesPostmortem(t *testing.T) {
 	}
 }
 
-// E2 invariant: a blocked campaign carries a schema-valid postmortem.
-func TestBlockedCampaignCarriesPostmortem(t *testing.T) {
-	c, _ := newCampaignServer(t)
-	cid := c.CreateCampaign(run.CampaignSpec{Input: "ship the thing", Folders: []string{"/repo"}})
-	c.blockCampaign(cid, "gate 2 still finds gaps after remediation")
-	cam, _ := c.GetCampaign(cid)
-	if cam.Status != "blocked" {
-		t.Fatalf("campaign must be blocked, got %q", cam.Status)
-	}
-	if ok, why := validatePostmortem(cam.Postmortem); !ok {
-		t.Fatalf("a blocked campaign must carry a schema-valid postmortem: %+v (%s)", cam.Postmortem, why)
-	}
-}
-
 // E2 invariant: every run block via fail() (the single choke point, incl. delivery
 // blocks) carries a schema-valid postmortem.
 func TestFailAttachesRunPostmortem(t *testing.T) {

@@ -25,8 +25,8 @@ const useOoo = (key) => {
 // shape is its OWN terminal outcome the UI renders distinctly so none reads as a
 // missing/failed PR:
 //   'pr'       — standalone run opens its own PR (the default).
-//   'branch'   — campaign / campaign-owned-quest child commits to a shared
-//                campaign branch and opens NO PR of its own; the parent opens it.
+//   'branch'   — a quest child commits to a shared branch and opens NO PR of its
+//                own; the parent opens it.
 //   'feedback' — addressed review feedback and UPDATED an existing PR in place
 //                (no new PR; run.prUrl points at the updated PR).
 //   'review'   — reviewed a PR; any findings were applied to that PR, or there
@@ -40,7 +40,7 @@ export const isFeedbackDelivered = (run) => deliverOf(run) === 'feedback'
 export const isReviewDelivered = (run) => deliverOf(run) === 'review'
 
 // Carry the ooo envelope's timestamps onto the item so the UI can order by
-// recency across types (the dashboard interleaves campaigns/quests/runs by when
+// recency across types (the dashboard interleaves quests/runs by when
 // they last changed). Every ooo object is wrapped as {created, updated, index,
 // data}; we surface those as _created/_updated (underscored so they never clash
 // with a domain field). `_updated` (ms) is the recency key; helper `recency()`.
@@ -74,10 +74,10 @@ export const useRun = (id) => {
     return normalizeRun(cache?.data || null)
 }
 
-// ── Quests & Campaigns ───────────────────────────────────────────────────────
-// The work/history section pivots Runs ↔ Quests ↔ Campaigns over three open ooo
-// filters (runs/*, quests/*, campaigns/*), all read live the same way as runs —
-// the conductor is the single source of truth, no polling, no client-side mock.
+// ── Quests ───────────────────────────────────────────────────────────────────
+// The work/history section pivots Runs ↔ Quests over two open ooo filters
+// (runs/*, quests/*), all read live the same way as runs — the conductor is the
+// single source of truth, no polling, no client-side mock.
 
 // All quests, newest first by sequence id (q1, q2, …), mirroring useRuns.
 export const useQuests = () => {
@@ -89,18 +89,5 @@ export const useQuests = () => {
 // One quest, live.
 export const useQuest = (id) => {
     const cache = useOoo(id ? `quests/${encodeURIComponent(id)}` : null)
-    return cache?.data || null
-}
-
-// All campaigns, newest first by sequence id (c1, c2, …), mirroring useRuns.
-export const useCampaigns = () => {
-    const cache = useOoo('campaigns/*')
-    if (!Array.isArray(cache)) return []
-    return cache.map(withMeta).filter(Boolean).sort((a, b) => seq(b) - seq(a))
-}
-
-// One campaign, live.
-export const useCampaign = (id) => {
-    const cache = useOoo(id ? `campaigns/${encodeURIComponent(id)}` : null)
     return cache?.data || null
 }

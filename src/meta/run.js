@@ -27,7 +27,7 @@ export const isDone = (state) => STATE_META[state]?.phase === 'done'
 // The conductor now AUTO-PAUSES work (and auto-resumes) instead of failing it on
 // two distinct causes, and the UI must tell them apart — a transient usage/token
 // limit (work resumes when the limit resets) vs a connection/infra death (work
-// retries with backoff). Runs, quests, and campaigns all carry the same fields
+// retries with backoff). Runs and quests all carry the same fields
 // (status:'paused' + pauseReason + resumeAt + rePauses), so this is uniform.
 export const PAUSE_META = {
     // Usage/token limit — a scheduled, time-bounded wait; reads with a clock.
@@ -120,9 +120,9 @@ export const sumTokenAccounting = (agents) => {
 // Find an agent within a run object (run comes from live ooo state).
 export const agentInRun = (run, id) => (run ? (run.agents || []).find((a) => a.id === id) || null : null)
 
-// Status → MUI color, shared by the work/history section across all three levels
-// (runs, quests, campaigns). Quests/campaigns add running|paused|stopped|blocked
-// to the run statuses; a missing entry falls back to 'default'.
+// Status → MUI color, shared by the work/history section across both levels
+// (runs, quests). Quests add running|paused|stopped|blocked to the run statuses;
+// a missing entry falls back to 'default'.
 export const STATUS_COLOR = {
     done: 'success',
     completed: 'success',

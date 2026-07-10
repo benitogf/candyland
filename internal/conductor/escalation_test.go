@@ -42,7 +42,7 @@ func TestEscalateRunDecisionReachesResolution(t *testing.T) {
 func TestEscalateStandaloneRunSelfDecides(t *testing.T) {
 	c, repo := deliveryConductor(t, decisionClaude)
 	id := c.Create(run.Spec{Prompt: "x", Folders: []string{repo}})
-	r, _ := c.Get(id) // no QuestID/CampaignID
+	r, _ := c.Get(id) // no QuestID
 	esc, resolved := c.escalateRunDecision(t.Context(), r, "decide the trade-off", repo, nil)
 	if esc.Decider != RoleTechLead {
 		t.Errorf("a standalone run's top tier decider = %q, want tech-lead", esc.Decider)
@@ -61,44 +61,23 @@ func TestEscalateStandaloneRunSelfDecides(t *testing.T) {
 	}
 }
 
-// E3: a quest-lead's give-up escalates ONE tier up. For a campaign-child quest that
-// is the campaign tech-manager; the resolution is recorded on the quest and the flow
-// proceeds.
+// E3: a quest-lead's give-up — the quest-lead is the top tier and decides+records
+// itself; the resolution is recorded on the quest and the flow proceeds.
 func TestEscalateQuestDecisionReachesResolution(t *testing.T) {
 	c, repo := deliveryConductor(t, decisionClaude)
-	qid := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{repo}, CampaignID: "c1"})
+	qid := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{repo}})
 	q, _ := c.GetQuest(qid)
 
 	esc, resolved := c.escalateQuestDecision(t.Context(), q, "discovery stuck — decide", repo, nil)
 	if !resolved {
 		t.Fatal("the decider emitted a DECISION — must be resolved")
 	}
-	if esc.From != "quest-lead" || esc.Decider != RoleTechManager {
-		t.Errorf("campaign-child quest escalates quest-lead → tech-manager, got from=%q decider=%q", esc.From, esc.Decider)
+	if esc.From != "quest-lead" || esc.Decider != RoleQuestLead {
+		t.Errorf("quest-lead is the top tier and decides itself, got from=%q decider=%q", esc.From, esc.Decider)
 	}
 	got, _ := c.GetQuest(qid)
-	if len(got.Escalations) != 1 || got.Escalations[0].Decider != RoleTechManager {
+	if len(got.Escalations) != 1 || got.Escalations[0].Decider != RoleQuestLead {
 		t.Fatalf("the escalation must be recorded on the quest, got %+v", got.Escalations)
-	}
-}
-
-// E3: a campaign tech-manager's give-up escalates ONE tier up to the intent-manager
-// (the campaign top tier); the resolution is recorded on the campaign.
-func TestEscalateCampaignDecisionReachesResolution(t *testing.T) {
-	c, repo := deliveryConductor(t, decisionClaude)
-	cid := c.CreateCampaign(run.CampaignSpec{Input: "ship the thing", Folders: []string{repo}})
-	cam, _ := c.GetCampaign(cid)
-
-	esc, resolved := c.escalateCampaignDecision(t.Context(), cam, "gaps remain after remediation — decide", repo, nil)
-	if !resolved {
-		t.Fatal("the decider emitted a DECISION — must be resolved")
-	}
-	if esc.From != "tech-manager" || esc.Decider != RoleIntentManager {
-		t.Errorf("campaign escalates tech-manager → intent-manager, got from=%q decider=%q", esc.From, esc.Decider)
-	}
-	got, _ := c.GetCampaign(cid)
-	if len(got.Escalations) != 1 || got.Escalations[0].Decider != RoleIntentManager {
-		t.Fatalf("the escalation must be recorded on the campaign, got %+v", got.Escalations)
 	}
 }
 
