@@ -30,6 +30,45 @@ type Event struct {
 	Ts        string `json:"ts,omitempty"`     // RFC3339 timestamp set when the event is appended
 }
 
+// Token weights collapse the raw usage split into one cost-proportional number.
+// They mirror Anthropic's per-token price ratios relative to a base input token:
+// a cache read is far cheaper (0.1×), a cache write slightly dearer (1.25×), and
+// output much dearer (5×). Weighted accounting is what budgets and rollups should
+// reason over — a flat per-token count treats a cheap cache hit the same as an
+// expensive output token and so misstates real spend.
+const (
+	WeightInput         = 1.0
+	WeightCacheRead     = 0.1
+	WeightCacheCreation = 1.25
+	WeightOutput        = 5.0
+)
+
+// CostPerWeightedToken is USD per weighted token. It preserves the previous flat
+// model's output pricing ($0.012 per 1000 output tokens → $12/M) now applied to
+// the weighted total, so weighted cost stays comparable to the old flat estimate.
+const CostPerWeightedToken = 0.000012
+
+// WeightedTokens collapses a raw usage split into one cost-proportional token
+// count using the Weight* ratios. All inputs are UNSCALED raw token counts.
+func WeightedTokens(input, cacheRead, cacheCreation, output int) int {
+	return int(WeightInput*float64(input) +
+		WeightCacheRead*float64(cacheRead) +
+		WeightCacheCreation*float64(cacheCreation) +
+		WeightOutput*float64(output))
+}
+
+// TokenAccounting is the weighted token breakdown for an agent-bearing entity:
+// the raw usage split, the single cost-proportional weighted total, and the
+// derived cost. It is what the accounting API surfaces and the dashboard renders.
+type TokenAccounting struct {
+	InputTokens         int     `json:"inputTokens"`
+	CacheReadTokens     int     `json:"cacheReadTokens"`
+	CacheCreationTokens int     `json:"cacheCreationTokens"`
+	OutputTokens        int     `json:"outputTokens"`
+	WeightedTokens      int     `json:"weightedTokens"`
+	CostUsd             float64 `json:"costUsd"`
+}
+
 // Agent is one spawned worker (a headless claude process).
 type Agent struct {
 	ID       string `json:"id"`
@@ -58,6 +97,45 @@ type Agent struct {
 	CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
 	CacheCreationTokens int     `json:"cacheCreationTokens,omitempty"`
 	Events              []Event `json:"events"`
+}
+
+// outputTokens reconstructs the agent's raw output count from the /1000-scaled
+// Tokens display counter — the only output signal carried on the agent (raw
+// output is not stored unscaled). Weighted accounting is thus granular to 1000
+// on the output component.
+func (a Agent) outputTokens() int { return a.Tokens * 1000 }
+
+// WeightedTokens is the agent's cost-proportional weighted token total.
+func (a Agent) WeightedTokens() int {
+	return WeightedTokens(a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.outputTokens())
+}
+
+// TokenAccounting is the agent's full weighted breakdown.
+func (a Agent) TokenAccounting() TokenAccounting {
+	return TokenAccounting{
+		InputTokens:         a.InputTokens,
+		CacheReadTokens:     a.CacheReadTokens,
+		CacheCreationTokens: a.CacheCreationTokens,
+		OutputTokens:        a.outputTokens(),
+		WeightedTokens:      a.WeightedTokens(),
+		CostUsd:             float64(a.WeightedTokens()) * CostPerWeightedToken,
+	}
+}
+
+// SumTokenAccounting aggregates the weighted breakdown across a set of agents.
+// The weighted total and cost are computed from the summed raw split so rounding
+// happens once, not per agent.
+func SumTokenAccounting(agents []Agent) TokenAccounting {
+	var acc TokenAccounting
+	for _, a := range agents {
+		acc.InputTokens += a.InputTokens
+		acc.CacheReadTokens += a.CacheReadTokens
+		acc.CacheCreationTokens += a.CacheCreationTokens
+		acc.OutputTokens += a.outputTokens()
+	}
+	acc.WeightedTokens = WeightedTokens(acc.InputTokens, acc.CacheReadTokens, acc.CacheCreationTokens, acc.OutputTokens)
+	acc.CostUsd = float64(acc.WeightedTokens) * CostPerWeightedToken
+	return acc
 }
 
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last
@@ -221,6 +299,13 @@ type Run struct {
 	// PR, the watch lifecycle state, the terminal outcome, and the tick log.
 	Watch *WatchState `json:"watch,omitempty"`
 }
+
+// WeightedTokens is the run's cost-proportional weighted token total across all
+// its agents.
+func (r *Run) WeightedTokens() int { return SumTokenAccounting(r.Agents).WeightedTokens }
+
+// TokenAccounting is the run's full weighted breakdown across all its agents.
+func (r *Run) TokenAccounting() TokenAccounting { return SumTokenAccounting(r.Agents) }
 
 // Audit is the queryable record of a completed run, derived from its final
 // state and stored at ooo key audits/<id> — local-first, with a documented
