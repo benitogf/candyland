@@ -204,13 +204,12 @@ func TestReconcileSeedsSeqPastPersistedRuns(t *testing.T) {
 	}
 }
 
-// questSeq / campaignSeq are in-memory and reset to 0 on restart, exactly like
-// runSeq. reconcileQuestSeq / reconcileCampaignSeq (called by ReconcileOrphans)
-// must seed each past the highest persisted id, or the first post-restart
-// CreateQuest/CreateCampaign mints an id that already exists and Storage.Set
-// (upsert) overwrites that record — silent history loss. This mirrors
-// TestReconcileSeedsSeqPastPersistedRuns for the quest/campaign sequences.
-func TestReconcileSeedsSeqPastPersistedQuestsAndCampaigns(t *testing.T) {
+// questSeq is in-memory and resets to 0 on restart, exactly like runSeq.
+// reconcileQuestSeq (called by ReconcileOrphans) must seed it past the highest
+// persisted id, or the first post-restart CreateQuest mints an id that already
+// exists and Storage.Set (upsert) overwrites that record — silent history loss.
+// This mirrors TestReconcileSeedsSeqPastPersistedRuns for the quest sequence.
+func TestReconcileSeedsSeqPastPersistedQuests(t *testing.T) {
 	dir := t.TempDir()
 	st := storage.New(storage.LayeredConfig{
 		Memory:   storage.NewMemoryLayer(),
@@ -223,7 +222,7 @@ func TestReconcileSeedsSeqPastPersistedQuestsAndCampaigns(t *testing.T) {
 	}
 	defer st.Close()
 
-	// A prior process left two quests and two campaigns behind.
+	// A prior process left two quests behind.
 	for _, seed := range []run.Quest{
 		{ID: "q1", Status: "done", Objective: "first quest", WorkItems: []run.WorkItem{}, Ticks: []run.Tick{}},
 		{ID: "q2", Status: "done", Objective: "second quest", WorkItems: []run.WorkItem{}, Ticks: []run.Tick{}},
@@ -233,26 +232,14 @@ func TestReconcileSeedsSeqPastPersistedQuestsAndCampaigns(t *testing.T) {
 			t.Fatalf("persist %s: %v", seed.ID, err)
 		}
 	}
-	for _, seed := range []run.Campaign{
-		{ID: "c1", Status: "done", OriginalInput: "first campaign", QuestIDs: []string{}, RunIDs: []string{}},
-		{ID: "c2", Status: "done", OriginalInput: "second campaign", QuestIDs: []string{}, RunIDs: []string{}},
-	} {
-		b, _ := json.Marshal(seed)
-		if _, err := st.Set("campaigns/"+seed.ID, b); err != nil {
-			t.Fatalf("persist %s: %v", seed.ID, err)
-		}
-	}
 
 	// A fresh Conductor over the SAME storage, as if the process just restarted.
 	c := New(srv)
 	c.ReconcileOrphans()
 
-	// The next Create of each must skip past the persisted ids, not collide with q1/c1.
+	// The next CreateQuest must skip past the persisted ids, not collide with q1.
 	if id := c.CreateQuest(run.QuestSpec{Objective: "new", Folders: []string{"/tmp"}}); id != "q3" {
 		t.Errorf("post-restart CreateQuest reused/collided an id: got %q, want q3", id)
-	}
-	if id := c.CreateCampaign(run.CampaignSpec{Input: "new", Folders: []string{"/tmp"}}); id != "c3" {
-		t.Errorf("post-restart CreateCampaign reused/collided an id: got %q, want c3", id)
 	}
 
 	// The prior records are intact (not overwritten by a colliding Create).
@@ -266,16 +253,5 @@ func TestReconcileSeedsSeqPastPersistedQuestsAndCampaigns(t *testing.T) {
 	}
 	if q.Objective != "first quest" {
 		t.Errorf("q1 was overwritten: objective=%q", q.Objective)
-	}
-	obj, err = st.Get("campaigns/c1")
-	if err != nil {
-		t.Fatalf("c1 record missing after reconcile+create: %v", err)
-	}
-	var cam run.Campaign
-	if err := json.Unmarshal(obj.Data, &cam); err != nil {
-		t.Fatalf("unmarshal c1: %v", err)
-	}
-	if cam.OriginalInput != "first campaign" {
-		t.Errorf("c1 was overwritten: input=%q", cam.OriginalInput)
 	}
 }

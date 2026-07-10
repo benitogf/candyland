@@ -201,16 +201,6 @@ func TestRootIntentFor(t *testing.T) {
 	if got := c.rootIntentFor(rid); !strings.Contains(got, "csv export") {
 		t.Errorf("standalone run root intent = %q", got)
 	}
-	// Campaign → OriginalInput.
-	cid := c.CreateCampaign(run.CampaignSpec{Input: "overhaul billing"})
-	if got := c.rootIntentFor(cid); got != "overhaul billing" {
-		t.Errorf("campaign root intent = %q", got)
-	}
-	// Campaign-child quest → the campaign's input (highest ancestor).
-	qid := c.CreateQuest(run.QuestSpec{Objective: "migrate the ledger", CampaignID: cid})
-	if got := c.rootIntentFor(qid); got != "overhaul billing" {
-		t.Errorf("campaign-child quest root intent must be the campaign input, got %q", got)
-	}
 	// Standalone quest → its own objective.
 	sqid := c.CreateQuest(run.QuestSpec{Objective: "keep lint clean"})
 	if got := c.rootIntentFor(sqid); got != "keep lint clean" {
@@ -232,37 +222,9 @@ func TestConflictRulingHostFor(t *testing.T) {
 	if got := c.conflictRulingHostFor(child1); got != sq {
 		t.Errorf("standalone-quest child ruling host = %q, want %q", got, sq)
 	}
-	// Child run of a campaign-owned quest → the CAMPAIGN (those quests skip
-	// their own gate; campaign gate 2 rules).
-	cid := c.CreateCampaign(run.CampaignSpec{Input: "overhaul billing"})
-	cq := c.CreateQuest(run.QuestSpec{Objective: "migrate the ledger", CampaignID: cid})
-	child2 := c.Create(run.Spec{Prompt: "child of campaign quest"})
-	c.Update(child2, func(r *run.Run) { r.QuestID = cq })
-	if got := c.conflictRulingHostFor(child2); got != cid {
-		t.Errorf("campaign-quest child ruling host = %q, want %q", got, cid)
-	}
-	// Campaign-owned quest itself → the campaign; campaign → itself.
-	if got := c.conflictRulingHostFor(cq); got != cid {
-		t.Errorf("campaign-owned quest ruling host = %q, want %q", got, cid)
-	}
-	if got := c.conflictRulingHostFor(cid); got != cid {
-		t.Errorf("campaign ruling host = %q, want %q", got, cid)
-	}
-}
-
-// === Task 8: remediationQuests fold structural review findings =============
-
-func TestRemediationQuestsIncludeStructural(t *testing.T) {
-	brief := run.IntentBrief{RestatedGoal: "g", Commitments: []run.Commitment{{ID: "c1", Statement: "ship the API"}}}
-	review := run.IntentReview{Verdicts: []run.CommitmentVerdict{{CommitmentID: "c1", Verdict: "missed", Evidence: []string{"no handler"}}}}
-	structural := []reviewFinding{{Issue: "the feature is not wired from main"}}
-	qs := remediationQuests(run.Campaign{}, brief, review, structural)
-	if len(qs) != 2 {
-		t.Fatalf("expected one quest per missed commitment + one per structural finding, got %+v", qs)
-	}
-	joined := qs[0].Objective + qs[1].Title + qs[1].Objective
-	if !strings.Contains(joined, "not wired from main") {
-		t.Errorf("a structural finding must become a remediation quest, got %+v", qs)
+	// A standalone quest itself → itself (its own gate rules).
+	if got := c.conflictRulingHostFor(sq); got != sq {
+		t.Errorf("standalone quest ruling host = %q, want %q", got, sq)
 	}
 }
 

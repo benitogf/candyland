@@ -44,17 +44,17 @@ type Conductor struct {
 	mu     sync.Mutex
 	runs   map[string]*runtime
 	seq    int
-	// storeMu serializes the read-modify-write of quest/campaign records in ooo
-	// storage (UpdateQuest/UpdateCampaign). Unlike runs — which hold an in-memory
-	// runtime with its own mu — quests and campaigns live only in storage, so
+	// storeMu serializes the read-modify-write of quest records in ooo
+	// storage (UpdateQuest). Unlike runs — which hold an in-memory
+	// runtime with its own mu — quests live only in storage, so
 	// concurrent Get→mutate→publish would lose updates (e.g. a halting drive's
-	// status write clobbering StopQuest's "stopped"). Held only inside those two
-	// Update funcs, so it never nests with mu.
+	// status write clobbering StopQuest's "stopped"). Held only inside
+	// UpdateQuest, so it never nests with mu.
 	storeMu sync.Mutex
 	// agentWriteMu guards agentWrites, the per-parent coalescing buffers for a
-	// quest/campaign's own coordinating-agent slice. A chatty quest-lead/intent-lead
+	// quest's own coordinating-agent slice. A chatty quest-lead
 	// emits a text event per token block, and each one used to drive a full storage
-	// Get+unmarshal+marshal+publish through UpdateQuest/UpdateCampaign. The buffer
+	// Get+unmarshal+marshal+publish through UpdateQuest. The buffer
 	// applies those mutations in memory and a single debounced flush persists the
 	// whole slice, so the storage write rate is bounded by coalesceWindow, not by
 	// the token rate. Held only inside the coalesce helpers; never nests with mu.
@@ -66,17 +66,10 @@ type Conductor struct {
 	// questSeq mints quest ids (q<N>) independently of run ids. Seeded past the
 	// highest persisted quest id by reconcileQuestSeq after a restart.
 	questSeq int
-	// campaignSeq mints campaign ids (c<N>) independently of run/quest ids. Seeded
-	// past the highest persisted campaign id by reconcileCampaignSeq after a restart.
-	campaignSeq int
 	// questDrivers tracks each quest's running tick-loop goroutine (id → cancel),
 	// so StopQuest can halt it — the quest analogue of a run's per-executor
 	// control channel. Guarded by mu.
 	questDrivers map[string]*questDriver
-	// campaignDrivers tracks each campaign's running supervisor goroutine (id →
-	// cancel), so StopCampaign can halt it — the campaign analogue of
-	// questDrivers. Guarded by mu.
-	campaignDrivers map[string]*campaignDriver
 	// folders resolves a run's working folders. Defaults to the folders the run
 	// was launched with (Spec.Folders, carried on the Run); tests override it to
 	// point a run at a throwaway git repo.
@@ -251,8 +244,8 @@ func cloneRun(r run.Run) run.Run {
 }
 
 // cloneAgents deep-copies an agent slice and each agent's Events so a returned
-// copy is safe to read/mutate without racing the backing arrays. Quests and
-// campaigns reuse it for their own Agents (their coordinating agents), exactly as
+// copy is safe to read/mutate without racing the backing arrays. Quests reuse
+// it for their own Agents (their coordinating agents), exactly as
 // cloneRun uses it for a run's. A nil input yields an empty slice (the agents
 // fields marshal to [] not null).
 func cloneAgents(in []run.Agent) []run.Agent {
@@ -266,14 +259,12 @@ func cloneAgents(in []run.Agent) []run.Agent {
 
 // updateAgentHost routes an agent-slice mutation to the record that OWNS id,
 // detected by id-kind prefix: a run (r<N>) → the in-memory runtime via Update; a
-// quest (q<N>) → the persisted Quest.Agents via UpdateQuest; a campaign (c<N>) →
-// the persisted Campaign.Agents via UpdateCampaign. The agent-recording path
-// (mapAgentLine) goes through this so a campaign/quest host id lands its
-// coordinating agents' state on the parent record instead of being dropped onto a
-// non-existent run runtime. Behavior for run ids is unchanged — same Update path.
+// quest (q<N>) → the persisted Quest.Agents via UpdateQuest. The agent-recording
+// path (mapAgentLine) goes through this so a quest host id lands its coordinating
+// agents' state on the parent record instead of being dropped onto a non-existent
+// run runtime. Behavior for run ids is unchanged — same Update path.
 func (c *Conductor) updateAgentHost(id string, mutate func(*[]run.Agent)) {
-	switch {
-	case strings.HasPrefix(id, "q"):
+	if strings.HasPrefix(id, "q") {
 		// Flush any buffered stream events first so the immediate write builds on
 		// them, then drop the buffer so the next stream event re-seeds from the
 		// now-current record — an immediate write must never be clobbered by a
@@ -281,13 +272,9 @@ func (c *Conductor) updateAgentHost(id string, mutate func(*[]run.Agent)) {
 		c.flushAgentWrites(id)
 		c.UpdateQuest(id, func(q *run.Quest) { mutate(&q.Agents) })
 		c.dropAgentBuffer(id)
-	case strings.HasPrefix(id, "c"):
-		c.flushAgentWrites(id)
-		c.UpdateCampaign(id, func(cam *run.Campaign) { mutate(&cam.Agents) })
-		c.dropAgentBuffer(id)
-	default:
-		c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
+		return
 	}
+	c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
 }
 
 // recordAgentEvent lands a coordinating-agent stream event on the record that owns
@@ -297,15 +284,14 @@ func (c *Conductor) updateAgentHost(id string, mutate func(*[]run.Agent)) {
 // path. Non-stream writes (pre-seeds, retries, fork fallbacks) go through
 // updateAgentHost and stay immediately durable.
 func (c *Conductor) recordAgentEvent(id string, mutate func(*[]run.Agent)) {
-	switch {
-	case strings.HasPrefix(id, "q"), strings.HasPrefix(id, "c"):
+	if strings.HasPrefix(id, "q") {
 		c.coalesceAgentUpdate(id, mutate)
-	default:
-		c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
+		return
 	}
+	c.Update(id, func(r *run.Run) { mutate(&r.Agents) })
 }
 
-// coalescedAgentWrite buffers a parent's (quest/campaign) coordinating-agent slice
+// coalescedAgentWrite buffers a quest's coordinating-agent slice
 // in memory. Mutations apply to agents immediately so the buffer is the live truth;
 // a single debounced flush persists the whole slice. dirty tracks whether the
 // buffer diverges from storage; timer is the pending flush (nil when none armed).
@@ -334,16 +320,10 @@ func (c *Conductor) coalesceAgentUpdate(id string, mutate func(*[]run.Agent)) {
 }
 
 // hostAgents reads the parent record's current agent slice from storage so a fresh
-// buffer starts consistent with what earlier ticks persisted. Prefix routes the read.
+// buffer starts consistent with what earlier ticks persisted.
 func (c *Conductor) hostAgents(id string) []run.Agent {
-	if strings.HasPrefix(id, "q") {
-		if q, ok := c.GetQuest(id); ok {
-			return q.Agents
-		}
-		return nil
-	}
-	if cam, ok := c.GetCampaign(id); ok {
-		return cam.Agents
+	if q, ok := c.GetQuest(id); ok {
+		return q.Agents
 	}
 	return nil
 }
@@ -369,11 +349,7 @@ func (c *Conductor) flushAgentWrites(id string) {
 	}
 	c.agentWriteMu.Unlock()
 
-	if strings.HasPrefix(id, "q") {
-		c.UpdateQuest(id, func(q *run.Quest) { q.Agents = agents })
-		return
-	}
-	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Agents = agents })
+	c.UpdateQuest(id, func(q *run.Quest) { q.Agents = agents })
 }
 
 // flushAndEvictAgentWrites persists a parent's buffered agent slice (if dirty) and
@@ -399,11 +375,7 @@ func (c *Conductor) flushAndEvictAgentWrites(id string) {
 	agents := cloneAgents(w.agents)
 	c.agentWriteMu.Unlock()
 
-	if strings.HasPrefix(id, "q") {
-		c.UpdateQuest(id, func(q *run.Quest) { q.Agents = agents })
-		return
-	}
-	c.UpdateCampaign(id, func(cam *run.Campaign) { cam.Agents = agents })
+	c.UpdateQuest(id, func(q *run.Quest) { q.Agents = agents })
 }
 
 // dropAgentBuffer discards a parent's coalescing buffer (stopping any armed flush)
@@ -487,9 +459,6 @@ func (c *Conductor) ReconcileOrphans() {
 	// Seed the quest-id sequence the same way, so a post-restart CreateQuest can't
 	// overwrite an existing quest record.
 	c.reconcileQuestSeq()
-	// Seed the campaign-id sequence likewise, so a post-restart CreateCampaign can't
-	// overwrite an existing campaign record.
-	c.reconcileCampaignSeq()
 }
 
 // Create registers a new run (status: planning) and publishes it. The build
@@ -745,16 +714,13 @@ func (c *Conductor) captureIncidents(hostID, agentID, text string) {
 
 // recordIncidents persists incidents on the record that OWNS hostID, detected by
 // id-kind prefix exactly as recordEscalation does: quest (q<N>) → Quest.Incidents,
-// campaign (c<N>) → Campaign.Incidents, else run → Run.Incidents.
+// else run → Run.Incidents.
 func (c *Conductor) recordIncidents(hostID string, notes []run.IncidentNote) {
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		c.UpdateQuest(hostID, func(q *run.Quest) { q.Incidents = append(q.Incidents, notes...) })
-	case strings.HasPrefix(hostID, "c"):
-		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.Incidents = append(cam.Incidents, notes...) })
-	default:
-		c.Update(hostID, func(r *run.Run) { r.Incidents = append(r.Incidents, notes...) })
+		return
 	}
+	c.Update(hostID, func(r *run.Run) { r.Incidents = append(r.Incidents, notes...) })
 }
 
 // unruledConflictIssues returns the Issue text of every conflict not yet ruled on
@@ -806,33 +772,22 @@ func intentConflictQuestion(issues []string, branch string) string {
 }
 
 // rootIntentFor resolves the verbatim IMMUTABLE top-level intent the unit at hostID
-// serves (two-layer intent briefing): a campaign → its OriginalInput; a campaign-
-// child quest → that campaign's OriginalInput, else the quest's OriginalObjective; a
-// run → its owning quest's root (recursing), else the run's own OriginalIntent. A
-// standalone run returns its own intent, so its task and root layers coincide and the
-// render rule disarms the conflict channel.
+// serves (two-layer intent briefing): a quest → its OriginalObjective; a run → its
+// owning quest's root (recursing), else the run's own OriginalIntent. A standalone
+// run returns its own intent, so its task and root layers coincide and the render
+// rule disarms the conflict channel.
 func (c *Conductor) rootIntentFor(hostID string) string {
-	switch {
-	case strings.HasPrefix(hostID, "c"):
-		if cam, ok := c.GetCampaign(hostID); ok {
-			return cam.OriginalInput
-		}
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		if q, ok := c.GetQuest(hostID); ok {
-			if q.CampaignID != "" {
-				if cam, ok := c.GetCampaign(q.CampaignID); ok {
-					return cam.OriginalInput
-				}
-			}
 			return q.OriginalObjective
 		}
-	default:
-		if r, ok := c.Get(hostID); ok {
-			if r.QuestID != "" {
-				return c.rootIntentFor(r.QuestID)
-			}
-			return firstNonEmpty(r.OriginalIntent, r.Prompt)
+		return ""
+	}
+	if r, ok := c.Get(hostID); ok {
+		if r.QuestID != "" {
+			return c.rootIntentFor(r.QuestID)
 		}
+		return firstNonEmpty(r.OriginalIntent, r.Prompt)
 	}
 	return ""
 }
@@ -861,19 +816,13 @@ func parseIntentConflicts(text string) []run.IntentConflictNote {
 
 // conflictRulingHostFor resolves the unit whose GATE actually rules conflicts
 // captured under hostID: a quest-child run's conflicts belong to its owning quest
-// (no run-level routing exists — the quest delivery gate rules them), and a
-// campaign-owned quest's belong to the campaign (those quests skip their own gate;
-// campaign gate 2 rules instead). Without this forwarding a child-run reviewer's
-// conflict would sit unruled on the run record forever.
+// (no run-level routing exists — the quest delivery gate rules them). Without this
+// forwarding a child-run reviewer's conflict would sit unruled on the run record
+// forever.
 func (c *Conductor) conflictRulingHostFor(hostID string) string {
-	if !strings.HasPrefix(hostID, "q") && !strings.HasPrefix(hostID, "c") {
+	if !strings.HasPrefix(hostID, "q") {
 		if r, ok := c.Get(hostID); ok && r.QuestID != "" {
 			hostID = r.QuestID
-		}
-	}
-	if strings.HasPrefix(hostID, "q") {
-		if q, ok := c.GetQuest(hostID); ok && q.CampaignID != "" {
-			return q.CampaignID
 		}
 	}
 	return hostID
@@ -912,32 +861,24 @@ func (c *Conductor) captureIntentConflicts(hostID, agentID, text string) {
 	if len(notes) == 0 {
 		return
 	}
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		c.UpdateQuest(hostID, func(q *run.Quest) { q.IntentConflicts = append(q.IntentConflicts, notes...) })
-	case strings.HasPrefix(hostID, "c"):
-		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.IntentConflicts = append(cam.IntentConflicts, notes...) })
-	default:
-		c.Update(hostID, func(r *run.Run) { r.IntentConflicts = append(r.IntentConflicts, notes...) })
+		return
 	}
+	c.Update(hostID, func(r *run.Run) { r.IntentConflicts = append(r.IntentConflicts, notes...) })
 }
 
 // unruledConflictIssuesFor returns the Issue text of every conflict already recorded
 // UNRULED on the host — the cross-round dedup basis for captureIntentConflicts.
 func (c *Conductor) unruledConflictIssuesFor(hostID string) []string {
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		if q, ok := c.GetQuest(hostID); ok {
 			return unruledConflictIssues(q.IntentConflicts)
 		}
-	case strings.HasPrefix(hostID, "c"):
-		if cam, ok := c.GetCampaign(hostID); ok {
-			return unruledConflictIssues(cam.IntentConflicts)
-		}
-	default:
-		if r, ok := c.Get(hostID); ok {
-			return unruledConflictIssues(r.IntentConflicts)
-		}
+		return nil
+	}
+	if r, ok := c.Get(hostID); ok {
+		return unruledConflictIssues(r.IntentConflicts)
 	}
 	return nil
 }

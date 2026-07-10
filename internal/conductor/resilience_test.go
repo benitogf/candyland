@@ -376,29 +376,21 @@ func TestBootstrapsCarryRoleContractNotContext(t *testing.T) {
 }
 
 // TestBootstrapsCarryIncidentDoctrine asserts EVERY agent bootstrap constant
-// carries the shared incident self-report clause — so any agent (run/quest/
-// campaign, full and fork-slim) can self-report a mistake, doctrine violation, or
+// carries the shared incident self-report clause — so any agent (run/quest,
+// full and fork-slim) can self-report a mistake, doctrine violation, or
 // worked-around problem. The map keys name the constant so a failure names the
 // offending bootstrap.
 func TestBootstrapsCarryIncidentDoctrine(t *testing.T) {
 	bootstraps := map[string]string{
-		"techLeadBootstrap":            techLeadBootstrap,
-		"coderBootstrap":               coderBootstrap,
-		"reviewBootstrap":              reviewBootstrap,
-		"reviewBootstrapSlim":          reviewBootstrapSlim,
-		"reviewFixBootstrap":           reviewFixBootstrap,
-		"conflictBootstrap":            conflictBootstrap,
-		"questLeadBootstrap":           questLeadBootstrap,
-		"questLeadForkBootstrap":       questLeadForkBootstrap,
-		"intentLeadBootstrap":          intentLeadBootstrap,
-		"intentLeadBootstrapSlim":      intentLeadBootstrapSlim,
-		"intentReviewerBootstrap":      intentReviewerBootstrap,
-		"intentReviewerBootstrapSlim":  intentReviewerBootstrapSlim,
-		"techManagerBootstrap":         techManagerBootstrap,
-		"techManagerBootstrapSlim":     techManagerBootstrapSlim,
-		"partitionReviewBootstrap":     partitionReviewBootstrap,
-		"partitionReviewBootstrapSlim": partitionReviewBootstrapSlim,
-		"decisionBootstrap":            decisionBootstrap,
+		"techLeadBootstrap":      techLeadBootstrap,
+		"coderBootstrap":         coderBootstrap,
+		"reviewBootstrap":        reviewBootstrap,
+		"reviewBootstrapSlim":    reviewBootstrapSlim,
+		"reviewFixBootstrap":     reviewFixBootstrap,
+		"conflictBootstrap":      conflictBootstrap,
+		"questLeadBootstrap":     questLeadBootstrap,
+		"questLeadForkBootstrap": questLeadForkBootstrap,
+		"decisionBootstrap":      decisionBootstrap,
 	}
 	for name, p := range bootstraps {
 		if !strings.Contains(p, "INCIDENT ") {

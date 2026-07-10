@@ -10,8 +10,8 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// newIncidentServer builds a serverful conductor with the run/quest/campaign
-// filters open, so an incident recorded on any of the three round-trips through
+// newIncidentServer builds a serverful conductor with the run/quest
+// filters open, so an incident recorded on either round-trips through
 // storage (the mining data-access path reads the same records).
 func newIncidentServer(t *testing.T) *Conductor {
 	t.Helper()
@@ -19,7 +19,6 @@ func newIncidentServer(t *testing.T) *Conductor {
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	srv.OpenFilter("runs/*")
 	srv.OpenFilter("quests/*")
-	srv.OpenFilter("campaigns/*")
 	c := New(srv)
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
@@ -123,21 +122,15 @@ func TestCaptureIncidentsNoopWhenNoneReported(t *testing.T) {
 }
 
 // The host-id prefix routes an incident to the right record kind, exactly as
-// recordEscalation does: a quest id lands on the quest, a campaign id on the campaign.
+// recordEscalation does: a quest id lands on the quest.
 func TestCaptureIncidentsRoutesByHostKind(t *testing.T) {
 	c := newIncidentServer(t)
 	qid := c.CreateQuest(run.QuestSpec{Objective: "keep lint clean", Folders: []string{"/repo"}})
-	cid := c.CreateCampaign(run.CampaignSpec{Input: "ship the redesign", Folders: []string{"/repo"}})
 
 	c.captureIncidents(qid, questLeadID, `INCIDENT {"summary":"quest-lead recovered from a transient scan failure"}`)
-	c.captureIncidents(cid, intentLeadID, `INCIDENT {"summary":"campaign lead worked around a rate limit"}`)
 
 	q, ok := c.GetQuest(qid)
 	if !ok || len(q.Incidents) != 1 || q.Incidents[0].Agent != questLeadID {
 		t.Fatalf("quest incident not routed/recorded: ok=%v incidents=%+v", ok, q.Incidents)
-	}
-	cam, ok := c.GetCampaign(cid)
-	if !ok || len(cam.Incidents) != 1 || cam.Incidents[0].Agent != intentLeadID {
-		t.Fatalf("campaign incident not routed/recorded: ok=%v incidents=%+v", ok, cam.Incidents)
 	}
 }

@@ -11,7 +11,7 @@ import (
 
 // The copy-reference handle for each item kind resolves to that item's stored
 // snapshot via GET /api/reference/{kind}/{id} — the resolver behind the one-click
-// copy control. A task, a quest, and a campaign each round-trip; an unknown kind
+// copy control. A task, a run, and a quest each round-trip; an unknown kind
 // and a missing id are 404s.
 func TestReferenceResolvesEachKind(t *testing.T) {
 	c, srv := questServer(t)
@@ -19,7 +19,6 @@ func TestReferenceResolvesEachKind(t *testing.T) {
 
 	runID := c.Create(run.Spec{Prompt: "do the thing", Folders: []string{"/repo"}})
 	questID := c.CreateQuest(run.QuestSpec{Objective: "tidy up", Folders: []string{"/repo"}})
-	campaignID := c.CreateCampaign(run.CampaignSpec{Input: "ship it", Folders: []string{"/repo"}})
 
 	// Each kind's handle resolves to a JSON snapshot carrying the item's own id —
 	// proving the copied reference points at that run's stored data.
@@ -27,7 +26,6 @@ func TestReferenceResolvesEachKind(t *testing.T) {
 		{"task", runID},
 		{"run", runID},
 		{"quest", questID},
-		{"campaign", campaignID},
 	}
 	for _, tc := range cases {
 		resp, err := http.Get(base + "/api/reference/" + tc.kind + "/" + tc.id)
