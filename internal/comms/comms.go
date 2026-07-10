@@ -189,7 +189,7 @@ func RegisterTools(server *mcp.Server, c *Client) {
 		}
 		var b strings.Builder
 		for _, n := range nodes {
-			fmt.Fprintf(&b, "%s [%s] %s deps=%v\n", n.ID, n.Status, n.Title, n.Deps)
+			fmt.Fprintf(&b, "%s [%s] %s\n", n.ID, n.Status, n.Title)
 		}
 		return textResult(strings.TrimSpace(b.String())), nil, nil
 	})
@@ -225,9 +225,6 @@ func formatBrief(b bus.Brief) string {
 		w("files", strings.Join(b.Files, ", "))
 	}
 	w("test", b.Test)
-	if len(b.Deps) > 0 {
-		w("deps", strings.Join(b.Deps, ", "))
-	}
 	if b.Intent != "" {
 		fmt.Fprintf(&sb, "intent (the driving ask — the diff must satisfy it):\n%s\n", b.Intent)
 	}
@@ -250,7 +247,16 @@ func formatBrief(b bus.Brief) string {
 		}
 	}
 	if b.Prompt != "" {
-		fmt.Fprintf(&sb, "\n%s", b.Prompt)
+		// The context-only label claims a files boundary, so gate on exactly
+		// that: only a task brief WITH Files (a coder) gets the labeled form.
+		// Every boundary-less brief — tech-lead plan, reviewer diff command,
+		// quest-lead tick directive, escalation question — renders the prompt
+		// bare, because there the prompt IS the instruction.
+		if len(b.Files) > 0 {
+			fmt.Fprintf(&sb, "\nrun prompt (context only — work ONLY within your files boundary):\n%s", b.Prompt)
+		} else {
+			fmt.Fprintf(&sb, "\n%s", b.Prompt)
+		}
 	}
 	if s := strings.TrimSpace(sb.String()); s != "" {
 		return s

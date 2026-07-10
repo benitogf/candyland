@@ -13,10 +13,10 @@ import { DiagramCard } from '../components/Section'
 import { StateChip } from '../components/StatusBits'
 import { agentInRun, isDone } from '../meta/run'
 
-// The structural lens: the dependency DAG the conductor actually scheduled —
+// The structural lens: the independent tasks the conductor actually scheduled —
 // built live from the real partition the tech lead emitted (run.tasks), not a
-// canned example. Edges are task dependencies; the node label carries the owning
-// agent and the task's current state.
+// canned example. The node label carries the owning agent and the task's
+// current state.
 const CLASS_DEFS = [
     'classDef done fill:#2a1230,stroke:#ff5fa2,color:#f4ecff;',
     'classDef green fill:#13301f,stroke:#7bdc6a,color:#d7f5cf;',
@@ -44,11 +44,6 @@ const buildDag = (run) => {
         const role = owner?.role ? `${owner.role} · ` : ''
         lines.push(`  ${nodeId(t.id)}["${emoji} ${label(t.title)}<br/>${role}${label(t.state)}"]:::${STATE_CLASS[t.state] || 'idle'}`)
     }
-    for (const t of tasks) {
-        for (const d of t.deps || []) {
-            if (tasks.some((x) => x.id === d)) lines.push(`  ${nodeId(d)} --> ${nodeId(t.id)}`)
-        }
-    }
     return [...lines, ...CLASS_DEFS.map((c) => '  ' + c)].join('\n')
 }
 
@@ -57,11 +52,11 @@ const TasksPanel = ({ run }) => {
     return (
     <Box>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
-            the structural lens — how the feature was partitioned into fork-safe tasks, and how they depend on each other
+            the structural lens — how the feature was partitioned into fully independent, fork-safe tasks
         </Typography>
 
         {run.hasDag && tasks.length > 0 && (
-            <DiagramCard caption="Edges are task dependencies. Tasks with no shared edge own disjoint files and run in parallel; integration and the PR wait for the slices they depend on.">
+            <DiagramCard caption="Every task is fully independent: each owns disjoint files and runs in parallel; integration and the PR wait for all slices.">
                 <MermaidDiagram chart={buildDag(run)} />
             </DiagramCard>
         )}
@@ -86,13 +81,11 @@ const TasksPanel = ({ run }) => {
                     {tasks.map((t) => {
                         const owner = agentInRun(run, t.owner)
                         const complete = isDone(t.state)
-                        const deps = t.deps || []
                         const files = t.files || []
                         return (
                             <TableRow key={t.id} sx={{ backgroundColor: complete ? 'rgba(123,220,106,0.05)' : 'transparent' }}>
                                 <TableCell>
                                     <Typography variant="body2" sx={{ fontWeight: 600, color: complete ? 'text.secondary' : 'text.primary' }}>{t.title}</Typography>
-                                    {deps.length > 0 && <Typography variant="caption" color="text.secondary">after: {deps.join(', ')}</Typography>}
                                 </TableCell>
                                 <TableCell sx={{ whiteSpace: 'nowrap', color: 'text.secondary' }}>{owner ? `${owner.emoji} ${owner.role}` : '— (queued)'}</TableCell>
                                 <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>{files.join(', ')}</TableCell>

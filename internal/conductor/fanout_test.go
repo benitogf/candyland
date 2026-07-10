@@ -34,21 +34,18 @@ fi
 `
 
 // Task ids from the tech-lead's PARTITION line become worktree path components
-// and git branch refs, and their deps are matched against task ids by the bus
-// auto-unblock. parsePartition must normalize all of them through slug so a
-// malformed id can't escape the worktree root or break ref creation — while
-// leaving realistic ids untouched and keeping deps consistent with the ids they
-// reference (else dependent tasks would never unblock).
-func TestParsePartitionSlugsIDsAndDeps(t *testing.T) {
+// and git branch refs. parsePartition must normalize all of them through slug so
+// a malformed id can't escape the worktree root or break ref creation — while
+// leaving realistic ids untouched.
+func TestParsePartitionSlugsIDs(t *testing.T) {
 	// Realistic ids pass through unchanged — normal partitions behave identically.
-	clean := parsePartition(`PARTITION [{"id":"a","title":"A"},{"id":"backend","title":"B","deps":["a"]}]`)
-	if len(clean) != 2 || clean[0].ID != "a" || clean[1].ID != "backend" || len(clean[1].Deps) != 1 || clean[1].Deps[0] != "a" {
+	clean := parsePartition(`PARTITION [{"id":"a","title":"A"},{"id":"backend","title":"B"}]`)
+	if len(clean) != 2 || clean[0].ID != "a" || clean[1].ID != "backend" {
 		t.Fatalf("realistic ids must be unchanged, got %+v", clean)
 	}
 
-	// A malformed id (path traversal) and a dep referencing it are slugged the
-	// SAME way, so the dependency still matches the (now slugged) task id.
-	got := parsePartition(`PARTITION [{"id":"../escape","title":"X"},{"id":"task B","title":"Y","deps":["../escape"]}]`)
+	// A malformed id (path traversal) is slugged.
+	got := parsePartition(`PARTITION [{"id":"../escape","title":"X"},{"id":"task B","title":"Y"}]`)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 tasks, got %d", len(got))
 	}
@@ -57,9 +54,6 @@ func TestParsePartitionSlugsIDsAndDeps(t *testing.T) {
 	}
 	if got[1].ID != "task-b" {
 		t.Errorf("id not slugged: %q", got[1].ID)
-	}
-	if got[1].Deps[0] != got[0].ID {
-		t.Errorf("dep %q must match the slugged task id %q so unblock still works", got[1].Deps[0], got[0].ID)
 	}
 
 	// Duplicate ids (more likely once one partition spans multiple repos) are made
@@ -314,8 +308,9 @@ func TestClaudeFanOut(t *testing.T) {
 	}
 }
 
-// A partition whose tasks are NOT file-disjoint: both coders write the same file,
-// so their branches conflict at integration. A real tech lead reconciles the
+// A partition whose DECLARED files are disjoint (so it passes the pre-spawn
+// gate) but whose coders both write the same UNDECLARED file, so their branches
+// conflict at integration — the resolver is the last resort for exactly this. A real tech lead reconciles the
 // conflict (here the integrator — prompt contains "conflict" — rewrites the file
 // cleanly) and the run completes with a PR, rather than giving up at the first
 // overlap. The reconciled content must land (no leftover conflict markers).
@@ -330,7 +325,7 @@ elif [[ "$prompt" == *"git merge conflict"* ]]; then
   printf 'reconciled: a + b\n' > "shared.txt"
   echo '{"type":"result","subtype":"success","result":"resolved","usage":{"output_tokens":3}}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"shared.txt\"],\"test\":\"a_test\"},{\"id\":\"b\",\"title\":\"task b\",\"files\":[\"shared.txt\"],\"test\":\"b_test\"}]"}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"a_test\"},{\"id\":\"b\",\"title\":\"task b\",\"files\":[\"b.txt\"],\"test\":\"b_test\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
 else
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"shared.txt"}}]}}'
@@ -380,7 +375,7 @@ if [[ "$prompt" == *"git merge conflict"* ]]; then
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"I cannot reconcile these."}]}}'
   echo '{"type":"result","subtype":"success","result":"gave up","usage":{"output_tokens":1}}'
 elif [[ "$prompt" == *"tech lead"* ]]; then
-  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"shared.txt\"],\"test\":\"a_test\"},{\"id\":\"b\",\"title\":\"task b\",\"files\":[\"shared.txt\"],\"test\":\"b_test\"}]"}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"a_test\"},{\"id\":\"b\",\"title\":\"task b\",\"files\":[\"b.txt\"],\"test\":\"b_test\"}]"}]}}'
   echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
 else
   echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"shared.txt"}}]}}'

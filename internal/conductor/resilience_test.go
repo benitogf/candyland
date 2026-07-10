@@ -111,6 +111,7 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 	}
 	t.Cleanup(func() { srv.Close(os.Interrupt) })
 	c.folders = func(run.Run) ([]string, error) { return []string{repo}, nil }
+	c.wtBase = filepath.Join(t.TempDir(), "candyland-wt")
 	// Drain before the test's t.TempDir() is removed: cancel any still-tracked
 	// runs and wait for each executor's deferred worktree cleanup (git worktree
 	// remove / branch -D / prune on the repo, then rm the worktree dir) to
@@ -127,7 +128,7 @@ func deliveryConductor(t *testing.T, claudeScript string) (*Conductor, string) {
 		for _, id := range ids {
 			c.Cancel(id)
 		}
-		wtParent := filepath.Join(os.TempDir(), "candyland-wt")
+		wtParent := c.wtBase
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 			pending := false
 			for _, id := range ids {
@@ -166,6 +167,7 @@ func multiRepoConductor(t *testing.T, claudeScript string, repoNames ...string) 
 	}
 	t.Cleanup(func() { srv.Close(os.Interrupt) })
 	c.folders = func(run.Run) ([]string, error) { return repos, nil }
+	c.wtBase = filepath.Join(t.TempDir(), "candyland-wt")
 	t.Cleanup(func() {
 		c.mu.Lock()
 		ids := make([]string, 0, len(c.runs))
@@ -176,7 +178,7 @@ func multiRepoConductor(t *testing.T, claudeScript string, repoNames ...string) 
 		for _, id := range ids {
 			c.Cancel(id)
 		}
-		wtParent := filepath.Join(os.TempDir(), "candyland-wt")
+		wtParent := c.wtBase
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 			pending := false
 			for _, id := range ids {

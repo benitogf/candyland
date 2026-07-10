@@ -231,7 +231,6 @@ type Task struct {
 	Test  string   `json:"test"`
 	Owner string   `json:"owner"` // agent id, "" when unassigned
 	State string   `json:"state"`
-	Deps  []string `json:"deps"`
 }
 
 // PR is one opened (or attempted) pull request. A run that spans multiple repos

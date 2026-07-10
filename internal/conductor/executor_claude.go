@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -72,7 +73,6 @@ type partitionTask struct {
 	Emoji string   `json:"emoji"`
 	Files []string `json:"files"`
 	Test  string   `json:"test"`
-	Deps  []string `json:"deps"`
 	Repo  string   `json:"repo"` // target repo (folder name); empty → the run's primary repo (folders[0])
 }
 
@@ -174,7 +174,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	// Everything happens in throwaway worktrees under wtRoot/<repoBase>/…, so the
 	// user's own checkouts are never switched or dirtied. Clean leftovers from a
 	// prior attempt of THIS run (e.g. a restart), and again on the way out.
-	wtRoot := filepath.Join(os.TempDir(), "candyland-wt", id)
+	wtRoot := c.worktreeRoot(id)
 	cleanup(c, id, folders, wtRoot)
 	defer cleanup(c, id, folders, wtRoot)
 
@@ -643,6 +643,14 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 		// help, so this is terminal — not a re-plan.
 		return attemptDeliveryResult{}
 	}
+	// Pre-spawn disjointness gate: a partition whose declared Files overlap
+	// within a repo is rejected HERE, before any graph node is published or any
+	// coder spawns — one cheap tech-lead round instead of N burned coder budgets.
+	// The integrate-time conflict resolver stays as last resort (coders can
+	// still touch undeclared files).
+	if replan := validateDisjointFiles(tasks, folders); replan != "" {
+		return attemptDeliveryResult{replan: replan}
+	}
 
 	// Write the partition DAG and the coder agents.
 	coderModel, coderThinking := c.agentConfig(RoleCoder)
@@ -651,14 +659,14 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 		r.StatusLine = fmt.Sprintf("Coders are implementing %d %s…", len(tasks), plural(len(tasks), "task", "tasks"))
 		r.Tasks = make([]run.Task, 0, len(tasks))
 		for _, t := range tasks {
-			r.Tasks = append(r.Tasks, run.Task{ID: t.ID, Title: t.Title, Files: t.Files, Test: t.Test, Owner: t.ID, State: "working", Deps: t.Deps})
+			r.Tasks = append(r.Tasks, run.Task{ID: t.ID, Title: t.Title, Files: t.Files, Test: t.Test, Owner: t.ID, State: "working"})
 			r.Agents = append(r.Agents, run.Agent{ID: t.ID, Role: orDefault(t.Role, "Coder"), Emoji: orDefault(t.Emoji, "⚙️"), Task: t.Title,
 				State: "working", Activity: "implementing " + t.Title, Budget: 200, Worktree: "wt/" + t.ID, Model: coderModel, Thinking: coderThinking})
 		}
 		setAgentState(r, "tl", "integrating", "coordinating coders")
 	})
 	// Publish the partition into the coordination task-graph (bus) so coders can
-	// graph_read the open work and the conductor can auto-unblock / escalate.
+	// graph_read the open work and the conductor can escalate.
 	c.publishGraphNodes(tasks)
 
 	// ── Per impacted repo: code its slice, then integrate it into that repo's run
@@ -690,7 +698,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 		rtasks := byRepo[repo]
 
 		// Coders for this repo's tasks, each in its own worktree off the repo's base.
-		runCoders(ctx, c, id, repo, base, repoWt, rtasks, extra)
+		runCoders(ctx, c, id, repo, base, repoWt, prompt, rtasks, extra)
 		if ctx.Err() != nil {
 			return attemptDeliveryResult{} // stopped
 		}
@@ -701,7 +709,7 @@ func attemptDelivery(ctx context.Context, c *Conductor, id string, folders []str
 			}
 			c.Update(id, func(r *run.Run) { r.Error = "" })
 			return attemptDeliveryResult{replan: "A coder couldn't complete its task: " + reason +
-				" Re-split into smaller, clearer, fully self-contained tasks (or sequence dependent ones with deps)."}
+				" Re-split into smaller, clearer, fully self-contained tasks."}
 		}
 
 		// Integrate this repo's slice into its run branch.
@@ -764,7 +772,7 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 				}
 				abortMerge(integDir)
 				return "", "Task " + t.ID + " conflicted with an earlier slice in " + strings.Join(files, ", ") +
-					" and couldn't be reconciled (" + err.Error() + "). Re-partition so NO two tasks edit the same file, or sequence the dependent one with deps.", false
+					" and couldn't be reconciled (" + err.Error() + "). Re-partition so NO two tasks edit the same file — make coupled work one task.", false
 			}
 			c.Update(id, func(r *run.Run) {
 				r.StatusLine = "Resolved a merge conflict — integrating…"
@@ -918,7 +926,7 @@ func weightedBudgetExceeded(r run.Run) bool {
 // runCoders implements every task in parallel, each in its own worktree off base.
 // A coder that fails (process error, or commit error) records the run error and
 // blocks its agent; the caller decides whether that warrants a re-plan.
-func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string, tasks []partitionTask, extra []string) {
+func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot, prompt string, tasks []partitionTask, extra []string) {
 	coderModel, coderThinking := c.agentConfig(RoleCoder)
 	var wg sync.WaitGroup
 	for _, t := range tasks {
@@ -930,7 +938,7 @@ func runCoders(ctx context.Context, c *Conductor, id, repo, base, wtRoot string,
 				fail(ctx, c, id, t.ID, "Couldn't create the worktree for "+t.ID+": "+err.Error())
 				return
 			}
-			c.putBrief(t.ID, bus.Brief{Role: t.Role, Title: t.Title, Files: t.Files, Test: t.Test, Deps: t.Deps, Repo: repoBase(repo)})
+			c.putBrief(t.ID, bus.Brief{Role: t.Role, Title: t.Title, Files: t.Files, Test: t.Test, Repo: repoBase(repo), Prompt: prompt})
 			// Fork the coder doctrine template when one resolves (concurrent coders
 			// coalesce into a single creation); ok=false is a silent cold start.
 			opts := spawnOpts{model: coderModel, thinking: coderThinking}
@@ -1118,14 +1126,14 @@ const incidentDoctrine = " Separate from and additional to any protocol/verdict 
 
 const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST to read the request you must partition — it carries the full plan (and any previous failed attempt to avoid), so it is no longer on your command line." + briefGetToolHint + " " +
 	"Then emit exactly one line beginning with `PARTITION ` followed by a JSON array of fork-safe tasks: " +
-	`[{"id","title","role","emoji","files":[],"test","deps":[]}]. ` +
-	"Tasks must own DISJOINT files so they can be implemented and merged in parallel. " +
+	`[{"id","title","role","emoji","files":[],"test"}]. ` +
+	"Emit a task ONLY when it is fully independent of every sibling: tasks must own DISJOINT files, and no task may consume a sibling's output. Coupled work stays ONE task — cross-domain coupling gets role \"fullstack\" regardless of size. " +
+	"Don't over-split: each extra coder re-ingests the full context, so prefer fewer, bigger tasks and split only at natural independence seams. " +
 	"A single atomic task is a valid partition — when the work doesn't decompose, emit exactly one task (never treat \"one task\" as a failure). " +
-	"For small, tightly-coupled backend+frontend work, emit one task with role \"fullstack\"; split large cross-domain work into separate tasks sequenced with \"deps\". " +
 	"If the work spans more than one of the run's folders/repos, set each task's \"repo\" to the target folder's name (omit it for the primary repo); each impacted repo gets its own pull request. " +
 	"Then stop." + incidentDoctrine
 
-const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role." + briefGetToolHint + " " +
+const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role; the brief also carries the run's full prompt for context, but you work ONLY within your files boundary." + briefGetToolHint + " " +
 	"Implement the task until its defining test is green: make the changes with your tools — do not just describe them. " +
 	"If your role is \"fullstack\", implement BOTH the server side and the client side of the slice and keep the API contract consistent between them. " +
 	"When you run the defining test, report the result as one line beginning with `TEST ` " +
@@ -2036,6 +2044,39 @@ func mapAgentLine(c *Conductor, id, agentID string, line streamLine) (partition 
 	return partition, sawTool, text
 }
 
+// validateDisjointFiles statically checks that the partition's declared Files
+// are pairwise disjoint WITHIN each target repo — resolved via resolveRepo, so
+// spelling the same repo as "", a path, or a basename can't split the key space
+// (tasks with no declared files pass). A task re-declaring its OWN file is not
+// an overlap. It returns a re-plan feedback naming the exact overlapping files
+// and offending task ids, or "" when the partition is valid.
+func validateDisjointFiles(tasks []partitionTask, folders []string) string {
+	type ownerKey struct{ repo, file string }
+	owner := map[ownerKey]string{}
+	var overlaps []string
+	for _, t := range tasks {
+		repo := resolveRepo(t, folders)
+		for _, f := range t.Files {
+			k := ownerKey{repo, path.Clean(filepath.ToSlash(strings.TrimSpace(f)))}
+			if k.file == "" || k.file == "." {
+				continue
+			}
+			if prev, taken := owner[k]; taken {
+				if prev != t.ID {
+					overlaps = append(overlaps, fmt.Sprintf("tasks %q and %q both declare %s", prev, t.ID, k.file))
+				}
+				continue
+			}
+			owner[k] = t.ID
+		}
+	}
+	if len(overlaps) == 0 {
+		return ""
+	}
+	return "The partition is not file-disjoint: " + strings.Join(overlaps, "; ") +
+		". Re-partition so NO two tasks edit the same file — make coupled work one task."
+}
+
 // parsePartition extracts the task array from a `PARTITION <json>` line.
 func parsePartition(text string) []partitionTask {
 	for _, ln := range strings.Split(text, "\n") {
@@ -2045,24 +2086,17 @@ func parsePartition(text string) []partitionTask {
 		}
 		var tasks []partitionTask
 		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "PARTITION ")), &tasks) == nil && len(tasks) > 0 {
-			// A task id becomes a worktree path component and a git branch ref, and
-			// dep references are matched against task ids by the bus auto-unblock.
+			// A task id becomes a worktree path component and a git branch ref.
 			// The id comes from the (local) tech-lead model, so normalize every id
-			// and dep through the same slug: a malformed id can't escape the
-			// worktree root or break ref creation, and ids stay consistent with the
-			// deps that reference them. Realistic ids (a, backend, csv-export) are
-			// unchanged by slug.
+			// through slug: a malformed id can't escape the worktree root or break
+			// ref creation. Realistic ids (a, backend, csv-export) are unchanged.
 			seen := make(map[string]bool, len(tasks))
 			for i := range tasks {
 				tasks[i].ID = slug(tasks[i].ID)
-				for j := range tasks[i].Deps {
-					tasks[i].Deps[j] = slug(tasks[i].Deps[j])
-				}
 				// Ensure ids are UNIQUE: a task id keys the brief, the bus agent, the
 				// worktree dir, and the git branch — a collision (more likely now that
 				// one partition spans multiple repos) would silently overwrite the
-				// first. Suffix duplicates; deps still resolve to the first occurrence
-				// (the bus auto-unblock is a best-effort hint, not a hard dependency).
+				// first. Suffix duplicates.
 				base, uid := tasks[i].ID, tasks[i].ID
 				for k := 2; seen[uid]; k++ {
 					uid = fmt.Sprintf("%s-%d", base, k)
