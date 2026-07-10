@@ -140,16 +140,37 @@ type attemptOutcome struct {
 	sessionID string
 }
 
-// addUsage folds one leg's raw token counts into this outcome. A resume (a
-// usage-limit or connection-loss pause) throws away everything about the dead
-// leg EXCEPT the tokens it already burned — those were really spent, so the
-// final outcome must report the SUM across all legs, or cost/telemetry silently
-// understates every interrupted attempt.
-func (out *attemptOutcome) addUsage(leg attemptOutcome) {
+// mergeLeg folds one resume leg's outcome into this one. A resume (a usage-limit
+// or connection-loss pause) throws away most of the dead leg, but three things
+// survive and must merge or the resolving outcome misreports the attempt:
+//   - raw token counts SUM (they were really spent, or cost/telemetry understates
+//     every interrupted attempt),
+//   - sawTool OR-s (a pre-pause leg that already used a tool did real work, even
+//     if the resumed leg only emitted a summary — the r123 false-refusal),
+//   - allText JOINs with "\n" (so captureIncidents sees pre-pause self-reports
+//     that live in a leg discarded before it resolved).
+//
+// lastText/partition/sessionID keep the resolving leg's values (set by the caller
+// on the surviving outcome), not the dead leg's.
+func (out *attemptOutcome) mergeLeg(leg attemptOutcome) {
 	out.tokens += leg.tokens
 	out.inputTokens += leg.inputTokens
 	out.cacheReadTokens += leg.cacheReadTokens
 	out.cacheWriteTokens += leg.cacheWriteTokens
+	out.sawTool = out.sawTool || leg.sawTool
+	out.allText = joinNonEmpty(out.allText, leg.allText)
+}
+
+// joinNonEmpty joins two text blocks with a newline, dropping empties so a leg
+// that produced no text doesn't inject a leading/trailing blank line.
+func joinNonEmpty(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return a + "\n" + b
 }
 
 // terminalFailed reports that the spawn reached a NON-success terminal: it failed
@@ -353,7 +374,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 				appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
 					"usage limit reached (pause %d) — resuming at %s", repaused, resetAt.UTC().Format(time.RFC3339))}, 0)
 			})
-			priorLegs.addUsage(out)
+			priorLegs.mergeLeg(out)
 			resumeInPlace()
 			continue
 		}
@@ -376,7 +397,7 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 				appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
 					"connection lost (pause %d, streak %d) — retrying at %s", repaused, infraStreak, resumeAt.UTC().Format(time.RFC3339))}, 0)
 			})
-			priorLegs.addUsage(out)
+			priorLegs.mergeLeg(out)
 			resumeInPlace()
 			if systemic {
 				continue // fleet-gated: the awaitLimit at the top of the loop handles the wait
@@ -393,8 +414,8 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// agent — run coders/tech-lead, quest-lead, campaign leads — funnels through
 		// here, so this is the single choke point where a non-terminal self-report is
 		// persisted onto the run/quest/campaign the id belongs to.
+		out.mergeLeg(priorLegs)
 		c.captureIncidents(id, agentID, out.allText)
-		out.addUsage(priorLegs)
 		return out
 	}
 }

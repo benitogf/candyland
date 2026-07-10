@@ -107,7 +107,8 @@ func TestSynthPostmortemCarriesMechanism(t *testing.T) {
 func TestFailReviewCarriesMechanism(t *testing.T) {
 	c, _ := newQuestServer(t)
 	id := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{"/repo"}})
-	c.failReview(t.Context(), id, reviewerID, "Review of x did not converge. No PR is opened until review is clean.")
+	const reviewMsg = "Review of x did not converge. No PR is opened until review is clean."
+	c.failReview(t.Context(), id, reviewerID, reviewMsg)
 	q, ok := c.GetQuest(id)
 	if !ok {
 		t.Fatal("quest must exist")
@@ -115,8 +116,8 @@ func TestFailReviewCarriesMechanism(t *testing.T) {
 	if valid, why := validatePostmortem(q.Postmortem); !valid {
 		t.Fatalf("failReview must attach a schema-valid postmortem: %+v (%s)", q.Postmortem, why)
 	}
-	if !strings.Contains(q.Postmortem.RootCauseSoFar, reviewGateMechanism) {
-		t.Errorf("failReview's postmortem must attribute the %q mechanism, got %q", reviewGateMechanism, q.Postmortem.RootCauseSoFar)
+	if !strings.Contains(q.Postmortem.RootCauseSoFar, reviewMsg) {
+		t.Errorf("failReview's postmortem must quote the recorded message verbatim, got %q", q.Postmortem.RootCauseSoFar)
 	}
 }
 

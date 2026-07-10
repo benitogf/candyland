@@ -890,37 +890,14 @@ func deliveredPRs(prs []run.PR) int {
 	return opened
 }
 
-// Token weights approximate Anthropic's relative per-token cost so a single
-// "weighted token" figure is comparable across cache-heavy and output-heavy work:
-// output dominates, a fresh input token is the unit, a cache WRITE costs a little
-// more, and a cache READ is nearly free. Scaled ×100 so two decimals of weight ride
-// in integer math without floats. The gate compares weighted usage — not a raw sum
-// that would treat a cheap cache-read the same as a costly output token.
-const (
-	weightInput      = 100 // 1.00× — the unit
-	weightCacheRead  = 10  // 0.10× — nearly free
-	weightCacheWrite = 125 // 1.25× — a little over a fresh input token
-	weightOutput     = 500 // 5.00× — the dominant cost
-)
-
-// weightedTokens collapses the raw (UNSCALED) usage split into one cost-comparable
-// figure using the weights above.
-func weightedTokens(inputTok, cacheReadTok, cacheWriteTok, outputTok int) int {
-	weighted := inputTok*weightInput + cacheReadTok*weightCacheRead +
-		cacheWriteTok*weightCacheWrite + outputTok*weightOutput
-	return weighted / 100
-}
-
 // runWeightedTokens sums the weighted usage across a run's agents — the figure the
-// weighted-budget gate compares against the run's budget.
+// weighted-budget gate compares against the run's budget. It delegates to the
+// canonical run.WeightedTokens so the gate reasons in the SAME unit the budget is
+// expressed in (weighted output-basis KTOKENS), not raw weighted units — a raw-unit
+// comparison against a ktok budget trips the gate ~1000× too early (the r130 unit
+// mismatch: 1 output ktok is 1000 raw output tokens, far exceeding a 900-ktok cap).
 func runWeightedTokens(r run.Run) int {
-	total := 0
-	for _, a := range r.Agents {
-		// a.Tokens is output tokens scaled down by 1000 (display units); recover the
-		// raw count so it weighs on the same unscaled basis as the input/cache fields.
-		total += weightedTokens(a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.Tokens*1000)
-	}
-	return total
+	return r.WeightedTokens()
 }
 
 // budgetExceeded is the weighted-budget gate: an allowance is spent when WEIGHTED
@@ -1726,9 +1703,15 @@ func fileOnBranch(ctx context.Context, dir, branch, file string) bool {
 // via blockCampaign — so the level-agnostic review primitive records honestly at
 // every level rather than assuming a run.
 func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string) {
+	// A failReview block carries its recorded message VERBATIM as the postmortem
+	// mechanism (settled decision), falling back to the generic review-gate label
+	// only when the message is empty. The run-level path (r123's driving shape) must
+	// attribute the mechanism too, so attach the postmortem here before fail's
+	// generic synth would run — fail only synthesises when none is present.
+	mechanism := firstNonEmpty(msg, reviewGateMechanism)
 	switch {
 	case strings.HasPrefix(hostID, "q"):
-		c.attachQuestPostmortem(hostID, agentID, msg, msg, reviewGateMechanism)
+		c.attachQuestPostmortem(hostID, agentID, msg, msg, mechanism)
 		c.UpdateQuest(hostID, func(q *run.Quest) {
 			if q.Status == "stopped" || q.Status == "done" {
 				return
@@ -1739,6 +1722,9 @@ func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string)
 	case strings.HasPrefix(hostID, "c"):
 		c.blockCampaign(hostID, msg)
 	default:
+		if cur, ok := c.Get(hostID); ok && cur.Postmortem == nil {
+			c.attachRunPostmortem(hostID, c.blockerPostmortemFor(agentID, "", msg, msg, 1, "branch "+cur.Branch, mechanism))
+		}
 		fail(ctx, c, hostID, agentID, msg)
 	}
 }
@@ -1818,7 +1804,13 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 		c.failReview(ctx, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
 		return false, out.tokens
 	}
-	if !out.sawTool {
+	// Delivery ground truth is the worktree, not the stream. A limit/connection
+	// pause can resume and emit only a summary (sawTool=false on the resolving leg)
+	// while the real edits sit committed-pending in integDir — the r123 false
+	// refusal. Judge on `git status --porcelain` of integDir: empty ⇒ genuinely no
+	// changes ⇒ refuse; non-empty ⇒ real work landed ⇒ commit + deliver. sawTool
+	// stays in diagnostics but must not gate delivery.
+	if !hasChanges(ctx, integDir) {
 		c.failReview(ctx, id, reviewerID, "The fix pass made no changes for the review findings in "+repoBase(repo)+" — refusing to open a PR with open blockers.")
 		return false, out.tokens
 	}

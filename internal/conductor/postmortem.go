@@ -61,10 +61,11 @@ func parsePostmortem(text string) (*run.Postmortem, bool) {
 	return pm, pm != nil
 }
 
-// reviewGateMechanism labels a terminal block that came through failReview — the
-// single review-phase choke point. It is the mechanism string a synthesised
-// postmortem carries so a reader can attribute which conductor mechanism produced
-// the block, not just the capability that failed under it.
+// reviewGateMechanism labels a terminal block that came through failReview when no
+// more specific failure message is available. failReview normally carries its
+// recorded message VERBATIM as the mechanism (the settled decision — the reader
+// sees exactly why the gate blocked, e.g. the r123 false-refusal text), and falls
+// back to this label only when that message is empty.
 const reviewGateMechanism = "review gate"
 
 // synthPostmortem builds a schema-valid postmortem from the attempt data the
@@ -98,7 +99,9 @@ func synthRootCause(agentID, mechanism string) string {
 	if mechanism == "" {
 		return "a capability outside the repo failed for agent " + agentID + "; no decision could resolve it (§1)"
 	}
-	return "the " + mechanism + " mechanism blocked agent " + agentID + "; no decision could resolve it (§1)"
+	// Quote the mechanism verbatim (the recorded failReview message) so the reader
+	// sees exactly why the block happened, not a generic classification.
+	return mechanism + " (agent " + agentID + "; §1)"
 }
 
 // attachRunPostmortem persists a postmortem on a run's record ONLY when it is

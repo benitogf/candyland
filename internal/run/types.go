@@ -31,30 +31,40 @@ type Event struct {
 }
 
 // Token weights collapse the raw usage split into one cost-proportional number.
-// They mirror Anthropic's per-token price ratios relative to a base input token:
-// a cache read is far cheaper (0.1×), a cache write slightly dearer (1.25×), and
-// output much dearer (5×). Weighted accounting is what budgets and rollups should
+// They are Anthropic's per-token price ratios relative to an OUTPUT token (output
+// is the unit, weight 1.0): input is 0.2×, a cache write 0.25×, and a cache read
+// far cheaper at 0.02×. Weighted accounting is what budgets and rollups should
 // reason over — a flat per-token count treats a cheap cache hit the same as an
-// expensive output token and so misstates real spend.
+// expensive output token and so misstates real spend. Expressing weights on the
+// output basis keeps `weightedTokens` in the SAME unit as the flat `tokensUsed`
+// (output ktokens), so the budget gate and the ktok display agree.
 const (
-	WeightInput         = 1.0
-	WeightCacheRead     = 0.1
-	WeightCacheCreation = 1.25
-	WeightOutput        = 5.0
+	WeightInput         = 0.2
+	WeightCacheRead     = 0.02
+	WeightCacheCreation = 0.25
+	WeightOutput        = 1.0
 )
 
-// CostPerWeightedToken is USD per weighted token. It preserves the previous flat
-// model's output pricing ($0.012 per 1000 output tokens → $12/M) now applied to
-// the weighted total, so weighted cost stays comparable to the old flat estimate.
-const CostPerWeightedToken = 0.000012
+// CostPerKtokOutput is the settled USD price of one thousand output tokens for the
+// default model tier. Weighted tokens are already on the output basis and in
+// ktokens, so cost = weightedTokens × this price.
+const CostPerKtokOutput = 0.075
 
 // WeightedTokens collapses a raw usage split into one cost-proportional token
-// count using the Weight* ratios. All inputs are UNSCALED raw token counts.
+// count in KTOKENS on the output basis (output weight 1.0). All inputs are
+// UNSCALED raw token counts; the /1000 keeps the result in the same ktok unit as
+// the flat tokensUsed display so the budget gate can compare them directly.
 func WeightedTokens(input, cacheRead, cacheCreation, output int) int {
-	return int(WeightInput*float64(input) +
+	weightedRaw := WeightInput*float64(input) +
 		WeightCacheRead*float64(cacheRead) +
 		WeightCacheCreation*float64(cacheCreation) +
-		WeightOutput*float64(output))
+		WeightOutput*float64(output)
+	return int(weightedRaw / 1000)
+}
+
+// WeightedCostUsd is the USD cost of a weighted-ktok total at the settled output price.
+func WeightedCostUsd(weightedKtok int) float64 {
+	return float64(weightedKtok) * CostPerKtokOutput
 }
 
 // TokenAccounting is the weighted token breakdown for an agent-bearing entity:
@@ -118,7 +128,7 @@ func (a Agent) TokenAccounting() TokenAccounting {
 		CacheCreationTokens: a.CacheCreationTokens,
 		OutputTokens:        a.outputTokens(),
 		WeightedTokens:      a.WeightedTokens(),
-		CostUsd:             float64(a.WeightedTokens()) * CostPerWeightedToken,
+		CostUsd:             WeightedCostUsd(a.WeightedTokens()),
 	}
 }
 
@@ -134,7 +144,7 @@ func SumTokenAccounting(agents []Agent) TokenAccounting {
 		acc.OutputTokens += a.outputTokens()
 	}
 	acc.WeightedTokens = WeightedTokens(acc.InputTokens, acc.CacheReadTokens, acc.CacheCreationTokens, acc.OutputTokens)
-	acc.CostUsd = float64(acc.WeightedTokens) * CostPerWeightedToken
+	acc.CostUsd = WeightedCostUsd(acc.WeightedTokens)
 	return acc
 }
 
@@ -272,12 +282,17 @@ type Run struct {
 	TokensUsed   int     `json:"tokensUsed"`
 	TokensBudget int     `json:"tokensBudget"`
 	CostUsd      float64 `json:"costUsd"`
-	TasksGreen   int     `json:"tasksGreen"`
-	TasksTotal   int     `json:"tasksTotal"`
-	HasDag       bool    `json:"hasDag"`
-	Agents       []Agent `json:"agents"`
-	Tasks        []Task  `json:"tasks"`
-	Executor     string  `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
+	// Accounting is the run's weighted token breakdown (raw split, weighted total,
+	// corrected cost) rolled up across its agents — served on the record itself so
+	// the UI reads weighted tokens and the corrected cost without a side call and
+	// without a client-side weighting that could disagree with the budget gate.
+	Accounting TokenAccounting `json:"accounting"`
+	TasksGreen int             `json:"tasksGreen"`
+	TasksTotal int             `json:"tasksTotal"`
+	HasDag     bool            `json:"hasDag"`
+	Agents     []Agent         `json:"agents"`
+	Tasks      []Task          `json:"tasks"`
+	Executor   string          `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
 	// L2 telemetry (persisted, API-readable so /learn mines structure not logs):
 	// ReviewRounds is how many review→fix→re-review rounds the run ran; Escalations
 	// is the recorded upward decision-escalation audit trail; Postmortem is the

@@ -514,11 +514,15 @@ func (c *Conductor) Create(spec run.Spec) string {
 		// Deliver/TargetPR ride from the spec so a standalone run can update an
 		// existing PR in place (feedback/review) instead of always opening a new
 		// one. Empty Deliver stays "pr" (the default new-PR-per-repo delivery).
-		Deliver:      spec.Deliver,
-		TargetPR:     spec.TargetPR,
-		Status:       "planning",
-		Phase:        0,
-		TokensBudget: 900,
+		Deliver:  spec.Deliver,
+		TargetPR: spec.TargetPR,
+		Status:   "planning",
+		Phase:    0,
+		// Weighted-ktok budget. The gate now reasons in weighted output-basis ktokens
+		// (run.WeightedTokens), where a typical cache-heavy attempt weighs ≈12× its flat
+		// output ktok. Rescaled ×12 from the previous flat-900 so real-terms behavior is
+		// unchanged for a typical cache profile while the gate reads the true weighted cost.
+		TokensBudget: 10800,
 		Tasks:        []run.Task{},
 		Agents:       []run.Agent{},
 		Executor:     "claude",
