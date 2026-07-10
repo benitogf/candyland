@@ -93,3 +93,84 @@ func TestCleanVerdictHedgeScanConfinedToVerdictBlock(t *testing.T) {
 		t.Error("a blocker-class admission anywhere in the prose must still bounce")
 	}
 }
+
+// The ground-truth delivery gate counts a PR as delivered ONLY on a real URL with no
+// recorded error — never an optimistic or half-written record.
+func TestDeliveredPRs(t *testing.T) {
+	prs := []run.PR{
+		{Repo: "a", URL: "https://github.com/x/a/pull/1"}, // delivered
+		{Repo: "b", Err: "push failed"},                   // failed — no URL
+		{Repo: "c"},                                       // neither — not delivered
+		{Repo: "d", URL: "https://github.com/x/d/pull/2", Err: "half-written"}, // URL but errored — rejected
+	}
+	if got := deliveredPRs(prs); got != 1 {
+		t.Fatalf("deliveredPRs = %d, want 1 (only the clean URL counts)", got)
+	}
+	if got := deliveredPRs(nil); got != 0 {
+		t.Fatalf("deliveredPRs(nil) = %d, want 0", got)
+	}
+}
+
+// weightedTokens applies the relative per-class weights: input 1.00, cache-read
+// 0.10, cache-write 1.25, output 5.00.
+func TestWeightedTokens(t *testing.T) {
+	cases := []struct {
+		name                                 string
+		in, cacheRead, cacheWrite, out, want int
+	}{
+		{"input only", 100, 0, 0, 0, 100},
+		{"cache-read is nearly free", 0, 100, 0, 0, 10},
+		{"cache-write costs a bit more", 0, 0, 100, 0, 125},
+		{"output dominates", 0, 0, 0, 100, 500},
+		{"mixed", 100, 100, 100, 100, 100 + 10 + 125 + 500},
+		{"zero usage", 0, 0, 0, 0, 0},
+	}
+	for _, tc := range cases {
+		if got := weightedTokens(tc.in, tc.cacheRead, tc.cacheWrite, tc.out); got != tc.want {
+			t.Errorf("%s: weightedTokens = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// budgetExceeded gates at-or-over the budget; a zero/negative budget never gates.
+func TestBudgetExceeded(t *testing.T) {
+	if budgetExceeded(1_000_000, 0) {
+		t.Error("a zero budget must be treated as no cap, never tripped")
+	}
+	if budgetExceeded(1_000_000, -1) {
+		t.Error("a negative budget must be treated as no cap")
+	}
+	if budgetExceeded(99, 100) {
+		t.Error("usage under budget must not trip the gate")
+	}
+	if !budgetExceeded(100, 100) {
+		t.Error("usage exactly at budget must trip the gate")
+	}
+	if !budgetExceeded(101, 100) {
+		t.Error("usage over budget must trip the gate")
+	}
+}
+
+// weightedBudgetExceeded weighs the run's per-agent usage split and gates on it —
+// recovering the /1000 output scaling so output weighs on the raw basis.
+func TestWeightedBudgetExceeded(t *testing.T) {
+	r := run.Run{
+		TokensBudget: 5000,
+		Agents: []run.Agent{
+			{InputTokens: 1000, CacheReadTokens: 5000, CacheCreationTokens: 200, Tokens: 1}, // Tokens=1 → 1000 raw output
+		},
+	}
+	// weighted = 1000*1 + 5000*0.1 + 200*1.25 + 1000*5 = 1000 + 500 + 250 + 5000 = 6750
+	if got := runWeightedTokens(r); got != 6750 {
+		t.Fatalf("runWeightedTokens = %d, want 6750", got)
+	}
+	if !weightedBudgetExceeded(r) {
+		t.Error("weighted usage (6750) over budget (5000) must trip the gate")
+	}
+
+	// No budget → never gated, however large the usage.
+	r.TokensBudget = 0
+	if weightedBudgetExceeded(r) {
+		t.Error("a run with no budget must never trip the weighted-budget gate")
+	}
+}
