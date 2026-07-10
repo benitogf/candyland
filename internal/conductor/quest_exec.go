@@ -294,13 +294,14 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	// terminate as "reviewed": if nothing surfaced and the PR was never reviewed,
 	// seed the review itself as the work item so a child run runs against the PR.
 	accepted := acceptedItems(items)
-	// F1: the skip/block TRIAGE decisions enter the ledger too — as WorkItems with
-	// Disposition "skipped" (the writer PR #30 removed). Without this an all-skip
-	// quest recorded nothing and terminated plain "done" (the 2026-07-03 scar: the
-	// exact "looks-done-but-isn't" class). They are recorded whether or not any item
-	// is also accepted, so triage is always durable.
-	skipLedger, skipDecisions := skippedWorkItems(items, tickID)
-	rec.TriageDecisions = append(rec.TriageDecisions, skipDecisions...)
+	// F1: the skip/block TRIAGE decisions enter the ledger too — a "skip" as a benign
+	// Disposition "skipped" (the writer PR #30 removed), a "block" as Disposition
+	// "blocked" that gates the clean terminal (the triage blocker rule). Without this
+	// an all-skip quest recorded nothing and terminated plain "done" (the 2026-07-03
+	// scar: the exact "looks-done-but-isn't" class). They are recorded whether or not
+	// any item is also accepted, so triage is always durable.
+	triageLedger, triageDecisions := triagedWorkItems(items, tickID)
+	rec.TriageDecisions = append(rec.TriageDecisions, triageDecisions...)
 
 	if len(items) == 0 || len(accepted) == 0 {
 		if retry := resurfaceBlocked(blocked); len(retry) > 0 {
@@ -316,12 +317,12 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		} else {
 			// Record the skip ledger BEFORE finishing so an all-skip quest's surfaced
 			// items are durable and questIsNoOp sees them → surfaced-only, not "done".
-			if len(skipLedger) > 0 {
-				rec.NextAction = "surfaced/skipped only — nothing in-scope to execute — stopping"
+			if len(triageLedger) > 0 {
+				rec.NextAction = "surfaced/triaged only — nothing in-scope to execute — stopping"
 			} else {
 				rec.NextAction = "no work surfaced — stopping"
 			}
-			c.recordTick(id, rec, tokens, skipLedger)
+			c.recordTick(id, rec, tokens, triageLedger)
 			c.finishQuest(ctx, id)
 			return false
 		}
@@ -345,7 +346,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 			delivered[k] = true
 		}
 	}
-	ledger := skipLedger
+	ledger := triageLedger
 	deduped := 0
 	for i, it := range accepted {
 		w := run.WorkItem{
@@ -1237,12 +1238,16 @@ func resurfaceBlocked(blocked map[string]questWorkItem) []questWorkItem {
 	return out
 }
 
-// skippedWorkItems builds the durable ledger for the items triage decided NOT to
-// act on (decision "skip" or "block"). Each becomes a WorkItem with Disposition
-// "skipped" — the writer PR #30 removed (F1). It also returns the triage-decision
-// lines for the tick record. Accepted items ("do"/empty) are excluded (they launch
-// child runs and get their own ledger entries with the launch outcome).
-func skippedWorkItems(items []questWorkItem, tickID string) ([]run.WorkItem, []string) {
+// triagedWorkItems builds the durable ledger for the items triage decided NOT to
+// launch a child run for. A "skip" is BENIGN — surfaced but out of scope — and
+// records Disposition "skipped" (the writer PR #30 removed, F1). A "block" is a
+// triage-declared BLOCKER: the quest lead judged the item as work the loop cannot
+// safely proceed on, so it records Disposition "blocked", which gates a clean
+// terminal exactly like a child-run failure that exhausts its attempts
+// (questTerminalStatus → "blocked", with an E2 postmortem). It also returns the
+// triage-decision lines for the tick record. Accepted items ("do"/empty) are
+// excluded (they launch child runs and get their own ledger entries).
+func triagedWorkItems(items []questWorkItem, tickID string) ([]run.WorkItem, []string) {
 	var ledger []run.WorkItem
 	var decisions []string
 	n := 0
@@ -1251,13 +1256,17 @@ func skippedWorkItems(items []questWorkItem, tickID string) ([]run.WorkItem, []s
 		if d != "skip" && d != "block" {
 			continue
 		}
+		disposition := "skipped"
+		if d == "block" {
+			disposition = "blocked" // a triage block gates the clean terminal, unlike a skip
+		}
 		ledger = append(ledger, run.WorkItem{
 			ID:             fmt.Sprintf("%s-s%d", tickID, n),
 			SourceTick:     tickID,
 			Evidence:       it.Evidence,
 			Classification: it.Classification,
 			Decision:       d,
-			Disposition:    "skipped",
+			Disposition:    disposition,
 		})
 		decisions = append(decisions, it.Title+": "+d)
 		n++
@@ -1525,8 +1534,8 @@ func workItemFailure(t run.Tick, title string) string {
 // but its originating tick recorded one triage-decision line per item —
 // "<title>: do now" per accepted item in launch order, "<title>: skip|block"
 // per skipped item in ledger order — and the item id encodes its index within
-// its kind ("<tick>-w<i>" launched, "<tick>-s<n>" skipped; see runQuestTick /
-// skippedWorkItems). When the derivation misses (foreign id shape, rewritten
+// its kind ("<tick>-w<i>" launched, "<tick>-s<n>" skip/block; see runQuestTick /
+// triagedWorkItems). When the derivation misses (foreign id shape, rewritten
 // history) it falls back to the item's evidence, classification, then id.
 func workItemTitle(w run.WorkItem, t run.Tick) string {
 	title, _ := workItemTitleDerived(w, t)
