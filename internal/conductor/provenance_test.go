@@ -31,11 +31,11 @@ func TestProvenanceFooterDefaultsKindAndOmitsBlankID(t *testing.T) {
 }
 
 func TestProvenanceFooterTrimsWhitespace(t *testing.T) {
-	footer := provenanceFooter("  campaign  ", "  c-1  ")
+	footer := provenanceFooter("  quest  ", "  q-1  ")
 	if strings.Contains(footer, "  ") {
 		t.Errorf("footer must trim whitespace: %q", footer)
 	}
-	if !strings.Contains(footer, "c-1") || !strings.Contains(footer, "campaign") {
+	if !strings.Contains(footer, "q-1") || !strings.Contains(footer, "quest") {
 		t.Errorf("footer lost trimmed values: %q", footer)
 	}
 }
@@ -51,12 +51,5 @@ func TestQuestPRBodyCarriesProvenance(t *testing.T) {
 	body := questPRBody(run.Quest{ID: "q-7", OriginalObjective: "converge"})
 	if !strings.Contains(body, provenanceFooter("quest", "q-7")) {
 		t.Errorf("quest PR body missing provenance footer: %q", body)
-	}
-}
-
-func TestCampaignPRBodyCarriesProvenance(t *testing.T) {
-	body := campaignPRBody(run.Campaign{ID: "c-7", OriginalInput: "ship it"}, run.IntentBrief{}, nil)
-	if !strings.Contains(body, provenanceFooter("campaign", "c-7")) {
-		t.Errorf("campaign PR body missing provenance footer: %q", body)
 	}
 }

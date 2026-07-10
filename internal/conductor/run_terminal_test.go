@@ -9,7 +9,7 @@ import (
 )
 
 // c-terminal-fidelity: branchDeliveryPushed counts only landed (empty-Err) branch
-// records — zero means the child pushed nothing onto the campaign branch.
+// records — zero means the child pushed nothing onto the quest branch.
 func TestBranchDeliveryPushed(t *testing.T) {
 	if n := branchDeliveryPushed(nil); n != 0 {
 		t.Errorf("no records → 0 pushed, got %d", n)
@@ -35,8 +35,8 @@ func removeOrigin(t *testing.T, repo string) {
 	}
 }
 
-// c-terminal-fidelity: a branch-delivered (campaign/quest-owned) child whose push
-// onto the campaign branch fails for EVERY repo must NOT be a silent success — it
+// c-terminal-fidelity: a branch-delivered (quest-owned) child whose push
+// onto the quest branch fails for EVERY repo must NOT be a silent success — it
 // records an honest delivery error, blocks the tech lead, never claims the terminal
 // PR phase, and carries a schema-valid postmortem (E2). The push fails because the
 // repo's 'origin' remote is removed before the run delivers.
@@ -47,7 +47,7 @@ func TestBranchDeliveryPushFailureNeverSilentSuccess(t *testing.T) {
 	id := c.Create(run.Spec{Prompt: "do the thing", Folders: []string{repo}})
 	c.Update(id, func(r *run.Run) {
 		r.Deliver = run.DeliverBranch
-		r.Branch = "campaign/x"
+		r.Branch = "quest/x"
 	})
 	c.Begin(id)
 

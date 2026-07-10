@@ -119,7 +119,7 @@ func (c *Conductor) ArchiveQuest(id string) bool {
 }
 
 // stopChildRuns halts every still-live run in the set (cascade from a stopped
-// quest or campaign). Command reaches only tracked runs with a live executor;
+// quest). Command reaches only tracked runs with a live executor;
 // terminal/untracked children have already finished and are skipped.
 func (c *Conductor) stopChildRuns(runs []run.Run) {
 	for _, r := range runs {
@@ -242,7 +242,7 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 		return false // paused/stopped mid-discovery — not a failure
 	}
 	// q4 fix — own-artifacts triage guard: drop any surfaced item that points at the
-	// loop's OWN delivery artifacts (its quest/<id> or campaign/<id> branch, or a PR
+	// loop's OWN delivery artifacts (its quest/<id> branch, or a PR
 	// it already opened). Without it, discovery re-surfaces the quest's own PR/branch
 	// as new work and the loop feeds on itself (q4 ticks 3–10 reconcile/supersede).
 	items = dropOwnArtifacts(q, items)
@@ -250,8 +250,8 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	if perr != "" {
 		rec.Blockers = append(rec.Blockers, perr)
 		// E3: escalate this give-up exactly ONE tier up BEFORE any terminal block — a
-		// campaign-child quest → the campaign tech-manager; a standalone quest → the
-		// quest-lead itself (the top tier), decided autonomously and recorded, never a
+		// standalone quest escalates to the quest-lead itself (the top tier), decided
+		// autonomously and recorded, never a
 		// human. A RESOLVED decision that is not a block → finish honestly (the tier
 		// with authority chose to stop with what was surfaced) rather than hard-block.
 		// An UNRESOLVED escalation (the same wall at the decider — e.g. a real
@@ -339,11 +339,6 @@ func (c *Conductor) runQuestTick(ctx context.Context, id string, tick int, itemA
 	delivered := deliveredTitles(q)
 	if delivered != nil && !questBranchExists(ctx, q) {
 		delivered = nil // shared branch gone — its delivered ledger no longer on disk; re-execute, don't dedup
-	}
-	if delivered != nil && q.CampaignID != "" {
-		for k := range c.campaignDeliveredTitles(q.CampaignID, q) {
-			delivered[k] = true
-		}
 	}
 	ledger := skipLedger
 	deduped := 0
@@ -536,7 +531,7 @@ func (c *Conductor) streamQuestLead(ctx context.Context, questID, workdir string
 
 // launchChildRun creates and drives ONE child run for an accepted work item using
 // the EXISTING run flow (Create → ClaudeExecutor), with QuestID set and delivery
-// per the quest's Deliver: standalone (pr) opens its own PR; campaign-owned
+// per the quest's Deliver: perFinding (pr) opens its own PR; converge
 // (branch) commits onto QuestBranch and opens no PR. It blocks until the child run
 // reaches a terminal state (or the quest is paused/stopped), then returns the
 // child id, any PRs it opened, and an error string when the child failed.
@@ -576,17 +571,16 @@ func (c *Conductor) launchChildRun(ctx context.Context, q run.Quest, it questWor
 
 // linkQuestChild creates a child run and stamps its parent link AND delivery mode
 // at launch (O3 both-way linkage + O5 deliver serialized), so the child carries
-// QuestID/CampaignID and a CONCRETE deliver value the moment it exists — never an
-// empty deliver the frontend can't key on. A campaign-owned quest (QuestBranch
-// non-empty) delivers onto the shared branch (Deliver=branch, no PR); a standalone
-// quest child opens its own PR (Deliver=pr, the types.go:163 default made explicit).
-// The parent-side link is the WorkItem.ChildRunID ledger recorded by the tick.
+// QuestID and a CONCRETE deliver value the moment it exists — never an empty
+// deliver the frontend can't key on. A converge quest (QuestBranch non-empty)
+// delivers onto the shared branch (Deliver=branch, no PR); a perFinding quest
+// child opens its own PR (Deliver=pr, the default made explicit). The parent-side
+// link is the WorkItem.ChildRunID ledger recorded by the tick.
 func (c *Conductor) linkQuestChild(q run.Quest, spec run.Spec) string {
 	childID := c.Create(spec)
 	branch := QuestBranch(q)
 	c.Update(childID, func(r *run.Run) {
 		r.QuestID = q.ID
-		r.CampaignID = q.CampaignID
 		switch {
 		case q.Deliver == run.DeliverFeedback || q.Deliver == run.DeliverReview:
 			// Update an EXISTING PR in place (feedback) / produce findings, no new PR
@@ -598,18 +592,18 @@ func (c *Conductor) linkQuestChild(q run.Quest, spec run.Spec) string {
 			r.Branch = branch
 			r.Deliver = run.DeliverBranch // commit onto the shared branch, open no PR
 		default:
-			r.Deliver = run.DeliverPR // standalone: open its own PR (serialized, not empty)
+			r.Deliver = run.DeliverPR // perFinding: open its own PR (serialized, not empty)
 		}
 	})
 	return childID
 }
 
 // childRunPRs returns the PRs a finished child run produced. A branch-delivered
-// (campaign-owned) child opens no PR — its work is a commit on the shared branch,
+// (converge) child opens no PR — its work is a commit on the shared branch,
 // reported as a PR-less record so the tick still shows what landed.
 func childRunPRs(r run.Run, branch string) []run.PR {
 	if branch != "" {
-		return nil // campaign-owned: commit onto the shared branch, no PR
+		return nil // converge: commit onto the shared branch, no PR
 	}
 	return append([]run.PR(nil), r.PRs...)
 }
@@ -629,10 +623,10 @@ func (c *Conductor) recordTick(id string, rec run.Tick, addTokens int, items []r
 	})
 }
 
-// finishQuest moves a quest to its terminal state. A standalone CONVERGE quest
-// first opens ONE PR per impacted repo from its quest/<id> branch (the campaign
-// delivery shape, via openBranchPRs) — its child runs accumulated their commits
-// there with no per-finding PRs. A perFinding/feedback/review/campaign-child quest
+// finishQuest moves a quest to its terminal state. A CONVERGE quest
+// first opens ONE PR per impacted repo from its quest/<id> branch (via
+// openBranchPRs) — its child runs accumulated their commits
+// there with no per-finding PRs. A perFinding/feedback/review quest
 // has already delivered per child run, so no terminal PR opens. It then chooses
 // between plain "done" and the distinct "surfaced-only" no-op state (Q2). A
 // concurrent Stop is authoritative and left alone.
@@ -641,12 +635,11 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 	if !ok {
 		return
 	}
-	// Quest DELIVERY GATE: before any PR opens (standalone) or the campaign
-	// collects the branch (campaign-owned), hard-review the quest's shared branch with
-	// the same review→fix→re-review primitive the run gate uses. A clean gate proceeds;
+	// Quest DELIVERY GATE: before any PR opens, hard-review the quest's shared branch
+	// with the same review→fix→re-review primitive the run gate uses. A clean gate proceeds;
 	// a non-convergent citable review blocks; structural findings requeue as pre-
-	// accepted review-gap child runs and the gate re-runs. Only runs for a quest that
-	// delivered work onto a shared branch (converge / campaign-owned).
+	// accepted review-gap child runs and the gate re-runs. Only runs for a converge quest
+	// that delivered work onto its shared branch.
 	if branch := QuestBranch(q); branch != "" && (q.ItemsCompleted > 0 || q.ItemsDeduped > 0) {
 		if !c.questDeliveryGate(ctx, id) {
 			return // gate blocked/requeued (recorded) — never deliver un-reviewed work
@@ -685,15 +678,6 @@ func (c *Conductor) finishQuest(ctx context.Context, id string) {
 // of the shared branch. Returns true to proceed to delivery; false when the
 // gate blocked the quest (recorded) or its structural-remediation could not converge.
 func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
-	// A campaign-owned quest shares campaign/<CampaignID> with sibling quests that may
-	// still be committing to it concurrently. Gating (and force-pointing) that shared
-	// branch here would race them and orphan their commits. Campaign gate 2
-	// (campaignGate2Review) reviews the converged campaign branch race-free
-	// after ALL child quests finish, so campaign-owned branch delivery is still gated
-	// by the same review primitive — just at the safe single-writer point. Skip here.
-	if q, ok := c.GetQuest(id); ok && q.CampaignID != "" {
-		return true
-	}
 	for attempt := range maxReviewRounds() {
 		if ctx.Err() != nil {
 			return false
@@ -735,16 +719,11 @@ func (c *Conductor) questDeliveryGate(ctx context.Context, id string) bool {
 			return true
 		}
 		fixModel, fixThinking := c.agentConfig(RoleFix)
-		// A standalone quest has no higher layer to contradict, so its root-intent
-		// channel stays DISARMED (rootIntent == "") — questGateTaskIntent always renders
+		// A quest has no higher layer to contradict, so its root-intent channel stays
+		// DISARMED (rootIntent == "") — questGateTaskIntent always renders
 		// scope/safety/verify lines after the objective, so the render rule's equality
 		// disarm would never fire (the same hazard fanOut handles for standalone runs).
-		// Only a campaign-owned quest carries a genuine root layer.
-		rootIntent := ""
-		if q.CampaignID != "" {
-			rootIntent = c.rootIntentFor(q.ID)
-		}
-		clean, structural := c.reviewUntilClean(ctx, q.ID, delivered, branch, questGateTaskIntent(q), rootIntent, fixModel, fixThinking)
+		clean, structural := c.reviewUntilClean(ctx, q.ID, delivered, branch, questGateTaskIntent(q), "", fixModel, fixThinking)
 		gateCleanup(ctx, delivered, wtRoot)
 		if ctx.Err() != nil {
 			return false
@@ -911,8 +890,7 @@ func mergeTerminalPRs(existing, fresh []run.PR) []run.PR {
 }
 
 // questPRTitle is the title of a converge quest's terminal PR: its display Title,
-// else the first line of its objective, truncated (the prTitle/campaignPRTitle
-// primitive).
+// else the first line of its objective, truncated (the prTitle primitive).
 func questPRTitle(q run.Quest) string {
 	if t := strings.TrimSpace(q.Title); t != "" {
 		return truncate(t, 72)
@@ -951,8 +929,7 @@ func questIsNoOp(q *run.Quest) bool {
 // questDeliveryFailed reports whether a converge quest attempted its terminal
 // per-repo PR delivery and EVERY attempt errored (PRs recorded, none opened). A
 // quest that completed work but could push/open no PR delivered nothing — it must
-// terminate "delivery-failed", never "done" (mirrors the campaign, which routes a
-// no-PR-opened delivery to a non-done terminal via blockCampaign). A branch/
+// terminate "delivery-failed", never "done". A branch/
 // feedback/review/perFinding quest records no terminal q.PRs, so this is false for
 // them. Partial-failure isolation: one opened PR makes the delivery a real (partial)
 // success.
@@ -1178,33 +1155,6 @@ func deliveredTitles(q run.Quest) map[string]bool {
 	return done
 }
 
-// campaignDeliveredTitles unions deliveredTitles across the child quests of the
-// campaign whose folder scope OVERLAPS forQuest's, so forQuest's tick dedups work a
-// sibling — or a prior generation of itself — already delivered onto the shared
-// campaign branch within the SAME scope. This is the cross-quest half of
-// objective-met dedup (the 2026-07-07 incident: one objective re-executed by runs
-// from quests that did not own it).
-//
-// The folder-scope filter is load-bearing: the dedup key is title-only, so without
-// it two genuinely distinct items in a multi-repo campaign that share a generic
-// title (e.g. "update dependencies") — one delivered in repo A, one still to do in
-// repo B — would collide and the second be skipped as already-done. Restricting the
-// union to siblings whose scope intersects forQuest's keeps a cross-repo title
-// collision from silently dropping real work; the failure direction of the filter
-// is to under-dedup (re-execute), never to over-skip.
-func (c *Conductor) campaignDeliveredTitles(campaignID string, forQuest run.Quest) map[string]bool {
-	out := map[string]bool{}
-	for _, q := range c.CampaignChildQuests(campaignID) {
-		if !foldersIntersect(q.Folders, forQuest.Folders) {
-			continue // a different scope — its titles are not evidence forQuest delivered its own
-		}
-		for k := range deliveredTitles(q) {
-			out[k] = true
-		}
-	}
-	return out
-}
-
 // questBranchExists reports whether the quest's shared delivery branch still
 // exists in its primary repo. Objective-met dedup trusts the ledger only while
 // the branch holding the delivered commits is actually present — a reset or
@@ -1266,7 +1216,7 @@ func skippedWorkItems(items []questWorkItem, tickID string) ([]run.WorkItem, []s
 }
 
 // ownArtifactTokens are the lowercased strings that identify a quest's OWN delivery
-// artifacts: its shared branch (quest/<id> or campaign/<id>) and every PR URL it has
+// artifacts: its shared branch (quest/<id>) and every PR URL it has
 // already opened (on prior ticks or its terminal delivery). A surfaced work item that
 // mentions any of these is the loop rediscovering its own output.
 func ownArtifactTokens(q run.Quest) []string {
@@ -1604,8 +1554,8 @@ func openedPRURLs(q run.Quest) []string {
 
 // childRunPrompt is the prompt for the child run launched to do one work item. It
 // frames the item against the quest's objective/scope/safety + verification so the
-// child run's tech-lead/coders inherit the quest's bounds. A campaign-owned child
-// commits onto the shared branch and opens no PR; a standalone child opens its own.
+// child run's tech-lead/coders inherit the quest's bounds. A converge child
+// commits onto the shared branch and opens no PR; a perFinding child opens its own.
 func childRunPrompt(q run.Quest, it questWorkItem) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", it.Title)

@@ -13,15 +13,14 @@ import (
 // the exact snapshot the item's dashboard page reads. "task" is the label the UI
 // gives runs; "run" is accepted as an alias so either form resolves.
 var referenceCollections = map[string]string{
-	"task":     "runs",
-	"run":      "runs",
-	"quest":    "quests",
-	"campaign": "campaigns",
+	"task":  "runs",
+	"run":   "runs",
+	"quest": "quests",
 }
 
 // registerReference mounts GET /api/reference/{kind}/{id}. This is the resolver
 // behind the one-click copy-reference control: fetching the copied URL returns
-// the item's stored snapshot (the same JSON /api/runs|quests|campaigns/{id}
+// the item's stored snapshot (the same JSON /api/runs|quests/{id}
 // serve), so a handle pasted into a VSCode Claude session resolves to the run's
 // stored data. Served from storage so it works for finished/untracked items too.
 func registerReference(server *ooo.Server) {

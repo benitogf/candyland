@@ -48,8 +48,8 @@ var questTickClaude = stubClaude(
 
 // The ORACLE for the CONVERGE policy (the default, a bounded quest): the child run
 // accumulates its commits onto the quest's own branch (quest/<id>) with NO per-child
-// PR, and the quest opens ONE PR per impacted repo at terminal (the campaign delivery
-// shape). Discover → triage → run → review → branch, then one terminal PR.
+// PR, and the quest opens ONE PR per impacted repo at terminal. Discover → triage →
+// run → review → branch, then one terminal PR.
 func TestQuestConvergeOpensOnePRAtTerminal(t *testing.T) {
 	c, repo := deliveryConductor(t, questTickClaude)
 	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))

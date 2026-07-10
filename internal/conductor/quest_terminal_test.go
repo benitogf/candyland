@@ -74,13 +74,12 @@ func TestQuestNothingFoundStampsSummary(t *testing.T) {
 	}
 }
 
-// Q2 carve-out: a branch-delivered quest (campaign-owned, Deliver=branch) that
-// COMPLETED its items with prsOpened:0 is legitimately done — its delivery is the
-// branch commit, not a PR. It must NOT be flagged surfaced-only.
+// Q2 carve-out: a branch-delivered quest (Deliver=branch) that COMPLETED its items
+// with prsOpened:0 is legitimately done — its delivery is the branch commit, not a
+// PR. It must NOT be flagged surfaced-only.
 func TestQuestBranchDeliveryNotSurfacedOnly(t *testing.T) {
 	q := &run.Quest{
 		Deliver:        run.DeliverBranch,
-		CampaignID:     "c1",
 		ItemsCompleted: 2,
 		PRsOpened:      0, // branch delivery opens no PR — legitimate
 	}
@@ -136,37 +135,6 @@ func TestQuestDeliveryFailureNeverDone(t *testing.T) {
 	// A quest that opened no terminal PRs by design (no q.PRs) is not delivery-failed.
 	if questDeliveryFailed(&run.Quest{ItemsCompleted: 1}) {
 		t.Error("a quest with no terminal PRs recorded must not be delivery-failed")
-	}
-}
-
-// O3: a campaign's child run is linked BOTH ways right at launch — the child
-// carries CampaignID, and the parent's RunIDs lists the child — so the rollup is
-// never empty while the campaign runs.
-func TestCampaignChildLinkedBothWaysAtLaunch(t *testing.T) {
-	c, _ := newCampaignServer(t)
-	camID := c.CreateCampaign(run.CampaignSpec{Input: "x", Folders: []string{"/repo"}})
-
-	childID := c.linkCampaignChild(camID, run.Spec{Folders: []string{"/repo"}, Prompt: "do a task", Title: "task"})
-
-	child, ok := c.Get(childID)
-	if !ok {
-		t.Fatalf("child run %q not tracked", childID)
-	}
-	if child.CampaignID != camID {
-		t.Errorf("child CampaignID = %q, want %q (parent link not stamped at launch)", child.CampaignID, camID)
-	}
-	if child.Deliver != run.DeliverBranch {
-		t.Errorf("campaign child Deliver = %q, want branch", child.Deliver)
-	}
-	cam, _ := c.GetCampaign(camID)
-	found := false
-	for _, rid := range cam.RunIDs {
-		if rid == childID {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("parent campaign RunIDs = %v, must list child %q at launch", cam.RunIDs, childID)
 	}
 }
 

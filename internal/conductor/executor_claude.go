@@ -251,7 +251,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	// A standalone run has no higher layer to contradict, so its root-intent channel
 	// stays DISARMED (RootIntent == "") — the render rule would otherwise arm it because
 	// taskIntent carries the "Partitioned tasks…" suffix and would differ from the bare
-	// OriginalIntent. Only a quest/campaign child carries a genuine root layer.
+	// OriginalIntent. Only a quest child carries a genuine root layer.
 	rootIntent := ""
 	if r.QuestID != "" {
 		rootIntent = c.rootIntentFor(id)
@@ -260,8 +260,8 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return // findings unresolved (or stopped) — never open a PR on un-reviewed work
 	}
 
-	// ── Branch delivery (campaign/quest-owned child): the run commits its work onto
-	//    the shared parent branch (quest/<id> or campaign/<id> — the same name in each
+	// ── Branch delivery (quest-owned child): the run commits its work onto
+	//    the shared parent branch (quest/<id> — the same name in each
 	//    impacted repo) and opens NO PR — the parent opens one PR per repo at the end
 	//    (Delivery & PR Policy: children never open PRs). Push the branch so the
 	//    parent can collect the commits; record no PR. ──
@@ -397,11 +397,10 @@ func primaryRepoDir(folders []string, delivered map[string]string, primary run.P
 	return primary.Repo
 }
 
-// deliverToBranch is the delivery step for a campaign/quest-owned child run: it
-// pushes each impacted repo's reviewed work onto the shared parent branch (quest/<id>
-// for a standalone quest's children, campaign/<id> for a campaign's — the same name in
-// each impacted repo) and opens NO pull request (children never open PRs — the parent
-// opens one PR per repo at the end).
+// deliverToBranch is the delivery step for a quest-owned child run: it
+// pushes each impacted repo's reviewed work onto the shared parent branch (quest/<id>,
+// the same name in each impacted repo) and opens NO pull request (children never open
+// PRs — the parent opens one PR per repo at the end).
 // The branch is r.Branch, set by the parent at launch. Pushing it makes the commits
 // collectable by the parent; a push failure is recorded per repo (partial-failure
 // isolation) but never opens a PR. When at least one repo's push lands the run reaches
@@ -410,7 +409,7 @@ func primaryRepoDir(folders []string, delivered map[string]string, primary run.P
 // error and blocks the agent instead of claiming the terminal PR phase.
 func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []string, delivered map[string]string, branch string) {
 	c.Update(id, func(r *run.Run) {
-		r.StatusLine = "Pushing work onto the campaign branch (no PR — the campaign delivers)…"
+		r.StatusLine = "Pushing work onto the quest branch (no PR — the quest delivers)…"
 		setAgentState(r, "tl", "working", "pushing onto "+branch)
 	})
 	prs := make([]run.PR, 0, len(delivered))
@@ -432,13 +431,13 @@ func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []st
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
 		if pushed == 0 {
-			r.Error = "Couldn't push onto the campaign branch " + branch + ". " + firstPRErr(prs) +
+			r.Error = "Couldn't push onto the quest branch " + branch + ". " + firstPRErr(prs) +
 				" Check the repo has an 'origin' remote you can push to."
 			setAgentState(r, "tl", "blocked", "no branch pushed")
 			return
 		}
 		r.Phase = run.PhasePR
-		r.StatusLine = "Committed onto " + branch + " — the campaign will open the PR after intent review."
+		r.StatusLine = "Committed onto " + branch + " — the quest will open the PR after intent review."
 		setAgentState(r, "tl", "done", "committed onto "+branch)
 	})
 	// E2: a delivery-stage block (nothing pushed) carries a schema-valid postmortem,
@@ -728,9 +727,8 @@ func integrateRepo(ctx context.Context, c *Conductor, id, repo, branch, base, re
 		setAgentState(r, "tl", "integrating", "merging the slices")
 	})
 	integDir := filepath.Join(repoWt, "integrate")
-	// A branch-delivered child shares ONE branch with its siblings (quest/<id> or
-	// campaign/<id>, per the parent),
-	// who run sequentially. If the shared branch already carries an earlier child's
+	// A branch-delivered child shares ONE branch with its siblings (quest/<id>, per
+	// the parent), who run sequentially. If the shared branch already carries an earlier child's
 	// commits, base this integration off that tip (resolved to a SHA so a later
 	// branch move doesn't strand the base) so the work ACCUMULATES rather than resets.
 	if cr, _ := c.Get(id); cr.Deliver == run.DeliverBranch {
@@ -1012,8 +1010,8 @@ func fail(ctx context.Context, c *Conductor, id, agentID, msg string) {
 }
 
 // openBranchPRs pushes `branch` and opens ONE PR per impacted repo the branch
-// exists on, in folder order — the shared TERMINAL-delivery shape a campaign
-// (deliverCampaign) and a converge quest (deliverQuest) both use. The PR base is
+// exists on, in folder order — the TERMINAL-delivery shape a converge quest
+// (deliverQuest) uses. The PR base is
 // each repo's DEFAULT branch (q4 fix), never the checkout. Partial-failure
 // isolation: one repo's push/PR failure is recorded on that repo's PR record and
 // never aborts the rest. A repo the branch does not exist on carries no work and is
@@ -1066,15 +1064,15 @@ func prBody(r run.Run) string {
 // PARTITION lines) the resilience layer and the stub tests rely on.
 
 // incidentDoctrine is the shared self-report clause appended to EVERY agent
-// bootstrap (run/quest/campaign, full and fork-slim). It covers TWO classes of
+// bootstrap (run/quest, full and fork-slim). It covers TWO classes of
 // non-terminal event a future run should learn from: (1) a self-acknowledged
 // mistake or doctrine violation — the agent did something wrong, skipped a step,
 // or ignored a rule it was given; and (2) a worked-around problem — a flaky
 // dependency, a stale lockfile, a substitutable missing env var. Neither stops
 // the run, so the agent voluntarily emits an `INCIDENT <json>` line (severity
 // info|warn|error) and keeps going; captureIncidents funnels every such
-// self-report onto the host record's audit trail (run.Incidents / quest /
-// campaign), which /learn later mines.
+// self-report onto the host record's audit trail (run.Incidents / quest),
+// which /learn later mines.
 const incidentDoctrine = " Separate from and additional to any protocol/verdict line you must emit: if at any point you catch yourself in a mistake or doctrine violation (you did something wrong, skipped a step, ignored a rule you were given), OR you work around a non-terminal problem (a flaky dependency, a stale lockfile, a missing env var you can substitute) — anything a future run should learn from but that does NOT stop you — self-report it as one line beginning with `INCIDENT ` followed by JSON " +
 	`{"summary":<one line what happened>,"detail":<optional: what you did about it>,"severity":"info"|"warn"|"error"}` +
 	" and keep working. Never stop for an incident; a genuine blocker is a different thing."
@@ -1377,16 +1375,16 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 	reviewerModel, reviewerThinking := c.agentConfig(RoleReviewer)
 	// isRunHost: a run's own review folds structural findings back into the fix set
 	// (there is no lower tier to decompose them), preserving today's behavior byte-
-	// for-byte. A quest/campaign gate splits them out and returns them for the caller
+	// for-byte. A quest gate splits them out and returns them for the caller
 	// to route to its decomposition owner.
 	isRunHost := !strings.HasPrefix(hostID, "q") && !strings.HasPrefix(hostID, "c")
 	totalRounds := 0
 	// A run records ReviewRounds only on the all-clean path (byte-equivalence);
-	// a quest/campaign gate accumulates GateRounds on every return (cumulative across
+	// a quest gate accumulates GateRounds on every return (cumulative across
 	// re-entries). `clean` is the named result read at defer time.
 	defer func() { c.recordReviewRounds(hostID, totalRounds, clean) }()
 	// The gate review loop's reviewer/repair/fix spawns consume tokens that must count
-	// against a quest/campaign budget (the retired gate-2 spawn did); fold the total
+	// against a quest budget (the retired gate-2 spawn did); fold the total
 	// into TokensUsed on the way out (a no-op at run level, whose tokens are already
 	// tracked on the agent rollup).
 	gateTokens := 0
@@ -1540,7 +1538,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 			}
 			if len(structuralRound) > 0 {
 				// Non-citable findings need decomposition by the level above — return them
-				// so the caller (quest/campaign gate) can route them into work items and
+				// so the caller (quest gate) can route them into work items and
 				// re-enter reviewUntilClean.
 				return false, structuralRound
 			}
@@ -1660,12 +1658,11 @@ func fileOnBranch(ctx context.Context, dir, branch, file string) bool {
 }
 
 // failReview records a review-phase failure on the host that owns hostID: a run
-// records the run error (fail), a quest blocks with a postmortem, a campaign blocks
-// via blockCampaign — so the level-agnostic review primitive records honestly at
-// every level rather than assuming a run.
+// records the run error (fail), a quest blocks with a postmortem — so the
+// level-agnostic review primitive records honestly at every level rather than
+// assuming a run.
 func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string) {
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		c.attachQuestPostmortem(hostID, agentID, msg, msg)
 		c.UpdateQuest(hostID, func(q *run.Quest) {
 			if q.Status == "stopped" || q.Status == "done" {
@@ -1674,47 +1671,39 @@ func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string)
 			q.Status = "blocked"
 			q.PauseReason = msg
 		})
-	case strings.HasPrefix(hostID, "c"):
-		c.blockCampaign(hostID, msg)
-	default:
-		fail(ctx, c, hostID, agentID, msg)
+		return
 	}
+	fail(ctx, c, hostID, agentID, msg)
 }
 
 // recordReviewRounds folds the rounds a review loop consumed onto the host: a run
-// records ReviewRounds (set), a quest/campaign gate accumulates GateRounds (cumulative
+// records ReviewRounds (set), a quest gate accumulates GateRounds (cumulative
 // across re-entries).
 func (c *Conductor) recordReviewRounds(hostID string, n int, clean bool) {
 	if n == 0 {
 		return
 	}
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		c.UpdateQuest(hostID, func(q *run.Quest) { q.GateRounds += n })
-	case strings.HasPrefix(hostID, "c"):
-		c.UpdateCampaign(hostID, func(cam *run.Campaign) { cam.GateRounds += n })
-	default:
-		// Run-level byte-equivalence: ReviewRounds is set only when the run's
-		// review reached the all-clean path, exactly as before the primitive extraction.
-		if clean {
-			c.Update(hostID, func(r *run.Run) { r.ReviewRounds = n })
-		}
+		return
+	}
+	// Run-level byte-equivalence: ReviewRounds is set only when the run's
+	// review reached the all-clean path, exactly as before the primitive extraction.
+	if clean {
+		c.Update(hostID, func(r *run.Run) { r.ReviewRounds = n })
 	}
 }
 
 // addGateReviewTokens folds the gate review loop's token usage into the host budget:
-// a quest/campaign gate charges Quest/Campaign.TokensUsed (which drives the budget
-// pause and effectiveTokenCap), matching the retired gate-2 spawn's accounting. A run
-// is a no-op — its review tokens are already tracked on the agent rollup.
+// a quest gate charges Quest.TokensUsed (which drives the budget pause and
+// effectiveTokenCap), matching the retired gate-2 spawn's accounting. A run is a
+// no-op — its review tokens are already tracked on the agent rollup.
 func (c *Conductor) addGateReviewTokens(hostID string, n int) {
 	if n == 0 {
 		return
 	}
-	switch {
-	case strings.HasPrefix(hostID, "q"):
+	if strings.HasPrefix(hostID, "q") {
 		c.UpdateQuest(hostID, func(q *run.Quest) { q.TokensUsed += n })
-	case strings.HasPrefix(hostID, "c"):
-		c.addCampaignTokens(hostID, n)
 	}
 }
 
@@ -2058,10 +2047,10 @@ func setAgentState(r *run.Run, agentID, state, activity string) {
 }
 
 // setAgentStateIn sets an agent's state/activity on any host's agent slice (a
-// run's, a quest's, or a campaign's), seeding a minimal agent entry when the id is
+// run's or a quest's), seeding a minimal agent entry when the id is
 // not yet present. A run's agents are pre-seeded by the executor, so seeding only
-// ever fires for a campaign/quest's coordinating agent (intent-lead/reviewer,
-// quest-lead), which the supervisor spawns without a pre-seeded entry.
+// ever fires for a quest's coordinating agent (the quest-lead), which the
+// supervisor spawns without a pre-seeded entry.
 func setAgentStateIn(agents *[]run.Agent, agentID, state, activity string) {
 	a := ensureAgent(agents, agentID)
 	a.State = state
@@ -2069,7 +2058,7 @@ func setAgentStateIn(agents *[]run.Agent, agentID, state, activity string) {
 }
 
 // ensureAgent returns a pointer to the agent with agentID in the slice, appending
-// a minimal entry when it is absent (so a campaign/quest coordinating agent the
+// a minimal entry when it is absent (so a quest coordinating agent the
 // supervisor never pre-seeded is recorded rather than dropped). The pointer is
 // valid only until the next append to the slice — callers mutate and return.
 func ensureAgent(agents *[]run.Agent, agentID string) *run.Agent {
@@ -2130,7 +2119,7 @@ func fullWhenTruncated(summary, full string) string {
 // deriveTitle produces a short display label from a multi-paragraph objective/input:
 // the first non-empty line with a leading markdown heading marker or an
 // "Objective:"/"Goal:" prefix stripped, truncated to 72 chars — the same primitive
-// PR titles use (prTitle/campaignPRTitle). Used to stamp Quest/Campaign.Title when
+// PR titles use (prTitle). Used to stamp Quest.Title when
 // the launcher supplied none, so the UI never renders the whole objective in a
 // title slot.
 func deriveTitle(text string) string {
