@@ -104,10 +104,10 @@ const AgentDetail = ({ agent }) => {
     )
 }
 
-// The per-agent lens, reused across runs (coder fleet), quests (the quest-lead),
-// and campaigns (intent-lead / intent-reviewer) — every tier records the same
-// agents[].events shape via the conductor's updateAgentHost, so a campaign or
-// quest's coordinating agents are as fully inspectable as a run's coders.
+// The per-agent lens, reused across runs (coder fleet) and quests (the
+// quest-lead) — every tier records the same agents[].events shape via the
+// conductor's updateAgentHost, so a quest's coordinating agents are as fully
+// inspectable as a run's coders.
 const AgentsPanel = ({ agents = [], emptyLabel = 'No agents spawned yet — still planning.', hint = "the per-worker lens — who's running and what each is saying. Pick an agent to read its full live output." }) => {
     const [selectedId, setSelectedId] = useState(agents[0]?.id)
     const selected = agents.find((a) => a.id === selectedId) || agents[0]

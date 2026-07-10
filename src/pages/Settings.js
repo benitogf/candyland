@@ -28,7 +28,6 @@ const THINKING = ['low', 'medium', 'high', 'xhigh', 'max']
 
 // Roles grouped by tier — the render order and grouping of the settings table.
 const TIERS = [
-    { tier: 'Campaign', roles: ['intent-lead', 'intent-manager', 'intent-reviewer', 'tech-manager'] },
     { tier: 'Quest', roles: ['quest-lead'] },
     { tier: 'Run', roles: ['tech-lead', 'reviewer', 'coder', 'fix'] },
 ]

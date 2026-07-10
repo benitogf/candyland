@@ -19,8 +19,7 @@ export const suggestTitle = (prompt) => {
 // prompt, else a neutral fallback.
 export const runLabel = ({ title, prompt }) => (title?.trim() || suggestTitle(prompt) || 'Untitled run')
 
-// Quest / campaign display labels mirror the run model: the backend stamps a
-// short `title` at creation; the suggestTitle fallback keeps legacy title-less
-// items from rendering a multi-paragraph objective in a title slot.
+// Quest display label mirrors the run model: the backend stamps a short `title`
+// at creation; the suggestTitle fallback keeps legacy title-less items from
+// rendering a multi-paragraph objective in a title slot.
 export const questLabel = (q) => (q.title?.trim() || suggestTitle(q.objective || q.originalObjective) || 'Untitled quest')
-export const campaignLabel = (c) => (c.title?.trim() || suggestTitle(c.intentBrief?.restatedGoal || c.originalInput) || 'Untitled campaign')
