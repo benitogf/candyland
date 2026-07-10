@@ -313,6 +313,129 @@ func TestQuestConvergenceGatesDoneOnBlocked(t *testing.T) {
 	}
 }
 
+// questTwoItemClaude surfaces TWO accepted items on the first tick, then
+// WORKITEMS_NONE — so the drive loop launches two child runs in one tick.
+var questTwoItemClaude = stubClaude(
+	role("quest lead", `if [[ -f "$CANDYLAND_QUEST_FIXTURE" ]]; then
+  `+emitText("WORKITEMS_NONE")+`  `+emitResult("WORKITEMS_NONE", 1)+`else
+  touch "$CANDYLAND_QUEST_FIXTURE"
+  `+emitText(`WORKITEMS [{\"title\":\"item one\",\"evidence\":\"e1\",\"classification\":\"cleanup\",\"decision\":\"do\"},{\"title\":\"item two\",\"evidence\":\"e2\",\"classification\":\"cleanup\",\"decision\":\"do\"}]`)+`  `+emitResult("done", 2)+`fi
+`),
+	roleCleanReviewer,
+	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
+	coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
+)
+
+// Child runs launch SERIALLY within a tick: each accepted item's child run is
+// driven to a terminal state (launchChildRun blocks) before the next launches, so a
+// two-item tick records two child runs and both complete. Serial launch is what
+// keeps siblings off each other on the shared branch (paired with push rebase-retry).
+func TestQuestLaunchesChildRunsSerially(t *testing.T) {
+	c, repo := deliveryConductor(t, questTwoItemClaude)
+	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
+
+	id := c.CreateQuest(run.QuestSpec{
+		Objective:   "keep it tidy",
+		Folders:     []string{repo},
+		Convergence: run.ConvergePerFinding, // each finding its own PR — clean, independent children
+	})
+	if !c.BeginQuest(id) {
+		t.Fatal("BeginQuest returned false for a fresh quest")
+	}
+
+	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "done" }, 60*time.Second)
+	if q.Status != "done" {
+		t.Fatalf("quest did not finish: status=%q reason=%q", q.Status, q.PauseReason)
+	}
+	first := q.Ticks[0]
+	if len(first.LaunchedRunIDs) != 2 {
+		t.Fatalf("a two-item tick must launch two child runs serially, got %d (%+v)", len(first.LaunchedRunIDs), first.LaunchedRunIDs)
+	}
+	if q.ItemsCompleted != 2 {
+		t.Errorf("both serially-launched items must complete, got ItemsCompleted=%d", q.ItemsCompleted)
+	}
+	for _, childID := range first.LaunchedRunIDs {
+		child, ok := c.Get(childID)
+		if !ok {
+			t.Fatalf("child run %q not tracked", childID)
+		}
+		if child.Status != "done" || child.Error != "" {
+			t.Errorf("child run %q did not finish cleanly: status=%q error=%q", childID, child.Status, child.Error)
+		}
+	}
+}
+
+// The triage blocker rule: a quest-lead triage decision of "block" is NOT benign
+// like "skip" — it records a DURABLE blocked WorkItem that gates the clean terminal,
+// while "skip" stays a benign "skipped". Pin the pure ledger builder both halves
+// share.
+func TestTriagedWorkItemsBlockerRule(t *testing.T) {
+	ledger, decisions := triagedWorkItems([]questWorkItem{
+		{Title: "out of scope", Evidence: "e1", Classification: "cleanup", Decision: "skip"},
+		{Title: "needs human creds", Evidence: "e2", Classification: "blocked", Decision: "block"},
+		{Title: "do this", Evidence: "e3", Decision: "do"}, // accepted — never in the triage ledger
+	}, "t1")
+	if len(ledger) != 2 {
+		t.Fatalf("only skip+block enter the triage ledger, got %d (%+v)", len(ledger), ledger)
+	}
+	if len(decisions) != 2 {
+		t.Errorf("triage decision lines = %+v, want 2", decisions)
+	}
+	byDecision := map[string]run.WorkItem{}
+	for _, w := range ledger {
+		byDecision[w.Decision] = w
+	}
+	if got := byDecision["skip"].Disposition; got != "skipped" {
+		t.Errorf("a skip must record Disposition skipped, got %q", got)
+	}
+	if got := byDecision["block"].Disposition; got != "blocked" {
+		t.Errorf("a block must record Disposition blocked (the blocker rule), got %q", got)
+	}
+}
+
+// questTriageBlockClaude drives a quest whose lead surfaces exactly one item and
+// TRIAGES it "block" (nothing accepted, no child run launched) on the first tick,
+// then WORKITEMS_NONE. The loop must record it as a blocked WorkItem and converge
+// to a terminal "blocked" with a postmortem — never a silent "done".
+var questTriageBlockClaude = stubClaude(
+	role("quest lead", `if [[ -f "$CANDYLAND_QUEST_FIXTURE" ]]; then
+  `+emitText("WORKITEMS_NONE")+`  `+emitResult("WORKITEMS_NONE", 1)+`else
+  touch "$CANDYLAND_QUEST_FIXTURE"
+  `+emitText(`WORKITEMS [{\"title\":\"needs human creds\",\"evidence\":\"blocked on a secret only a human can supply\",\"classification\":\"blocked\",\"decision\":\"block\"}]`)+`  `+emitResult("done", 2)+`fi
+`),
+	roleCleanReviewer,
+	coder(emitText("noop"), emitResult("noop", 1)), // no child launches; a non-empty default keeps the bash valid
+)
+
+// End to end: a triage "block" flows through the drive loop to a terminal "blocked"
+// quest carrying an E2 postmortem — the triage blocker rule, not a looks-done no-op.
+func TestQuestTriageBlockConvergesToBlocked(t *testing.T) {
+	c, repo := deliveryConductor(t, questTriageBlockClaude)
+	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
+
+	id := c.CreateQuest(run.QuestSpec{Objective: "keep it tidy", Folders: []string{repo}})
+	if !c.BeginQuest(id) {
+		t.Fatal("BeginQuest returned false for a fresh quest")
+	}
+
+	q := waitForQuest(t, c, id, func(q run.Quest) bool { return q.Status == "blocked" }, 60*time.Second)
+	if q.Status != "blocked" {
+		t.Fatalf("a triage-blocked quest must converge to blocked, got status=%q reason=%q", q.Status, q.PauseReason)
+	}
+	if q.ItemsBlocked != 1 {
+		t.Errorf("the triaged block must count as one blocked item, got ItemsBlocked=%d", q.ItemsBlocked)
+	}
+	if len(q.WorkItems) != 1 || q.WorkItems[0].Disposition != "blocked" {
+		t.Errorf("the surfaced item must be a durable blocked WorkItem, got %+v", q.WorkItems)
+	}
+	if len(q.Ticks) == 0 || len(q.Ticks[0].LaunchedRunIDs) != 0 {
+		t.Errorf("a triage block launches no child run, got %+v", q.Ticks)
+	}
+	if q.Postmortem == nil {
+		t.Error("a terminal blocked quest must carry a schema-valid postmortem (E2)")
+	}
+}
+
 // contains reports whether sub appears in s (a tiny local helper to keep the assert
 // legible without pulling strings into the test's imports).
 func contains(s, sub string) bool { return len(sub) == 0 || indexOf(s, sub) >= 0 }
