@@ -187,6 +187,13 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Weighted-budget gate: once the run's weighted usage has spent its budget,
+		// stop before launching another attempt rather than thrash quota. Attempt 1
+		// starts at zero usage so the gate only ever trips on a re-plan.
+		if cur, ok := c.Get(id); ok && weightedBudgetExceeded(cur) {
+			fail(ctx, c, id, "tl", fmt.Sprintf("Weighted token budget exhausted (%d/%d) after %d attempt(s) — stopping before another re-plan.", runWeightedTokens(cur), cur.TokensBudget, attempt-1))
+			return
+		}
 		if attempt > 1 {
 			cleanup(c, id, folders, wtRoot)
 			log.Printf("candyland: run %s re-planning (attempt %d/%d) after: %s", id, attempt, replans, feedback)
@@ -311,12 +318,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	}
 	crossLinkPRs(ctx, delivered, prs)
 
-	opened := 0
-	for _, pr := range prs {
-		if pr.URL != "" {
-			opened++
-		}
-	}
+	opened := deliveredPRs(prs)
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
 		for _, pr := range prs {
@@ -509,12 +511,7 @@ func (c *Conductor) deliverToFeedback(ctx context.Context, id string, folders []
 		}
 		prs = append(prs, pr)
 	}
-	opened := 0
-	for _, pr := range prs {
-		if pr.URL != "" {
-			opened++
-		}
-	}
+	opened := deliveredPRs(prs)
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
 		for _, pr := range prs {
@@ -876,6 +873,71 @@ func prStatusLine(prs []run.PR) string {
 		return fmt.Sprintf("Opened %d pull %s.", opened, plural(opened, "request", "requests"))
 	}
 	return fmt.Sprintf("Opened %d of %d pull requests — %d repo(s) failed: %s", opened, opened+failed, failed, firstPRErr(prs))
+}
+
+// deliveredPRs is the GROUND-TRUTH delivery gate: it counts only the PRs that
+// genuinely landed — a real PR URL with NO recorded error. A run reaches the PR
+// phase (or a feedback run reports "updated") only on a confirmed, non-errored URL,
+// never on an optimistic claim. openPR sets URL xor Err, so requiring both a URL and
+// an empty Err rejects any half-written record rather than counting it as delivered.
+func deliveredPRs(prs []run.PR) int {
+	opened := 0
+	for _, pr := range prs {
+		if pr.URL != "" && pr.Err == "" {
+			opened++
+		}
+	}
+	return opened
+}
+
+// Token weights approximate Anthropic's relative per-token cost so a single
+// "weighted token" figure is comparable across cache-heavy and output-heavy work:
+// output dominates, a fresh input token is the unit, a cache WRITE costs a little
+// more, and a cache READ is nearly free. Scaled ×100 so two decimals of weight ride
+// in integer math without floats. The gate compares weighted usage — not a raw sum
+// that would treat a cheap cache-read the same as a costly output token.
+const (
+	weightInput      = 100 // 1.00× — the unit
+	weightCacheRead  = 10  // 0.10× — nearly free
+	weightCacheWrite = 125 // 1.25× — a little over a fresh input token
+	weightOutput     = 500 // 5.00× — the dominant cost
+)
+
+// weightedTokens collapses the raw (UNSCALED) usage split into one cost-comparable
+// figure using the weights above.
+func weightedTokens(inputTok, cacheReadTok, cacheWriteTok, outputTok int) int {
+	weighted := inputTok*weightInput + cacheReadTok*weightCacheRead +
+		cacheWriteTok*weightCacheWrite + outputTok*weightOutput
+	return weighted / 100
+}
+
+// runWeightedTokens sums the weighted usage across a run's agents — the figure the
+// weighted-budget gate compares against the run's budget.
+func runWeightedTokens(r run.Run) int {
+	total := 0
+	for _, a := range r.Agents {
+		// a.Tokens is output tokens scaled down by 1000 (display units); recover the
+		// raw count so it weighs on the same unscaled basis as the input/cache fields.
+		total += weightedTokens(a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.Tokens*1000)
+	}
+	return total
+}
+
+// budgetExceeded is the weighted-budget gate: an allowance is spent when WEIGHTED
+// usage meets or exceeds the budget. A zero or negative budget means "no cap"
+// (telemetry only), never an instantly-tripped gate.
+func budgetExceeded(weightedUsed, budget int) bool {
+	if budget <= 0 {
+		return false
+	}
+	return weightedUsed >= budget
+}
+
+// weightedBudgetExceeded reports whether the run's WEIGHTED token usage has met or
+// exceeded its budget — the per-run gate that stops another re-plan attempt from
+// thrashing quota once the allowance is spent.
+func weightedBudgetExceeded(r run.Run) bool {
+	return budgetExceeded(runWeightedTokens(r), r.TokensBudget)
 }
 
 // runCoders implements every task in parallel, each in its own worktree off base.
