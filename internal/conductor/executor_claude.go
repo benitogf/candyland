@@ -1666,7 +1666,7 @@ func fileOnBranch(ctx context.Context, dir, branch, file string) bool {
 func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string) {
 	switch {
 	case strings.HasPrefix(hostID, "q"):
-		c.attachQuestPostmortem(hostID, agentID, msg, msg)
+		c.attachQuestPostmortem(hostID, agentID, msg, msg, reviewGateMechanism)
 		c.UpdateQuest(hostID, func(q *run.Quest) {
 			if q.Status == "stopped" || q.Status == "done" {
 				return
