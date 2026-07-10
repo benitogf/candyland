@@ -90,18 +90,17 @@ type Envelope struct {
 }
 
 // GraphNode is a task-graph node — a superset of the tech-lead's partitionTask,
-// adding status/owner/deps/priority/version. From is the writer identity, used
+// adding status/owner/priority/version. From is the writer identity, used
 // only for the cooperative orchestrator-single-writer check on graph/nodes/*.
 type GraphNode struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Status   string   `json:"status"`
-	Owner    string   `json:"owner,omitempty"`
-	Deps     []string `json:"deps,omitempty"`
-	Priority int      `json:"priority,omitempty"`
-	Version  int      `json:"version"`
-	Reason   string   `json:"reason,omitempty"` // why a node is blocked (escalation)
-	From     string   `json:"from,omitempty"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Owner    string `json:"owner,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+	Version  int    `json:"version"`
+	Reason   string `json:"reason,omitempty"` // why a node is blocked (escalation)
+	From     string `json:"from,omitempty"`
 }
 
 // Brief is one agent's initial context — the work it would otherwise have
@@ -119,7 +118,6 @@ type Brief struct {
 	Title    string   `json:"title,omitempty"`    // task title (coder)
 	Files    []string `json:"files,omitempty"`    // the task's fork-safe file boundary (coder)
 	Test     string   `json:"test,omitempty"`     // the defining test (coder)
-	Deps     []string `json:"deps,omitempty"`     // task ids that must finish first (coder)
 	Repo     string   `json:"repo,omitempty"`     // the repo this task targets (multi-repo)
 	Feedback string   `json:"feedback,omitempty"` // prior-attempt failure to avoid (re-plan / retry)
 	Attempt  int      `json:"attempt,omitempty"`  // 1-based attempt number
@@ -378,7 +376,7 @@ func (b *Bus) PushDirective(server *ooo.Server, to, body string) error {
 
 // ReadNodes returns the FULL task-graph ledger (including done nodes) by reading
 // raw storage — bypassing the agent-facing non-done read filter, since the
-// orchestrator reasons over the complete graph (e.g. to know which deps are done).
+// orchestrator reasons over the complete graph (e.g. to escalate open nodes).
 func (b *Bus) ReadNodes(server *ooo.Server) []GraphNode {
 	objs, err := server.Storage.GetList(GraphNodesGlob)
 	if err != nil {
@@ -392,41 +390,6 @@ func (b *Bus) ReadNodes(server *ooo.Server) []GraphNode {
 		}
 	}
 	return out
-}
-
-// AutoUnblock flips every blocked node whose dependencies are all done to
-// pending (committing the change as the orchestrator), so dependents auto-unblock
-// on completion. Returns the ids it unblocked.
-func (b *Bus) AutoUnblock(server *ooo.Server) []string {
-	nodes := b.ReadNodes(server)
-	done := make(map[string]bool, len(nodes))
-	for _, n := range nodes {
-		if n.Status == NodeDone {
-			done[n.ID] = true
-		}
-	}
-	var unblocked []string
-	for _, n := range nodes {
-		if n.Status != NodeBlocked || !depsDone(n.Deps, done) {
-			continue
-		}
-		n.Status = NodePending
-		n.From = b.orchestrator
-		n.Version++
-		if err := ooo.Set(server, GraphNodeKey(n.ID), n); err == nil {
-			unblocked = append(unblocked, n.ID)
-		}
-	}
-	return unblocked
-}
-
-func depsDone(deps []string, done map[string]bool) bool {
-	for _, d := range deps {
-		if !done[d] {
-			return false
-		}
-	}
-	return true
 }
 
 // PutBrief writes an agent's brief as the orchestrator (the single writer),

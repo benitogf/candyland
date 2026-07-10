@@ -98,36 +98,3 @@ func TestEscalateMarksBlocked(t *testing.T) {
 		t.Error("escalation should record a reason on the blocked node")
 	}
 }
-
-// CPB4: a blocked node whose deps are all done auto-unblocks to pending.
-func TestAutoUnblockOnDepsDone(t *testing.T) {
-	srv, b, stop := startServer(t, "conductor")
-	defer stop()
-
-	commit := func(n GraphNode) {
-		n.From = "conductor"
-		if err := ooo.Set(srv, GraphNodeKey(n.ID), n); err != nil {
-			t.Fatalf("commit %s: %v", n.ID, err)
-		}
-	}
-	commit(GraphNode{ID: "t1", Status: NodeDone})
-	commit(GraphNode{ID: "t2", Status: NodeBlocked, Deps: []string{"t1"}})
-	commit(GraphNode{ID: "t3", Status: NodeBlocked, Deps: []string{"t1", "tX"}}) // tX not done
-
-	unblocked := b.AutoUnblock(srv)
-	if len(unblocked) != 1 || unblocked[0] != "t2" {
-		t.Fatalf("expected only t2 to unblock (deps done), got %v", unblocked)
-	}
-
-	// t2 is now pending (open); t3 stays blocked (a dep is unfinished).
-	byID := map[string]GraphNode{}
-	for _, n := range b.ReadNodes(srv) {
-		byID[n.ID] = n
-	}
-	if byID["t2"].Status != NodePending {
-		t.Errorf("t2 should be pending after unblock, got %q", byID["t2"].Status)
-	}
-	if byID["t3"].Status != NodeBlocked {
-		t.Errorf("t3 should remain blocked (dep tX not done), got %q", byID["t3"].Status)
-	}
-}

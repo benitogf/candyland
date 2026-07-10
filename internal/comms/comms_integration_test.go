@@ -60,7 +60,7 @@ func TestBriefRoundTrip(t *testing.T) {
 
 	// Orchestrator writes the coder's brief before it would be spawned.
 	want := bus.Brief{Role: "fullstack", Repo: "/repo", Title: "export → CSV",
-		Files: []string{"api/reports.go", "ui/Export.tsx"}, Test: "api/export_test.go", Deps: []string{"tests"}}
+		Files: []string{"api/reports.go", "ui/Export.tsx"}, Test: "api/export_test.go"}
 	if err := b.PutBrief(srv, "backend", want); err != nil {
 		t.Fatalf("PutBrief: %v", err)
 	}

@@ -2,7 +2,6 @@ package conductor
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -147,7 +146,7 @@ func TestCancelRunningRunStopsAndDropsFromTracking(t *testing.T) {
 	// (killing its process tree, then cleaning its worktrees). Wait for that
 	// cleanup to finish — both so we assert the worktrees are actually removed and
 	// so the test's TempDir teardown doesn't race the goroutine's git calls.
-	wtRoot := filepath.Join(os.TempDir(), "candyland-wt", id)
+	wtRoot := c.worktreeRoot(id)
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(wtRoot); os.IsNotExist(err) {

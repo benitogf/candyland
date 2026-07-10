@@ -189,7 +189,7 @@ func RegisterTools(server *mcp.Server, c *Client) {
 		}
 		var b strings.Builder
 		for _, n := range nodes {
-			fmt.Fprintf(&b, "%s [%s] %s deps=%v\n", n.ID, n.Status, n.Title, n.Deps)
+			fmt.Fprintf(&b, "%s [%s] %s\n", n.ID, n.Status, n.Title)
 		}
 		return textResult(strings.TrimSpace(b.String())), nil, nil
 	})
@@ -225,9 +225,6 @@ func formatBrief(b bus.Brief) string {
 		w("files", strings.Join(b.Files, ", "))
 	}
 	w("test", b.Test)
-	if len(b.Deps) > 0 {
-		w("deps", strings.Join(b.Deps, ", "))
-	}
 	if b.Intent != "" {
 		fmt.Fprintf(&sb, "intent (the driving ask — the diff must satisfy it):\n%s\n", b.Intent)
 	}

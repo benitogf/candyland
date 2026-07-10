@@ -6,9 +6,13 @@ package conductor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,6 +100,12 @@ type Conductor struct {
 	// Re-armed after a restart from a paused run's persisted resumeAt (see tracked).
 	limitMu    sync.Mutex
 	limitUntil time.Time
+	// wtBase is this conductor's private worktree root, minted once at
+	// construction. Run ids reset per-conductor, so a process-global
+	// os.TempDir()/candyland-wt/<runID> collides when two conductors coexist
+	// (the r131 test flake); the per-instance suffix makes roots disjoint.
+	// Tests inject a t.TempDir()-based path.
+	wtBase string
 }
 
 // New builds a conductor bound to an ooo server. Every run is driven by the real
@@ -107,6 +117,7 @@ func New(server *ooo.Server) *Conductor {
 		runs:           map[string]*runtime{},
 		agentWrites:    map[string]*coalescedAgentWrite{},
 		coalesceWindow: 250 * time.Millisecond,
+		wtBase:         filepath.Join(os.TempDir(), "candyland-wt", instanceSuffix()),
 	}
 	c.folders = runFolders
 	c.prReview = ghPRReview
@@ -114,6 +125,19 @@ func New(server *ooo.Server) *Conductor {
 	c.dispatchFeedback = c.launchFeedbackRun
 	c.watchInterval = 60 * time.Second
 	return c
+}
+
+// instanceSuffix mints the conductor-unique component of wtBase.
+func instanceSuffix() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// worktreeRoot is where one run's throwaway worktrees live — unique per
+// conductor AND per run.
+func (c *Conductor) worktreeRoot(id string) string {
+	return filepath.Join(c.wtBase, id)
 }
 
 // runFolders resolves a run's working folders from the run itself — they were

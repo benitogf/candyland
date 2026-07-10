@@ -67,13 +67,11 @@ func (c *Conductor) StartBus() {
 	b := bus.NewBus(OrchestratorID, bus.CursorReader(c.server))
 	b.RegisterGlobal(c.server)
 	b.RegisterReactor(c.server, func(srv *ooo.Server, ev bus.Envelope) {
-		// Acknowledge the worker's proposal with a directive it consumes next turn,
-		// then re-evaluate the graph — auto-unblock any nodes whose deps are now
-		// done. This is coordination, not re-planning: the actual re-plan (the tech
+		// Acknowledge the worker's proposal with a directive it consumes next turn.
+		// This is coordination, not re-planning: the actual re-plan (the tech
 		// lead re-emitting a partition when a coder's split fails) is driven by the
-		// stdout loop; this back-channel only acknowledges and unblocks.
+		// stdout loop; this back-channel only acknowledges.
 		_ = b.PushDirective(srv, ev.From, "noted: "+ev.Body)
-		b.AutoUnblock(srv)
 	})
 	c.mu.Lock()
 	c.bus = b
@@ -237,7 +235,7 @@ func (c *Conductor) cleanupBusConfigs(runID string) {
 
 // publishGraphNodes mirrors the tech-lead's partition into the bus task-graph
 // ledger so coders can graph_read the open work and the conductor can
-// auto-unblock / escalate real nodes. No-op without a bus.
+// escalate real nodes. No-op without a bus.
 func (c *Conductor) publishGraphNodes(tasks []partitionTask) {
 	c.mu.Lock()
 	b := c.bus
@@ -246,7 +244,7 @@ func (c *Conductor) publishGraphNodes(tasks []partitionTask) {
 		return
 	}
 	for _, t := range tasks {
-		_ = b.CommitNode(c.server, bus.GraphNode{ID: t.ID, Title: t.Title, Status: bus.NodePending, Deps: t.Deps})
+		_ = b.CommitNode(c.server, bus.GraphNode{ID: t.ID, Title: t.Title, Status: bus.NodePending})
 	}
 }
 
