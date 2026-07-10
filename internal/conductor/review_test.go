@@ -339,3 +339,55 @@ func TestReviewBriefCarriesDrivingIntent(t *testing.T) {
 		t.Errorf("the fix-pass brief must also carry the driving intent %q:\n%s", intentMarker, fixBrief)
 	}
 }
+
+// The r123 shape: a fix pass whose resolving leg reports sawTool=false (a
+// limit/connection pause resumed and emitted only a summary) but whose integDir
+// actually holds the finished edits must commit and deliver — the worktree, not the
+// stream, is the delivery ground truth.
+const fixDirtyNoToolClaude = `#!/usr/bin/env bash
+printf 'the real fix\n' >> fixed.txt
+echo '{"type":"result","subtype":"success","result":"I already made the fixes before the pause; here is my summary.","usage":{"output_tokens":1}}'
+`
+
+func TestFixReviewFindingsDeliversOnDirtyWorktreeDespiteNoTool(t *testing.T) {
+	c, repo := deliveryConductor(t, fixDirtyNoToolClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
+	ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	if !ok {
+		r, _ := c.Get(id)
+		t.Fatalf("a dirty integDir must deliver even with sawTool=false; got ok=false error=%q", r.Error)
+	}
+	r, _ := c.Get(id)
+	if r.Error != "" {
+		t.Errorf("delivery must not record an error, got %q", r.Error)
+	}
+	// The edits were committed onto the run branch.
+	out, err := exec.Command("git", "-C", repo, "show", "main:fixed.txt").CombinedOutput()
+	if err != nil {
+		t.Fatalf("reading fixed.txt on the branch: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "the real fix") {
+		t.Errorf("the fix must be committed before delivery:\n%s", out)
+	}
+}
+
+// The other side of the gate: a fix pass that genuinely changes nothing (clean
+// worktree, sawTool=false) must still refuse and record the "made no changes"
+// error rather than open a PR with open blockers.
+const fixCleanNoOpClaude = `#!/usr/bin/env bash
+echo '{"type":"result","subtype":"success","result":"nothing to change","usage":{"output_tokens":1}}'
+`
+
+func TestFixReviewFindingsRefusesOnCleanWorktree(t *testing.T) {
+	c, repo := deliveryConductor(t, fixCleanNoOpClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
+	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
+		t.Fatal("a genuinely no-op fix pass must refuse (return false), not deliver")
+	}
+	r, _ := c.Get(id)
+	if !strings.Contains(strings.ToLower(r.Error), "made no changes") {
+		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
+	}
+}

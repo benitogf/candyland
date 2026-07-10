@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +128,106 @@ func TestAddWorktreeSharedBranchOtherHolder(t *testing.T) {
 		t.Fatalf("shared branch should be held by exactly the new worktree %q, got %v", second, got)
 	}
 	removeWorktree(ctx, repo, second)
+}
+
+// isNonFastForward classifies git's non-fast-forward push rejection (retryable
+// via a rebase) apart from an environmental push failure (never retryable).
+func TestIsNonFastForward(t *testing.T) {
+	rejections := []string{
+		"! [rejected] quest/x -> quest/x (non-fast-forward)",
+		"Updates were rejected because the remote contains work that you do not have",
+		"! [rejected] quest/x -> quest/x (fetch first)",
+	}
+	for _, msg := range rejections {
+		if !isNonFastForward(errors.New(msg)) {
+			t.Errorf("a non-fast-forward rejection must classify as retryable: %q", msg)
+		}
+	}
+	if isNonFastForward(errors.New("fatal: 'origin' does not appear to be a git repository")) {
+		t.Error("an environmental push failure must not classify as a non-fast-forward")
+	}
+	if isNonFastForward(nil) {
+		t.Error("nil must not classify as a non-fast-forward")
+	}
+}
+
+// gitCommitFile writes name in dir and commits it, returning nothing — a tiny
+// test helper so the rebase-retry test reads as intent, not plumbing.
+func gitCommitFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, dir, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, dir, "commit", "-q", "-m", "add "+name); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The shared-branch push race: a sibling child advances origin/quest/x between our
+// integration and our push, so a plain `git push` is rejected non-fast-forward.
+// pushBranch must fetch, rebase our commit onto the advanced tip, and re-push —
+// landing BOTH commits, never losing the sibling's or hard-failing.
+func TestPushBranchRebaseRetry(t *testing.T) {
+	repo := newGitRepo(t)
+	ctx := context.Background()
+	branch := "quest/x"
+
+	base, err := git(ctx, repo, "rev-parse", "main")
+	if err != nil {
+		t.Fatalf("resolve base: %v", err)
+	}
+	// Establish the shared branch on origin from a detached integration worktree
+	// (exactly how the executor delivers onto quest/<id>).
+	integ := filepath.Join(t.TempDir(), "integ")
+	if err := addDetachedWorktree(ctx, repo, integ, base); err != nil {
+		t.Fatalf("integration worktree: %v", err)
+	}
+	gitCommitFile(t, integ, "first.txt", "one\n")
+	if err := syncBranchRef(ctx, integ, branch); err != nil {
+		t.Fatal(err)
+	}
+	if err := pushBranch(ctx, integ, branch); err != nil {
+		t.Fatalf("initial push must land: %v", err)
+	}
+
+	// A sibling child advances origin/quest/x out of band (its own worktree off the
+	// branch tip, a new commit, pushed first).
+	sib := filepath.Join(t.TempDir(), "sib")
+	if err := addDetachedWorktree(ctx, repo, sib, branch); err != nil {
+		t.Fatalf("sibling worktree: %v", err)
+	}
+	gitCommitFile(t, sib, "sibling.txt", "sib\n")
+	if _, err := git(ctx, sib, "push", "origin", "HEAD:"+branch); err != nil {
+		t.Fatalf("sibling push: %v", err)
+	}
+
+	// Our integration worktree — still at the stale tip — adds its own commit. A
+	// plain push would now be rejected non-fast-forward.
+	gitCommitFile(t, integ, "second.txt", "two\n")
+	if err := syncBranchRef(ctx, integ, branch); err != nil {
+		t.Fatal(err)
+	}
+	if err := pushBranch(ctx, integ, branch); err != nil {
+		t.Fatalf("pushBranch must rebase past the advanced origin and re-push: %v", err)
+	}
+
+	// origin/quest/x now carries the base + the sibling's + our commit — nothing lost.
+	if _, err := git(ctx, repo, "fetch", "origin", branch); err != nil {
+		t.Fatalf("fetch after push: %v", err)
+	}
+	out, err := git(ctx, repo, "ls-tree", "-r", "--name-only", "FETCH_HEAD")
+	if err != nil {
+		t.Fatalf("ls-tree: %v", err)
+	}
+	for _, want := range []string{"first.txt", "sibling.txt", "second.txt"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("origin/%s must carry %q after the rebase-retry; tree:\n%s", branch, want, out)
+		}
+	}
 }
 
 // A holder with uncommitted changes must NOT be force-removed — addWorktree

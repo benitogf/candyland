@@ -31,6 +31,7 @@ func Register(server *ooo.Server, c *conductor.Conductor) {
 	registerSystem(server)
 	registerHealth(server)
 	registerReference(server)
+	registerAccounting(server)
 	// Host the per-agent coordination-bus comms tools over HTTP at
 	// /mcp/comms/{agentID}; spawned coders reach it via an http mcp-config entry
 	// instead of a per-agent stdio process.

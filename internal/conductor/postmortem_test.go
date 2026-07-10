@@ -69,6 +69,44 @@ func TestValidatePostmortem(t *testing.T) {
 	}
 }
 
+// item 3 (postmortem-attr): a synthesised postmortem attributes the conductor
+// mechanism that produced the block — the mechanism string is carried into the root
+// cause, so a reader knows not just what capability failed but which mechanism it
+// failed under. Absent a mechanism, the generic root cause is used (backward compat).
+func TestSynthPostmortemCarriesMechanism(t *testing.T) {
+	pm := synthPostmortem("tl", "review of x has unresolved blockers", "ev", 1, "branch x", reviewGateMechanism)
+	if ok, why := validatePostmortem(pm); !ok {
+		t.Fatalf("a mechanism-attributed postmortem must be schema-valid: %s", why)
+	}
+	if !strings.Contains(pm.RootCauseSoFar, reviewGateMechanism) {
+		t.Errorf("the root cause must name the mechanism %q, got %q", reviewGateMechanism, pm.RootCauseSoFar)
+	}
+
+	generic := synthPostmortem("tl", "cap", "ev", 1, "br")
+	if strings.Contains(generic.RootCauseSoFar, reviewGateMechanism) {
+		t.Errorf("without a mechanism the root cause must not fabricate one, got %q", generic.RootCauseSoFar)
+	}
+}
+
+// item 3 (postmortem-attr): failReview — the single review-phase choke point — stamps
+// its review-gate mechanism onto the postmortem it attaches when it blocks a quest.
+func TestFailReviewCarriesMechanism(t *testing.T) {
+	c, _ := newQuestServer(t)
+	id := c.CreateQuest(run.QuestSpec{Objective: "tidy", Folders: []string{"/repo"}})
+	const reviewMsg = "Review of x did not converge. No PR is opened until review is clean."
+	c.failReview(t.Context(), id, reviewerID, reviewMsg)
+	q, ok := c.GetQuest(id)
+	if !ok {
+		t.Fatal("quest must exist")
+	}
+	if valid, why := validatePostmortem(q.Postmortem); !valid {
+		t.Fatalf("failReview must attach a schema-valid postmortem: %+v (%s)", q.Postmortem, why)
+	}
+	if !strings.Contains(q.Postmortem.RootCauseSoFar, reviewMsg) {
+		t.Errorf("failReview's postmortem must quote the recorded message verbatim, got %q", q.Postmortem.RootCauseSoFar)
+	}
+}
+
 // E2 reject path: a `blocked` write with an incomplete postmortem is REJECTED (not
 // persisted); a schema-valid one is accepted and persisted on the run record.
 func TestAttachRunPostmortemRejectsInvalid(t *testing.T) {

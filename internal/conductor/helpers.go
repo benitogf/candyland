@@ -61,7 +61,12 @@ func recompute(r *run.Run) {
 	r.TokensUsed = tokens
 	r.TasksGreen = green
 	r.TasksTotal = len(r.Tasks)
-	r.CostUsd = float64(tokens) * 0.012
+	// Weighted accounting is the single source of truth for cost and weighted tokens:
+	// roll it up across agents server-side so the record carries the corrected cost
+	// (settled output price) and the UI never re-derives a figure that disagrees with
+	// the weighted budget gate.
+	r.Accounting = r.TokenAccounting()
+	r.CostUsd = r.Accounting.CostUsd
 
 	// Progress tracks the run's advance so the UI bar actually MOVES — derived from
 	// the phase, plus (during Build) how many coder tasks have gone green. Go's zero

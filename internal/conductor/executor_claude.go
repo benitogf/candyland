@@ -187,6 +187,13 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Weighted-budget gate: once the run's weighted usage has spent its budget,
+		// stop before launching another attempt rather than thrash quota. Attempt 1
+		// starts at zero usage so the gate only ever trips on a re-plan.
+		if cur, ok := c.Get(id); ok && weightedBudgetExceeded(cur) {
+			fail(ctx, c, id, "tl", fmt.Sprintf("Weighted token budget exhausted (%d/%d) after %d attempt(s) — stopping before another re-plan.", runWeightedTokens(cur), cur.TokensBudget, attempt-1))
+			return
+		}
 		if attempt > 1 {
 			cleanup(c, id, folders, wtRoot)
 			log.Printf("candyland: run %s re-planning (attempt %d/%d) after: %s", id, attempt, replans, feedback)
@@ -311,12 +318,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	}
 	crossLinkPRs(ctx, delivered, prs)
 
-	opened := 0
-	for _, pr := range prs {
-		if pr.URL != "" {
-			opened++
-		}
-	}
+	opened := deliveredPRs(prs)
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
 		for _, pr := range prs {
@@ -508,12 +510,7 @@ func (c *Conductor) deliverToFeedback(ctx context.Context, id string, folders []
 		}
 		prs = append(prs, pr)
 	}
-	opened := 0
-	for _, pr := range prs {
-		if pr.URL != "" {
-			opened++
-		}
-	}
+	opened := deliveredPRs(prs)
 	c.Update(id, func(r *run.Run) {
 		r.PRs = prs
 		for _, pr := range prs {
@@ -874,6 +871,48 @@ func prStatusLine(prs []run.PR) string {
 		return fmt.Sprintf("Opened %d pull %s.", opened, plural(opened, "request", "requests"))
 	}
 	return fmt.Sprintf("Opened %d of %d pull requests — %d repo(s) failed: %s", opened, opened+failed, failed, firstPRErr(prs))
+}
+
+// deliveredPRs is the GROUND-TRUTH delivery gate: it counts only the PRs that
+// genuinely landed — a real PR URL with NO recorded error. A run reaches the PR
+// phase (or a feedback run reports "updated") only on a confirmed, non-errored URL,
+// never on an optimistic claim. openPR sets URL xor Err, so requiring both a URL and
+// an empty Err rejects any half-written record rather than counting it as delivered.
+func deliveredPRs(prs []run.PR) int {
+	opened := 0
+	for _, pr := range prs {
+		if pr.URL != "" && pr.Err == "" {
+			opened++
+		}
+	}
+	return opened
+}
+
+// runWeightedTokens sums the weighted usage across a run's agents — the figure the
+// weighted-budget gate compares against the run's budget. It delegates to the
+// canonical run.WeightedTokens so the gate reasons in the SAME unit the budget is
+// expressed in (weighted output-basis KTOKENS), not raw weighted units — a raw-unit
+// comparison against a ktok budget trips the gate ~1000× too early (the r130 unit
+// mismatch: 1 output ktok is 1000 raw output tokens, far exceeding a 900-ktok cap).
+func runWeightedTokens(r run.Run) int {
+	return r.WeightedTokens()
+}
+
+// budgetExceeded is the weighted-budget gate: an allowance is spent when WEIGHTED
+// usage meets or exceeds the budget. A zero or negative budget means "no cap"
+// (telemetry only), never an instantly-tripped gate.
+func budgetExceeded(weightedUsed, budget int) bool {
+	if budget <= 0 {
+		return false
+	}
+	return weightedUsed >= budget
+}
+
+// weightedBudgetExceeded reports whether the run's WEIGHTED token usage has met or
+// exceeded its budget — the per-run gate that stops another re-plan attempt from
+// thrashing quota once the allowance is spent.
+func weightedBudgetExceeded(r run.Run) bool {
+	return budgetExceeded(runWeightedTokens(r), r.TokensBudget)
 }
 
 // runCoders implements every task in parallel, each in its own worktree off base.
@@ -1662,8 +1701,15 @@ func fileOnBranch(ctx context.Context, dir, branch, file string) bool {
 // level-agnostic review primitive records honestly at every level rather than
 // assuming a run.
 func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string) {
-	if strings.HasPrefix(hostID, "q") {
-		c.attachQuestPostmortem(hostID, agentID, msg, msg)
+	// A failReview block carries its recorded message VERBATIM as the postmortem
+	// mechanism (settled decision), falling back to the generic review-gate label
+	// only when the message is empty. The run-level path (r123's driving shape) must
+	// attribute the mechanism too, so attach the postmortem here before fail's
+	// generic synth would run — fail only synthesises when none is present.
+	mechanism := firstNonEmpty(msg, reviewGateMechanism)
+	switch {
+	case strings.HasPrefix(hostID, "q"):
+		c.attachQuestPostmortem(hostID, agentID, msg, msg, mechanism)
 		c.UpdateQuest(hostID, func(q *run.Quest) {
 			if q.Status == "stopped" || q.Status == "done" {
 				return
@@ -1671,9 +1717,12 @@ func (c *Conductor) failReview(ctx context.Context, hostID, agentID, msg string)
 			q.Status = "blocked"
 			q.PauseReason = msg
 		})
-		return
+	default:
+		if cur, ok := c.Get(hostID); ok && cur.Postmortem == nil {
+			c.attachRunPostmortem(hostID, c.blockerPostmortemFor(agentID, "", msg, msg, 1, "branch "+cur.Branch, mechanism))
+		}
+		fail(ctx, c, hostID, agentID, msg)
 	}
-	fail(ctx, c, hostID, agentID, msg)
 }
 
 // recordReviewRounds folds the rounds a review loop consumed onto the host: a run
@@ -1745,7 +1794,13 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 		c.failReview(ctx, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
 		return false, out.tokens
 	}
-	if !out.sawTool {
+	// Delivery ground truth is the worktree, not the stream. A limit/connection
+	// pause can resume and emit only a summary (sawTool=false on the resolving leg)
+	// while the real edits sit committed-pending in integDir — the r123 false
+	// refusal. Judge on `git status --porcelain` of integDir: empty ⇒ genuinely no
+	// changes ⇒ refuse; non-empty ⇒ real work landed ⇒ commit + deliver. sawTool
+	// stays in diagnostics but must not gate delivery.
+	if !hasChanges(ctx, integDir) {
 		c.failReview(ctx, id, reviewerID, "The fix pass made no changes for the review findings in "+repoBase(repo)+" — refusing to open a PR with open blockers.")
 		return false, out.tokens
 	}
