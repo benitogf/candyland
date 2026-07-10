@@ -90,6 +90,32 @@ func TestCleanVerdictContradictsNarration(t *testing.T) {
 			t.Errorf("inline-quoted phrase wrongly flagged as an admission: %s", reason)
 		}
 	}
+	// An UNQUOTED blocker phrase NAMED AS DATA — the reviewer describing that the phrase
+	// itself is a detector input/keyword the change adds — is naming, not admitting.
+	// Guards the self-referential false positive where the diff under review is itself
+	// about these admission strings and the reviewer narrates it without backticks.
+	namedAsData := []string{
+		"I added regression as a new admission keyword; traced it wired from reviewUntilClean and ran the tests green.\nREVIEW_CLEAN",
+		"The diff introduces unreachable and regression as detector inputs, all reachable from main.\nREVIEW_CLEAN",
+		"dead code is a new admission phrase here; I verified the detector fires.\nREVIEW_CLEAN",
+	}
+	for _, s := range namedAsData {
+		if bad, reason := cleanVerdictContradictsNarration(s); bad {
+			t.Errorf("unquoted phrase named as data wrongly flagged as an admission: %s", reason)
+		}
+	}
+	// The mitigation is NARROW: a phrase describing a live defect must still bounce even
+	// when wiring vocabulary appears nearby — "unreachable" as the subject of a defect is
+	// not cleared just because a "keyword" descriptor is not adjacent to it.
+	stillBad := []string{
+		"the handler is unreachable from the wired entrypoint\nREVIEW_CLEAN",
+		"this is dead code that no path ever executes\nREVIEW_CLEAN",
+	}
+	for _, s := range stillBad {
+		if flagged, _ := cleanVerdictContradictsNarration(s); !flagged {
+			t.Errorf("live-defect admission %q must still be flagged, was not", s)
+		}
+	}
 }
 
 // hedgedCleanReviewerClaude: the reviewer NARRATES a hedge ("plausibly … sibling

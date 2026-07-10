@@ -1266,6 +1266,35 @@ func quotedAt(lower string, i, n int) bool {
 	return (open == '`' && close == '`') || (open == '"' && close == '"')
 }
 
+// dataDescriptors are nouns that, when they follow a blocker-class phrase within a
+// few words, mark it as being NAMED AS DATA — the reviewer is describing that the
+// phrase itself is a detector input/keyword the change adds, not admitting a defect.
+// This is the unquoted twin of quotedAt: it clears the self-referential false positive
+// where the diff under review is itself about these admission strings (this file is),
+// so a reviewer narrating "regression is a new detector input, all wired" cannot bounce
+// its own otherwise-clean verdict without having to remember to backtick the word.
+var dataDescriptors = []string{
+	"keyword", "keywords", "phrase", "phrases", "admission", "admissions",
+	"input", "inputs", "string", "strings", "entry", "entries", "detector",
+}
+
+// namedAsDataAt reports whether the phrase spanning [i, i+n) is immediately followed
+// (within a few words) by a data descriptor, making it a NAMED phrase rather than an
+// admission of a live defect.
+func namedAsDataAt(lower string, i, n int) bool {
+	suffix := lower[i+n:]
+	fields := strings.Fields(suffix)
+	for j := 0; j < len(fields) && j < 4; j++ {
+		w := strings.Trim(fields[j], ".,;:!?\"'()")
+		for _, d := range dataDescriptors {
+			if w == d {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // negatedAt reports whether the phrase found at index i in lower is preceded (within
 // a few words) by a negator, making it mitigating rather than an admission.
 func negatedAt(lower string, i int) bool {
@@ -1327,9 +1356,10 @@ func verdictBearingBlock(prose string) string {
 // A blocker phrase in a NEGATED/mitigating context ("not dead code", "isn't
 // unreachable") is the reviewer refuting the defect, not admitting it, so it is not
 // flagged — otherwise the cited-mitigating-evidence path a bounce demands could
-// never clear. An inline-QUOTED occurrence (`dead code` / "dead code") is the
-// reviewer naming the phrase (e.g. reviewing a change that is itself about these
-// admission strings), not admitting the defect, so it is not flagged either.
+// never clear. An inline-QUOTED occurrence (`dead code` / "dead code"), or an UNQUOTED
+// phrase named as data ("regression is a new detector input"), is the reviewer naming
+// the phrase (e.g. reviewing a change that is itself about these admission strings),
+// not admitting the defect, so it is not flagged either.
 // Blocker-class admissions are scanned across the whole prose (they describe a
 // concrete defect wherever they appear), but the hedge-word scan is confined to the
 // verdict-bearing block (see verdictBearingBlock) so exploratory hedging that the
@@ -1344,7 +1374,7 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 				break
 			}
 			at := from + idx
-			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) {
+			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) && !namedAsDataAt(lower, at, len(p)) {
 				return true, "blocker-class admission in narration: " + strconv.Quote(p)
 			}
 			from = at + len(p)
