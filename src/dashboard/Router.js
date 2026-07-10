@@ -17,7 +17,7 @@ import WorkDetail from './WorkDetail'
 // dashboard only observes them.
 export const navItems = [
     { path: '/', label: 'Dashboard', icon: DashboardIcon, match: (p) => p === '/' || p.startsWith('/run') },
-    { path: '/tasks', label: 'Work', icon: HistoryIcon, match: (p) => p.startsWith('/tasks') || p.startsWith('/quest') || p.startsWith('/campaign') },
+    { path: '/tasks', label: 'Work', icon: HistoryIcon, match: (p) => p.startsWith('/tasks') || p.startsWith('/quest') },
     { path: '/how-it-works', label: 'How it works', icon: MenuBookIcon, match: (p) => p.startsWith('/how-it-works') },
     { path: '/settings', label: 'Settings', icon: SettingsIcon, match: (p) => p.startsWith('/settings') },
 ]
@@ -28,21 +28,19 @@ export const getCurrentSection = (pathname) => {
     if (pathname.startsWith('/tasks')) return 'Work'
     if (pathname.startsWith('/run/')) return 'Run'
     if (pathname.startsWith('/quest/')) return 'Quest'
-    if (pathname.startsWith('/campaign/')) return 'Campaign'
     return 'Dashboard'
 }
 
-// The work/history section is one route (/tasks) that pivots Runs ↔ Quests ↔
-// Campaigns via query params. Opening a quest/campaign overlays the work section
-// (it renders behind, so the filtered list and pivot survive the overlay close);
-// a run keeps its existing overlay-on-Dashboard behaviour.
+// The work/history section is one route (/tasks) that pivots Runs ↔ Quests via
+// query params. Opening a quest overlays the work section (it renders behind, so
+// the filtered list and pivot survive the overlay close); a run keeps its
+// existing overlay-on-Dashboard behaviour.
 const Router = () => (
     <Routes>
         <Route path="/how-it-works" element={<HowItWorks />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/tasks" element={<Tasks />} />
-        <Route path="/quest/:id" element={<><Tasks /><WorkDetail kind="quest" /></>} />
-        <Route path="/campaign/:id" element={<><Tasks /><WorkDetail kind="campaign" /></>} />
+        <Route path="/quest/:id" element={<><Tasks /><WorkDetail /></>} />
         <Route path="/" element={<Dashboard />} />
         <Route path="/run/:runId" element={<Dashboard />} />
         <Route path="/run/:runId/:tab" element={<Dashboard />} />

@@ -122,7 +122,6 @@ const QuestWorkspace = ({ id, onClose }) => {
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                             <Chip size="small" color="secondary" variant="outlined" label={`quest · ${quest.id}`} sx={{ maxWidth: '100%' }} />
                             <Chip size="small" color={STATUS_COLOR[quest.status] || 'default'} variant="outlined" label={quest.status} />
-                            {quest.campaignId && <Link component="button" type="button" onClick={() => navigate(`/campaign/${quest.campaignId}`)} sx={{ fontFamily: 'monospace', fontSize: 12 }}>↑ {quest.campaignId}</Link>}
                         </Box>
                         <Typography variant="h5" sx={{ fontWeight: 800, mt: 0.5, overflowWrap: 'anywhere', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{questLabel(quest)}</Typography>
                     </Box>
