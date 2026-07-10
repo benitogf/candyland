@@ -111,27 +111,6 @@ func TestDeliveredPRs(t *testing.T) {
 	}
 }
 
-// weightedTokens applies the relative per-class weights: input 1.00, cache-read
-// 0.10, cache-write 1.25, output 5.00.
-func TestWeightedTokens(t *testing.T) {
-	cases := []struct {
-		name                                 string
-		in, cacheRead, cacheWrite, out, want int
-	}{
-		{"input only", 100, 0, 0, 0, 100},
-		{"cache-read is nearly free", 0, 100, 0, 0, 10},
-		{"cache-write costs a bit more", 0, 0, 100, 0, 125},
-		{"output dominates", 0, 0, 0, 100, 500},
-		{"mixed", 100, 100, 100, 100, 100 + 10 + 125 + 500},
-		{"zero usage", 0, 0, 0, 0, 0},
-	}
-	for _, tc := range cases {
-		if got := weightedTokens(tc.in, tc.cacheRead, tc.cacheWrite, tc.out); got != tc.want {
-			t.Errorf("%s: weightedTokens = %d, want %d", tc.name, got, tc.want)
-		}
-	}
-}
-
 // budgetExceeded gates at-or-over the budget; a zero/negative budget never gates.
 func TestBudgetExceeded(t *testing.T) {
 	if budgetExceeded(1_000_000, 0) {
@@ -152,20 +131,20 @@ func TestBudgetExceeded(t *testing.T) {
 }
 
 // weightedBudgetExceeded weighs the run's per-agent usage split and gates on it —
-// recovering the /1000 output scaling so output weighs on the raw basis.
+// the weighted total is in output-basis ktokens, the same unit as the budget.
 func TestWeightedBudgetExceeded(t *testing.T) {
 	r := run.Run{
-		TokensBudget: 5000,
+		TokensBudget: 1,
 		Agents: []run.Agent{
 			{InputTokens: 1000, CacheReadTokens: 5000, CacheCreationTokens: 200, Tokens: 1}, // Tokens=1 → 1000 raw output
 		},
 	}
-	// weighted = 1000*1 + 5000*0.1 + 200*1.25 + 1000*5 = 1000 + 500 + 250 + 5000 = 6750
-	if got := runWeightedTokens(r); got != 6750 {
-		t.Fatalf("runWeightedTokens = %d, want 6750", got)
+	// weighted ktok = (1000*0.2 + 5000*0.02 + 200*0.25 + 1000*1.0)/1000 = (200+100+50+1000)/1000 = 1
+	if got := runWeightedTokens(r); got != 1 {
+		t.Fatalf("runWeightedTokens = %d, want 1", got)
 	}
 	if !weightedBudgetExceeded(r) {
-		t.Error("weighted usage (6750) over budget (5000) must trip the gate")
+		t.Error("weighted usage (1) at/over budget (1) must trip the gate")
 	}
 
 	// No budget → never gated, however large the usage.

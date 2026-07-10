@@ -70,7 +70,15 @@ const OverviewPanel = ({ run }) => {
 
         <Card sx={{ mb: 3 }}>
             <CardContent>
-                <Meter label="budget used" right={`${run.tokensUsed}k / ${run.tokensBudget}k · $${run.costUsd.toFixed(2)}`} value={(run.tokensUsed / run.tokensBudget) * 100} color={run.tokensUsed / run.tokensBudget > 0.85 ? 'warning' : 'info'} />
+                {(() => {
+                    // The budget gate reasons over weighted ktokens (internal/run WeightedTokens),
+                    // so the meter must too — otherwise it disagrees with what actually pauses the
+                    // run. Fall back to the flat output count for older records without accounting.
+                    const weighted = run.accounting?.weightedTokens ?? run.tokensUsed
+                    const cost = run.accounting?.costUsd ?? run.costUsd
+                    const frac = run.tokensBudget ? weighted / run.tokensBudget : 0
+                    return <Meter label="budget used" right={`${weighted}k / ${run.tokensBudget}k weighted · $${cost.toFixed(2)}`} value={frac * 100} color={frac > 0.85 ? 'warning' : 'info'} />
+                })()}
                 <Meter label="tasks complete" right={`${run.tasksGreen} / ${run.tasksTotal}`} value={run.tasksTotal ? (run.tasksGreen / run.tasksTotal) * 100 : 0} color="secondary" />
             </CardContent>
         </Card>

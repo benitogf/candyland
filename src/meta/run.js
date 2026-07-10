@@ -76,20 +76,25 @@ export const resumeAtLabel = (resumeAt) => {
 // backend serves the authoritative breakdown at /api/accounting/{kind}/{id};
 // these helpers compute the same numbers client-side from an agent's fields so
 // live views don't need an extra round-trip.
-export const TOKEN_WEIGHTS = { input: 1.0, cacheRead: 0.1, cacheCreation: 1.25, output: 5.0 }
-export const COST_PER_WEIGHTED_TOKEN = 0.000012
+// Output-basis weights (output is the unit, 1.0): matches internal/run/types.go
+// WeightInput/WeightCacheRead/WeightCacheCreation/WeightOutput. weightedTokens is
+// in ktokens (the raw weighted sum /1000), the same unit as the `tokens` display.
+export const TOKEN_WEIGHTS = { input: 0.2, cacheRead: 0.02, cacheCreation: 0.25, output: 1.0 }
+// USD price of one thousand output tokens for the default tier (CostPerKtokOutput);
+// weighted tokens are already in output-basis ktokens, so cost = weighted × this.
+export const COST_PER_WEIGHTED_TOKEN = 0.075
 
 // Raw output tokens reconstructed from the /1000-scaled `tokens` display counter
 // — the only output signal carried on an agent (matches Agent.outputTokens).
 const agentOutputTokens = (a) => (a?.tokens || 0) * 1000
 
-// One agent's weighted token total.
+// One agent's weighted token total, in output-basis ktokens.
 export const weightedTokens = (a) =>
     Math.trunc(
-        TOKEN_WEIGHTS.input * (a?.inputTokens || 0) +
-        TOKEN_WEIGHTS.cacheRead * (a?.cacheReadTokens || 0) +
-        TOKEN_WEIGHTS.cacheCreation * (a?.cacheCreationTokens || 0) +
-        TOKEN_WEIGHTS.output * agentOutputTokens(a),
+        (TOKEN_WEIGHTS.input * (a?.inputTokens || 0) +
+            TOKEN_WEIGHTS.cacheRead * (a?.cacheReadTokens || 0) +
+            TOKEN_WEIGHTS.cacheCreation * (a?.cacheCreationTokens || 0) +
+            TOKEN_WEIGHTS.output * agentOutputTokens(a)) / 1000,
     )
 
 // Aggregate weighted breakdown across a set of agents, weighted+costed once over
@@ -103,10 +108,10 @@ export const sumTokenAccounting = (agents) => {
         acc.outputTokens += agentOutputTokens(a)
     }
     acc.weightedTokens = Math.trunc(
-        TOKEN_WEIGHTS.input * acc.inputTokens +
-        TOKEN_WEIGHTS.cacheRead * acc.cacheReadTokens +
-        TOKEN_WEIGHTS.cacheCreation * acc.cacheCreationTokens +
-        TOKEN_WEIGHTS.output * acc.outputTokens,
+        (TOKEN_WEIGHTS.input * acc.inputTokens +
+            TOKEN_WEIGHTS.cacheRead * acc.cacheReadTokens +
+            TOKEN_WEIGHTS.cacheCreation * acc.cacheCreationTokens +
+            TOKEN_WEIGHTS.output * acc.outputTokens) / 1000,
     )
     acc.costUsd = acc.weightedTokens * COST_PER_WEIGHTED_TOKEN
     return acc

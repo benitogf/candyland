@@ -6,20 +6,20 @@ import (
 )
 
 // weightedFrom mirrors the weighted formula independently so the test pins the
-// contract (input×1 + cacheRead×0.1 + cacheCreation×1.25 + output×5), not the
-// implementation.
+// contract (output basis: input×0.2 + cacheRead×0.02 + cacheCreation×0.25 +
+// output×1.0, then /1000 to ktokens), not the implementation.
 func weightedFrom(input, cacheRead, cacheCreation, output int) int {
-	return int(float64(input) + 0.1*float64(cacheRead) + 1.25*float64(cacheCreation) + 5.0*float64(output))
+	return int((0.2*float64(input) + 0.02*float64(cacheRead) + 0.25*float64(cacheCreation) + 1.0*float64(output)) / 1000)
 }
 
 func TestWeightedTokens(t *testing.T) {
 	got := WeightedTokens(1000, 2000, 400, 3000)
-	want := weightedFrom(1000, 2000, 400, 3000) // 1000 + 200 + 500 + 15000 = 16700
+	want := weightedFrom(1000, 2000, 400, 3000) // (200 + 40 + 100 + 3000)/1000 = 3
 	if got != want {
 		t.Fatalf("WeightedTokens = %d, want %d", got, want)
 	}
-	if want != 16700 {
-		t.Fatalf("formula drift: want 16700, got %d", want)
+	if want != 3 {
+		t.Fatalf("formula drift: want 3, got %d", want)
 	}
 }
 
@@ -56,10 +56,10 @@ func TestAgentTokenAccounting(t *testing.T) {
 	if acc.OutputTokens != 3000 {
 		t.Fatalf("OutputTokens = %d, want 3000", acc.OutputTokens)
 	}
-	if acc.WeightedTokens != 16700 {
-		t.Fatalf("WeightedTokens = %d, want 16700", acc.WeightedTokens)
+	if acc.WeightedTokens != 3 {
+		t.Fatalf("WeightedTokens = %d, want 3", acc.WeightedTokens)
 	}
-	wantCost := 16700 * CostPerWeightedToken
+	wantCost := 3 * CostPerKtokOutput
 	if math.Abs(acc.CostUsd-wantCost) > 1e-9 {
 		t.Fatalf("CostUsd = %v, want %v", acc.CostUsd, wantCost)
 	}

@@ -457,7 +457,7 @@ func (c *Conductor) spawnWithForkFallback(attemptCtx, parentCtx context.Context,
 	cold.forkFrom, cold.resumeFrom = "", ""
 	fb := spawnStream(attemptCtx, parentCtx, c, id, agentID, claudeArgs(cold.fallbackPrompt, extraDirs, busCfg, cold), workdir, busCfg)
 	// The failed fork's (rare) usage still belongs to this attempt's accounting.
-	fb.addUsage(out)
+	fb.mergeLeg(out)
 	return fb
 }
 
