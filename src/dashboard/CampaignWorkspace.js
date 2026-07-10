@@ -185,7 +185,7 @@ const CampaignWorkspace = ({ id, onClose }) => {
                             <Stat label="runs" value={`${runsDone}/${childRuns.length}`} />
                             <Stat label="PRs" value={prs.filter((p) => p.url).length} sub={`of ${prs.length} repo${prs.length === 1 ? '' : 's'}`} />
                             <Stat label="commitments" value={commitments.length} sub={verdicts.length ? `${verdictCounts.satisfied || 0} satisfied` : 'unreviewed'} color="success.main" />
-                            <Stat label="tokens" value={(campaign.tokensUsed || 0).toLocaleString()} sub={campaign.tokenBudget ? `of ${campaign.tokenBudget.toLocaleString()}` : undefined} />
+                            <Stat label="weighted tokens" value={(campaign.accounting?.weightedTokens ?? campaign.tokensUsed ?? 0).toLocaleString()} sub={`$${(campaign.accounting?.costUsd ?? 0).toFixed(2)}${campaign.tokenBudget ? ` · budget ${campaign.tokenBudget.toLocaleString()}` : ''}`} />
                         </StatGrid>
                         <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                             <Chip size="small" variant="outlined" color={gateColor(campaign.briefGate)} label={`brief gate: ${gateState(campaign.briefGate)}`} sx={{ height: 22 }} />

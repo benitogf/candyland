@@ -178,7 +178,7 @@ const QuestWorkspace = ({ id, onClose }) => {
                             <Stat label="child runs" value={`${runsDone}/${childRuns.length}`} />
                             <Stat label="PRs opened" value={quest.prsOpened || 0} />
                             <Stat label="ticks" value={ticks.length} />
-                            <Stat label="tokens" value={(quest.tokensUsed || 0).toLocaleString()} sub={quest.tokenBudget ? `of ${quest.tokenBudget.toLocaleString()}` : undefined} />
+                            <Stat label="weighted tokens" value={(quest.accounting?.weightedTokens ?? quest.tokensUsed ?? 0).toLocaleString()} sub={`$${(quest.accounting?.costUsd ?? 0).toFixed(2)}${quest.tokenBudget ? ` · budget ${quest.tokenBudget.toLocaleString()}` : ''}`} />
                         </StatGrid>
                         <Box sx={{ mt: 2 }}>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>per-repo delivery</Typography>

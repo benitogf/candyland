@@ -62,7 +62,7 @@ const RunCard = ({ run, onOpen, onDismiss }) => (
             </Box>
             <Box sx={{ minWidth: 0 }}>
                 <Typography variant="caption" color="secondary" sx={{ fontWeight: 700 }}>{statusLabel(run)}</Typography>
-                <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.tokensUsed}k tok</Typography>
+                <Typography variant="caption" color="text.secondary"> · {run.tasksGreen}/{run.tasksTotal} green · {run.accounting?.weightedTokens ?? run.tokensUsed}k tok · ${(run.accounting?.costUsd ?? run.costUsd ?? 0).toFixed(2)}</Typography>
             </Box>
             {run.status === 'paused' && <Box sx={{ mt: 0.75 }}><PauseChip entity={run} /></Box>}
         </CardContent>

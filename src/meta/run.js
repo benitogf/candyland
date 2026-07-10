@@ -69,6 +69,54 @@ export const resumeAtLabel = (resumeAt) => {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+// ── Weighted token accounting ────────────────────────────────────────────────
+// Mirror of internal/run/types.go: token weights collapse the raw usage split
+// into one cost-proportional number. A cache read is far cheaper than a fresh
+// input token and output far dearer — a flat count misstates real spend. The
+// backend serves the authoritative breakdown at /api/accounting/{kind}/{id};
+// these helpers compute the same numbers client-side from an agent's fields so
+// live views don't need an extra round-trip.
+// Output-basis weights (output is the unit, 1.0): matches internal/run/types.go
+// WeightInput/WeightCacheRead/WeightCacheCreation/WeightOutput. weightedTokens is
+// in ktokens (the raw weighted sum /1000), the same unit as the `tokens` display.
+export const TOKEN_WEIGHTS = { input: 0.2, cacheRead: 0.02, cacheCreation: 0.25, output: 1.0 }
+// USD price of one thousand output tokens for the default tier (CostPerKtokOutput);
+// weighted tokens are already in output-basis ktokens, so cost = weighted × this.
+export const COST_PER_WEIGHTED_TOKEN = 0.075
+
+// Raw output tokens reconstructed from the /1000-scaled `tokens` display counter
+// — the only output signal carried on an agent (matches Agent.outputTokens).
+const agentOutputTokens = (a) => (a?.tokens || 0) * 1000
+
+// One agent's weighted token total, in output-basis ktokens.
+export const weightedTokens = (a) =>
+    Math.trunc(
+        (TOKEN_WEIGHTS.input * (a?.inputTokens || 0) +
+            TOKEN_WEIGHTS.cacheRead * (a?.cacheReadTokens || 0) +
+            TOKEN_WEIGHTS.cacheCreation * (a?.cacheCreationTokens || 0) +
+            TOKEN_WEIGHTS.output * agentOutputTokens(a)) / 1000,
+    )
+
+// Aggregate weighted breakdown across a set of agents, weighted+costed once over
+// the summed raw split (matches run.SumTokenAccounting).
+export const sumTokenAccounting = (agents) => {
+    const acc = { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0 }
+    for (const a of agents || []) {
+        acc.inputTokens += a?.inputTokens || 0
+        acc.cacheReadTokens += a?.cacheReadTokens || 0
+        acc.cacheCreationTokens += a?.cacheCreationTokens || 0
+        acc.outputTokens += agentOutputTokens(a)
+    }
+    acc.weightedTokens = Math.trunc(
+        (TOKEN_WEIGHTS.input * acc.inputTokens +
+            TOKEN_WEIGHTS.cacheRead * acc.cacheReadTokens +
+            TOKEN_WEIGHTS.cacheCreation * acc.cacheCreationTokens +
+            TOKEN_WEIGHTS.output * acc.outputTokens) / 1000,
+    )
+    acc.costUsd = acc.weightedTokens * COST_PER_WEIGHTED_TOKEN
+    return acc
+}
+
 // Find an agent within a run object (run comes from live ooo state).
 export const agentInRun = (run, id) => (run ? (run.agents || []).find((a) => a.id === id) || null : null)
 

@@ -304,10 +304,62 @@ func abortMerge(repo string) {
 	_, _ = git(context.Background(), repo, "merge", "--abort")
 }
 
-// pushBranch pushes branch to origin, setting upstream.
+// maxPushRetries bounds the rebase-retry loop when a push is rejected because
+// origin advanced under us — the shared-branch race where a sibling child pushed
+// onto quest/<id> (or campaign/<id>) first. Quest children launch SERIALLY so the
+// window is small; the retry closes it deterministically. The ceiling stops a
+// pathological ping-pong, never legitimate convergence.
+const maxPushRetries = 3
+
+// pushBranch pushes branch to origin, setting upstream. When origin/branch has
+// advanced under it — git rejects the push as non-fast-forward, the shared-branch
+// race where a sibling child pushed first — it fetches, rebases the local branch
+// onto the advanced origin tip, and re-pushes, bounded by maxPushRetries. Any
+// non-race push failure (no origin, auth) is returned as-is: rebasing can't fix it.
 func pushBranch(ctx context.Context, repo, branch string) error {
-	_, err := git(ctx, repo, "push", "-u", "origin", branch)
+	var err error
+	for attempt := 0; attempt <= maxPushRetries; attempt++ {
+		if _, err = git(ctx, repo, "push", "-u", "origin", branch); err == nil {
+			return nil
+		}
+		if !isNonFastForward(err) {
+			return err // a real failure — rebasing won't help
+		}
+		if rebaseErr := rebaseOntoOrigin(ctx, repo, branch); rebaseErr != nil {
+			return fmt.Errorf("push rejected (origin advanced) and rebase failed: %w", rebaseErr)
+		}
+	}
 	return err
+}
+
+// isNonFastForward reports whether err is git's non-fast-forward push rejection —
+// the remote holds work the local branch doesn't. It is RETRYABLE via a rebase,
+// unlike an environmental push failure (missing origin, auth).
+func isNonFastForward(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "non-fast-forward") ||
+		strings.Contains(msg, "fetch first") ||
+		strings.Contains(msg, "[rejected]") ||
+		strings.Contains(msg, "updates were rejected")
+}
+
+// rebaseOntoOrigin fetches origin's current branch tip and rebases the local
+// branch onto it, then re-points the branch ref at the rebased tip. The
+// integration worktree is DETACHED at the branch tip (addDetachedWorktree), so the
+// rebase moves HEAD and syncBranchRef republishes it under the branch name for the
+// re-push. A rebase that conflicts is aborted so the tree is never left mid-rebase.
+func rebaseOntoOrigin(ctx context.Context, repo, branch string) error {
+	if _, err := git(ctx, repo, "fetch", "origin", branch); err != nil {
+		return err
+	}
+	if _, err := git(ctx, repo, "rebase", "FETCH_HEAD"); err != nil {
+		_, _ = git(ctx, repo, "rebase", "--abort")
+		return err
+	}
+	return syncBranchRef(ctx, repo, branch)
 }
 
 // openPR opens a pull request for the pushed branch via gh and returns its URL

@@ -30,6 +30,55 @@ type Event struct {
 	Ts        string `json:"ts,omitempty"`     // RFC3339 timestamp set when the event is appended
 }
 
+// Token weights collapse the raw usage split into one cost-proportional number.
+// They are Anthropic's per-token price ratios relative to an OUTPUT token (output
+// is the unit, weight 1.0): input is 0.2×, a cache write 0.25×, and a cache read
+// far cheaper at 0.02×. Weighted accounting is what budgets and rollups should
+// reason over — a flat per-token count treats a cheap cache hit the same as an
+// expensive output token and so misstates real spend. Expressing weights on the
+// output basis keeps `weightedTokens` in the SAME unit as the flat `tokensUsed`
+// (output ktokens), so the budget gate and the ktok display agree.
+const (
+	WeightInput         = 0.2
+	WeightCacheRead     = 0.02
+	WeightCacheCreation = 0.25
+	WeightOutput        = 1.0
+)
+
+// CostPerKtokOutput is the settled USD price of one thousand output tokens for the
+// default model tier. Weighted tokens are already on the output basis and in
+// ktokens, so cost = weightedTokens × this price.
+const CostPerKtokOutput = 0.075
+
+// WeightedTokens collapses a raw usage split into one cost-proportional token
+// count in KTOKENS on the output basis (output weight 1.0). All inputs are
+// UNSCALED raw token counts; the /1000 keeps the result in the same ktok unit as
+// the flat tokensUsed display so the budget gate can compare them directly.
+func WeightedTokens(input, cacheRead, cacheCreation, output int) int {
+	weightedRaw := WeightInput*float64(input) +
+		WeightCacheRead*float64(cacheRead) +
+		WeightCacheCreation*float64(cacheCreation) +
+		WeightOutput*float64(output)
+	return int(weightedRaw / 1000)
+}
+
+// WeightedCostUsd is the USD cost of a weighted-ktok total at the settled output price.
+func WeightedCostUsd(weightedKtok int) float64 {
+	return float64(weightedKtok) * CostPerKtokOutput
+}
+
+// TokenAccounting is the weighted token breakdown for an agent-bearing entity:
+// the raw usage split, the single cost-proportional weighted total, and the
+// derived cost. It is what the accounting API surfaces and the dashboard renders.
+type TokenAccounting struct {
+	InputTokens         int     `json:"inputTokens"`
+	CacheReadTokens     int     `json:"cacheReadTokens"`
+	CacheCreationTokens int     `json:"cacheCreationTokens"`
+	OutputTokens        int     `json:"outputTokens"`
+	WeightedTokens      int     `json:"weightedTokens"`
+	CostUsd             float64 `json:"costUsd"`
+}
+
 // Agent is one spawned worker (a headless claude process).
 type Agent struct {
 	ID       string `json:"id"`
@@ -58,6 +107,63 @@ type Agent struct {
 	CacheReadTokens     int     `json:"cacheReadTokens,omitempty"`
 	CacheCreationTokens int     `json:"cacheCreationTokens,omitempty"`
 	Events              []Event `json:"events"`
+}
+
+// outputTokens reconstructs the agent's raw output count from the /1000-scaled
+// Tokens display counter — the only output signal carried on the agent (raw
+// output is not stored unscaled). Weighted accounting is thus granular to 1000
+// on the output component.
+func (a Agent) outputTokens() int { return a.Tokens * 1000 }
+
+// WeightedTokens is the agent's cost-proportional weighted token total.
+func (a Agent) WeightedTokens() int {
+	return WeightedTokens(a.InputTokens, a.CacheReadTokens, a.CacheCreationTokens, a.outputTokens())
+}
+
+// TokenAccounting is the agent's full weighted breakdown.
+func (a Agent) TokenAccounting() TokenAccounting {
+	return TokenAccounting{
+		InputTokens:         a.InputTokens,
+		CacheReadTokens:     a.CacheReadTokens,
+		CacheCreationTokens: a.CacheCreationTokens,
+		OutputTokens:        a.outputTokens(),
+		WeightedTokens:      a.WeightedTokens(),
+		CostUsd:             WeightedCostUsd(a.WeightedTokens()),
+	}
+}
+
+// SumTokenAccounting aggregates the weighted breakdown across a set of agents.
+// The weighted total and cost are computed from the summed raw split so rounding
+// happens once, not per agent.
+func SumTokenAccounting(agents []Agent) TokenAccounting {
+	var acc TokenAccounting
+	for _, a := range agents {
+		acc.InputTokens += a.InputTokens
+		acc.CacheReadTokens += a.CacheReadTokens
+		acc.CacheCreationTokens += a.CacheCreationTokens
+		acc.OutputTokens += a.outputTokens()
+	}
+	acc.WeightedTokens = WeightedTokens(acc.InputTokens, acc.CacheReadTokens, acc.CacheCreationTokens, acc.OutputTokens)
+	acc.CostUsd = WeightedCostUsd(acc.WeightedTokens)
+	return acc
+}
+
+// SumRunAccounting aggregates the weighted breakdown across a set of runs (each
+// run's own agent rollup), summing the raw split first so the weighted total and
+// cost round once. It is how a quest rolls its child runs' accounting up onto its
+// own record.
+func SumRunAccounting(runs []Run) TokenAccounting {
+	var acc TokenAccounting
+	for i := range runs {
+		ra := runs[i].TokenAccounting()
+		acc.InputTokens += ra.InputTokens
+		acc.CacheReadTokens += ra.CacheReadTokens
+		acc.CacheCreationTokens += ra.CacheCreationTokens
+		acc.OutputTokens += ra.OutputTokens
+	}
+	acc.WeightedTokens = WeightedTokens(acc.InputTokens, acc.CacheReadTokens, acc.CacheCreationTokens, acc.OutputTokens)
+	acc.CostUsd = WeightedCostUsd(acc.WeightedTokens)
+	return acc
 }
 
 // Postmortem is the schema a terminal `blocked` (a capability failure — the "last
@@ -194,12 +300,17 @@ type Run struct {
 	TokensUsed   int     `json:"tokensUsed"`
 	TokensBudget int     `json:"tokensBudget"`
 	CostUsd      float64 `json:"costUsd"`
-	TasksGreen   int     `json:"tasksGreen"`
-	TasksTotal   int     `json:"tasksTotal"`
-	HasDag       bool    `json:"hasDag"`
-	Agents       []Agent `json:"agents"`
-	Tasks        []Task  `json:"tasks"`
-	Executor     string  `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
+	// Accounting is the run's weighted token breakdown (raw split, weighted total,
+	// corrected cost) rolled up across its agents — served on the record itself so
+	// the UI reads weighted tokens and the corrected cost without a side call and
+	// without a client-side weighting that could disagree with the budget gate.
+	Accounting TokenAccounting `json:"accounting"`
+	TasksGreen int             `json:"tasksGreen"`
+	TasksTotal int             `json:"tasksTotal"`
+	HasDag     bool            `json:"hasDag"`
+	Agents     []Agent         `json:"agents"`
+	Tasks      []Task          `json:"tasks"`
+	Executor   string          `json:"executor"` // always "claude" — runs are only ever driven by real headless Claude Code
 	// L2 telemetry (persisted, API-readable so /learn mines structure not logs):
 	// ReviewRounds is how many review→fix→re-review rounds the run ran; Escalations
 	// is the recorded upward decision-escalation audit trail; Postmortem is the
@@ -221,6 +332,13 @@ type Run struct {
 	// PR, the watch lifecycle state, the terminal outcome, and the tick log.
 	Watch *WatchState `json:"watch,omitempty"`
 }
+
+// WeightedTokens is the run's cost-proportional weighted token total across all
+// its agents.
+func (r *Run) WeightedTokens() int { return SumTokenAccounting(r.Agents).WeightedTokens }
+
+// TokenAccounting is the run's full weighted breakdown across all its agents.
+func (r *Run) TokenAccounting() TokenAccounting { return SumTokenAccounting(r.Agents) }
 
 // Audit is the queryable record of a completed run, derived from its final
 // state and stored at ooo key audits/<id> — local-first, with a documented
@@ -492,12 +610,17 @@ type Quest struct {
 	// surfaced-only no-op accounting). It is stamped when the quest reaches a
 	// terminal/blocked state so the dashboard and CLI can name a no-op as such
 	// rather than show an undifferentiated "done".
-	Summary     string   `json:"summary,omitempty"`
-	PauseReason string   `json:"pauseReason,omitempty"`
-	Archived    bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
-	TokenBudget int      `json:"tokenBudget,omitempty"`
-	TokensUsed  int      `json:"tokensUsed"`
-	Deliver     Delivery `json:"deliver"`
+	Summary     string `json:"summary,omitempty"`
+	PauseReason string `json:"pauseReason,omitempty"`
+	Archived    bool   `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
+	TokenBudget int    `json:"tokenBudget,omitempty"`
+	TokensUsed  int    `json:"tokensUsed"`
+	// Accounting is the quest's weighted token breakdown (raw split, weighted total,
+	// corrected cost) rolled up across its child runs — the per-quest analogue of
+	// Run.Accounting, so the dashboard reads weighted tokens and the corrected cost
+	// off the quest record itself rather than re-weighting flat tokensUsed client-side.
+	Accounting TokenAccounting `json:"accounting"`
+	Deliver    Delivery        `json:"deliver"`
 	// Convergence is the quest's delivery policy: "converge" (bounded — child runs
 	// accumulate on quest/<id>, one PR per repo opens at terminal) or "perFinding"
 	// (adventure — a PR per accepted finding, perpetual). Stamped from the spec at
@@ -708,6 +831,12 @@ type Campaign struct {
 	Notes       []string `json:"notes,omitempty"`
 	TokenBudget int      `json:"tokenBudget,omitempty"`
 	TokensUsed  int      `json:"tokensUsed"`
+	// Accounting is the campaign's weighted token breakdown (raw split, weighted
+	// total, corrected cost) rolled up across its child runs — the campaign analogue
+	// of Run.Accounting and Quest.Accounting, so the dashboard reads weighted tokens
+	// and the corrected cost off the campaign record rather than re-weighting flat
+	// tokensUsed client-side.
+	Accounting TokenAccounting `json:"accounting"`
 	// Deliver is how the campaign's child runs ship their work: "pr" (the default —
 	// children commit onto the campaign branch, the campaign opens one PR per impacted
 	// repo at the end) or "feedback"/"review" (children land on the EXISTING TargetPR

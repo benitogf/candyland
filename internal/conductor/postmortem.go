@@ -61,12 +61,20 @@ func parsePostmortem(text string) (*run.Postmortem, bool) {
 	return pm, pm != nil
 }
 
+// reviewGateMechanism labels a terminal block that came through failReview when no
+// more specific failure message is available. failReview normally carries its
+// recorded message VERBATIM as the mechanism (the settled decision — the reader
+// sees exactly why the gate blocked, e.g. the r123 false-refusal text), and falls
+// back to this label only when that message is empty.
+const reviewGateMechanism = "review gate"
+
 // synthPostmortem builds a schema-valid postmortem from the attempt data the
 // conductor already holds, for the capability failures where the agent cannot
 // itself answer (its process could not start, or it failed every attempt). This is
 // the conductor applying the smith rule at its own tier — a real explanation, not a
-// placeholder.
-func synthPostmortem(agentID, failingCapability, evidence string, attempts int, partial string) *run.Postmortem {
+// placeholder. An optional mechanism attributes which conductor mechanism produced
+// the block (e.g. reviewGateMechanism) so the root cause names it.
+func synthPostmortem(agentID, failingCapability, evidence string, attempts int, partial string, mechanism ...string) *run.Postmortem {
 	attemptLines := make([]string, 0, attempts)
 	for i := 1; i <= attempts; i++ {
 		attemptLines = append(attemptLines, fmt.Sprintf("attempt %d/%d: %s", i, attempts, failingCapability))
@@ -78,10 +86,22 @@ func synthPostmortem(agentID, failingCapability, evidence string, attempts int, 
 		Attempts:           attemptLines,
 		FailingCapability:  failingCapability,
 		Evidence:           orDefault(strings.TrimSpace(evidence), failingCapability),
-		RootCauseSoFar:     "a capability outside the repo failed for agent " + agentID + "; no decision could resolve it (§1)",
+		RootCauseSoFar:     synthRootCause(agentID, strings.TrimSpace(firstNonEmpty(mechanism...))),
 		HumanUnblockAction: "restore the failing capability (see failingCapability/evidence), then start a new run",
 		PartialWorkState:   orDefault(strings.TrimSpace(partial), "no partial work landed for "+agentID),
 	}
+}
+
+// synthRootCause phrases the root cause, naming the conductor mechanism that
+// produced the block when one is attributed, so the postmortem records not just
+// what failed but which mechanism it failed under.
+func synthRootCause(agentID, mechanism string) string {
+	if mechanism == "" {
+		return "a capability outside the repo failed for agent " + agentID + "; no decision could resolve it (§1)"
+	}
+	// Quote the mechanism verbatim (the recorded failReview message) so the reader
+	// sees exactly why the block happened, not a generic classification.
+	return mechanism + " (agent " + agentID + "; §1)"
 }
 
 // attachRunPostmortem persists a postmortem on a run's record ONLY when it is
@@ -102,22 +122,22 @@ func (c *Conductor) attachRunPostmortem(id string, pm *run.Postmortem) bool {
 // absent or incomplete, the conductor synthesises one from the attempt data (the
 // agent may be unable to answer — e.g. its process could not start). The returned
 // postmortem is always schema-valid.
-func (c *Conductor) blockerPostmortemFor(agentID, agentText, failingCapability, evidence string, attempts int, partial string) *run.Postmortem {
+func (c *Conductor) blockerPostmortemFor(agentID, agentText, failingCapability, evidence string, attempts int, partial string, mechanism ...string) *run.Postmortem {
 	if pm, ok := parsePostmortem(agentText); ok {
 		if valid, _ := validatePostmortem(pm); valid {
 			return pm
 		}
 		// Incomplete agent postmortem — rejected; fall through to the synthesised one.
 	}
-	return synthPostmortem(agentID, failingCapability, evidence, attempts, partial)
+	return synthPostmortem(agentID, failingCapability, evidence, attempts, partial, mechanism...)
 }
 
 // attachQuestPostmortem persists a schema-valid postmortem on a quest's record — the
 // E2 invariant for a blocked quest. It synthesises one from the block reason via
 // blockerPostmortemFor (guaranteeing all six §3 fields), so a quest never writes a
 // terminal `blocked` with a nil postmortem. Returns false only if the quest is unknown.
-func (c *Conductor) attachQuestPostmortem(id, agentID, failingCapability, evidence string) bool {
-	pm := c.blockerPostmortemFor(agentID, "", failingCapability, evidence, 1, "quest "+id)
+func (c *Conductor) attachQuestPostmortem(id, agentID, failingCapability, evidence string, mechanism ...string) bool {
+	pm := c.blockerPostmortemFor(agentID, "", failingCapability, evidence, 1, "quest "+id, mechanism...)
 	if ok, _ := validatePostmortem(pm); !ok {
 		return false
 	}
@@ -126,8 +146,8 @@ func (c *Conductor) attachQuestPostmortem(id, agentID, failingCapability, eviden
 
 // attachCampaignPostmortem persists a schema-valid postmortem on a campaign's record
 // — the E2 invariant for a blocked campaign (mirrors attachQuestPostmortem).
-func (c *Conductor) attachCampaignPostmortem(id, agentID, failingCapability, evidence string) bool {
-	pm := c.blockerPostmortemFor(agentID, "", failingCapability, evidence, 1, "campaign "+id)
+func (c *Conductor) attachCampaignPostmortem(id, agentID, failingCapability, evidence string, mechanism ...string) bool {
+	pm := c.blockerPostmortemFor(agentID, "", failingCapability, evidence, 1, "campaign "+id, mechanism...)
 	if ok, _ := validatePostmortem(pm); !ok {
 		return false
 	}
