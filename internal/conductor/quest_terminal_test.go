@@ -138,7 +138,7 @@ func TestQuestDeliveryFailureNeverDone(t *testing.T) {
 	}
 }
 
-// O5: a standalone perFinding (adventure) quest child run serializes deliver:"pr"
+// O5: a standalone perFinding quest child run serializes deliver:"pr"
 // (present, not omitted) so the frontend can key UI on r.deliver. Empty/omitted
 // would break the UI. (A converge quest's child delivers "branch" — see
 // TestQuestConvergeOpensOnePRAtTerminal.)

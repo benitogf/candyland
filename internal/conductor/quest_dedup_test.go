@@ -46,7 +46,7 @@ func TestDeliveredTitlesFromLedger(t *testing.T) {
 	}
 }
 
-// A quest with NO shared branch (a perFinding adventure, or a feedback/review quest)
+// A quest with NO shared branch (a perFinding quest, or a feedback/review quest)
 // accumulates nothing across drives — each finding is its own PR and re-surfacing is
 // guarded by dropOwnArtifacts — so ledger dedup does not apply: deliveredTitles is
 // empty even with completed items on the ledger.

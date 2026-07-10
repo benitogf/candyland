@@ -117,10 +117,10 @@ func TestQuestConvergeOpensOnePRAtTerminal(t *testing.T) {
 	}
 }
 
-// The ORACLE for the perFinding policy (an adventure): each accepted finding is its
+// The ORACLE for the perFinding policy: each accepted finding is its
 // own child run with deliver=pr and opens its OWN PR — the pre-convergence behavior,
 // now explicit via Convergence: perFinding.
-func TestAdventurePerFindingOpensPRPerFinding(t *testing.T) {
+func TestPerFindingOpensPRPerFinding(t *testing.T) {
 	c, repo := deliveryConductor(t, questTickClaude)
 	t.Setenv("CANDYLAND_QUEST_FIXTURE", filepath.Join(t.TempDir(), "first-tick"))
 
@@ -146,7 +146,7 @@ func TestAdventurePerFindingOpensPRPerFinding(t *testing.T) {
 		t.Errorf("perFinding child deliver = %q, want pr", child.Deliver)
 	}
 	if child.PrURL == "" {
-		t.Error("a perFinding (adventure) child run must open its own PR")
+		t.Error("a perFinding child run must open its own PR")
 	}
 	// No terminal per-repo PR — the finding's own PR is the delivery.
 	if len(q.PRs) != 0 {

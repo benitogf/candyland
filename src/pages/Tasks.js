@@ -216,10 +216,9 @@ const QuestsTable = ({ rows, onDrill, onOpen }) => (
     </>
 )
 
-const COLSPAN = { runs: 5, quests: 4, adventures: 4 }
+const COLSPAN = { runs: 5, quests: 4 }
 
-// Text fields each level is searched over. Adventures are perFinding quests, so
-// they share the quest text fields.
+// Text fields each level is searched over.
 const textFieldsFor = (item, level) => {
     if (level === 'runs') return [runLabel(item), item.status, folderOf(item), item.prompt, item.branch, item.id]
     return [item.objective, item.originalObjective, item.status, folderOf(item), item.id]
@@ -233,14 +232,9 @@ const Tasks = () => {
 
     const runs = useRuns()
     const quests = useQuests()
-    // Adventures are the perFinding quests; the Quests level shows ONLY the
-    // non-perFinding (converge) quests. This is a strict partition — a perFinding
-    // quest appears under Adventures and never under Quests.
-    const items = level === 'runs' ? runs
-        : level === 'adventures' ? quests.filter((q) => q.convergence === 'perFinding')
-            : quests.filter((q) => q.convergence !== 'perFinding')
-    // Adventures reuse the quest data shape for filtering/text-search.
-    const dataLevel = level === 'adventures' ? 'quests' : level
+    // The Quests level shows every quest regardless of delivery mode — both
+    // converge and perFinding quests are first-class here.
+    const items = level === 'runs' ? runs : quests
 
     // Each run delivery SHAPE (branch / feedback / review) is its OWN PR state,
     // distinct from has-PR and from a PR-less/failed run. Handle them here on top of
@@ -254,12 +248,12 @@ const Tasks = () => {
             if (level === 'runs') {
                 const shape = deliverOf(it)
                 const shaped = shape !== 'pr'
-                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, dataLevel, textFieldsFor(it, dataLevel))
+                if (SHAPE_FILTERS.includes(prState)) return shape === prState && matchFilters(it, { ...filters, pr: '' }, level, textFieldsFor(it, level))
                 if (prState === 'none' && shaped) return false
             }
-            return matchFilters(it, filters, dataLevel, textFieldsFor(it, dataLevel))
+            return matchFilters(it, filters, level, textFieldsFor(it, level))
         }),
-        [items, filters, level, dataLevel, prState],
+        [items, filters, level, level, prState],
     )
 
     // Pivot/filter mutations all go through the URL so links preserve filters.

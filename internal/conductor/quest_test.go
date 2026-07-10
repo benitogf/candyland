@@ -157,14 +157,14 @@ func TestCoalesceQuestAgentWrites(t *testing.T) {
 }
 
 // QuestBranch derives the shared branch a quest's child runs accumulate on:
-// quest/<id> for a converge quest, and "" for a perFinding (adventure) or
+// quest/<id> for a converge quest, and "" for a perFinding or
 // feedback/review quest.
 func TestQuestBranchDerivation(t *testing.T) {
 	// Standalone converge quest → its own quest/<id> branch.
 	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergeConverge}); b != "quest/q7" {
 		t.Errorf("standalone converge quest branch = %q, want quest/q7", b)
 	}
-	// Standalone perFinding (adventure) quest → no shared branch (a PR per finding).
+	// Standalone perFinding quest → no shared branch (a PR per finding).
 	if b := QuestBranch(run.Quest{ID: "q7", Convergence: run.ConvergePerFinding}); b != "" {
 		t.Errorf("perFinding quest branch = %q, want empty", b)
 	}
