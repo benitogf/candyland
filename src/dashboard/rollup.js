@@ -11,6 +11,7 @@ import Typography from '@mui/material/Typography'
 import LinearProgress from '@mui/material/LinearProgress'
 
 import { CopyPrLink } from '../components/CopyPr'
+import { sumTokenAccounting } from '../meta/run'
 
 // Terminal run/quest statuses count as "delivered/finished" for progress.
 const DONE_STATUSES = new Set(['done', 'completed', 'stopped', 'cancelled', 'surfaced-only'])
@@ -90,17 +91,20 @@ export const RepoDelivery = ({ prs }) => {
 // working vs done vs other, and sums tokens.
 export const agentActivity = (entities) => {
     let working = 0; let done = 0; let stopped = 0; let other = 0; let tokens = 0; let total = 0
+    const allAgents = []
     for (const e of entities || []) {
         for (const a of e?.agents || []) {
             total++
             tokens += a.tokens || 0
+            allAgents.push(a)
             if (a.state === 'working' || a.state === 'retrying' || a.state === 'integrating') working++
             else if (a.state === 'green' || a.state === 'done') done++
             else if (a.state === 'stopped') stopped++
             else other++
         }
     }
-    return { working, done, stopped, other, tokens, total }
+    const acc = sumTokenAccounting(allAgents)
+    return { working, done, stopped, other, tokens, total, weightedTokens: acc.weightedTokens, costUsd: acc.costUsd }
 }
 
 export const AgentActivity = ({ entities }) => {
@@ -114,6 +118,9 @@ export const AgentActivity = ({ entities }) => {
             {a.stopped > 0 && <Chip size="small" variant="outlined" label={`${a.stopped} stopped`} sx={{ height: 22 }} />}
             {a.other > 0 && <Chip size="small" variant="outlined" label={`${a.other} idle/blocked`} sx={{ height: 22 }} />}
             <Typography variant="body2" color="text.secondary">· {a.tokens.toLocaleString()} tokens across children</Typography>
+            {a.weightedTokens > 0 && (
+                <Typography variant="body2" color="text.secondary">· {a.weightedTokens.toLocaleString()} weighted · ${a.costUsd.toFixed(2)}</Typography>
+            )}
         </Box>
     )
 }
