@@ -124,15 +124,19 @@ func TestClassifyInfra(t *testing.T) {
 // understates the cost of every interrupted attempt.
 func TestResumeLegsMergeUsage(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "leg1-done")
+	// Leg 1 does real work (a tool_use) and self-reports an INCIDENT before dying;
+	// leg 2 resumes with NO tool_use and different text. This shapes the r123 case:
+	// the merged outcome must OR sawTool (true from leg 1) and JOIN allText (so the
+	// pre-pause self-report survives for captureIncidents) — not just sum tokens.
 	stub := "#!/usr/bin/env bash\n" +
 		"if [[ ! -f \"" + marker + "\" ]]; then\n" +
 		"  touch \"" + marker + "\"\n" +
 		"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"x\"}}]}}'\n" +
+		"  echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"INCIDENT pre-pause self-report from leg1\"}]}}'\n" +
 		"  echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"leg1\",\"usage\":{\"output_tokens\":2000,\"input_tokens\":1000,\"cache_read_input_tokens\":10,\"cache_creation_input_tokens\":20}}'\n" +
 		"  echo 'API Error: Unable to connect to API (ConnectionRefused)' >&2\n" +
 		"  exit 1\n" +
 		"fi\n" +
-		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"y\"}}]}}'\n" +
 		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"resumed green\",\"usage\":{\"output_tokens\":3000,\"input_tokens\":500,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":7}}'\n"
 	writeFakeClaude(t, stub)
 	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "2000")
@@ -166,6 +170,20 @@ func TestResumeLegsMergeUsage(t *testing.T) {
 	}
 	if out.cacheWriteTokens != 27 {
 		t.Errorf("cacheWriteTokens = %d, want 27 (20+7)", out.cacheWriteTokens)
+	}
+	// sawTool must OR across legs: only leg 1 used a tool, yet the merged outcome
+	// must report true — the r123 defect was the final (tool-less) resume leg
+	// masking the pre-pause work and triggering a false "made no changes" refusal.
+	if !out.sawTool {
+		t.Error("sawTool = false, want true (leg 1 used a tool; OR must survive the resume)")
+	}
+	// allText must JOIN across legs so captureIncidents still sees the pre-pause
+	// self-report that leg 1 emitted before the connection died.
+	if !strings.Contains(out.allText, "INCIDENT pre-pause self-report from leg1") {
+		t.Errorf("allText = %q, want it to retain leg 1's pre-pause self-report", out.allText)
+	}
+	if !strings.Contains(out.allText, "resumed green") {
+		t.Errorf("allText = %q, want it to include leg 2's text", out.allText)
 	}
 }
 

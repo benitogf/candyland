@@ -592,12 +592,17 @@ type Quest struct {
 	// surfaced-only no-op accounting). It is stamped when the quest reaches a
 	// terminal/blocked state so the dashboard and CLI can name a no-op as such
 	// rather than show an undifferentiated "done".
-	Summary     string   `json:"summary,omitempty"`
-	PauseReason string   `json:"pauseReason,omitempty"`
-	Archived    bool     `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
-	TokenBudget int      `json:"tokenBudget,omitempty"`
-	TokensUsed  int      `json:"tokensUsed"`
-	Deliver     Delivery `json:"deliver"`
+	Summary     string `json:"summary,omitempty"`
+	PauseReason string `json:"pauseReason,omitempty"`
+	Archived    bool   `json:"archived,omitempty"` // cleared from the dashboard; still kept in the Work history
+	TokenBudget int    `json:"tokenBudget,omitempty"`
+	TokensUsed  int    `json:"tokensUsed"`
+	// Accounting is the quest's weighted token breakdown (raw split, weighted total,
+	// corrected cost) rolled up across its child runs — the per-quest analogue of
+	// Run.Accounting, so the dashboard reads weighted tokens and the corrected cost
+	// off the quest record itself rather than re-weighting flat tokensUsed client-side.
+	Accounting TokenAccounting `json:"accounting"`
+	Deliver    Delivery        `json:"deliver"`
 	// Convergence is the quest's delivery policy: "converge" (bounded — child runs
 	// accumulate on quest/<id>, one PR per repo opens at terminal) or "perFinding"
 	// (adventure — a PR per accepted finding, perpetual). Stamped from the spec at
