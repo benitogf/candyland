@@ -35,6 +35,32 @@ func TestParseAcceptanceCommands(t *testing.T) {
 	if got := parseAcceptanceCommands("# Title\njust prose\n"); got != nil {
 		t.Errorf("no acceptance section must yield nil, got %v", got)
 	}
+	// (4) Fence-blind anchor guard: a `# acceptance …` line INSIDE a ```text block must
+	// NOT anchor the section — only the real `## Acceptance` heading outside a fence does.
+	fenced := "```text\n# Acceptance flow diagram\n```\n- [ ] `should-not-run`\n\n## Acceptance\n```sh\ntrue\n```\n"
+	if got := parseAcceptanceCommands(fenced); !reflect.DeepEqual(got, []string{"true"}) {
+		t.Errorf("a `#` line inside a fenced block must not anchor the section, got %v", got)
+	}
+	// (5) Unclosed sh fence: a leaked `##` heading ends the section so trailing prose is
+	// not run as commands.
+	unclosed := "## Acceptance\n```sh\ngo test ./...\n## Rollout\nrm -rf /important/data\nmore prose\n"
+	if got := parseAcceptanceCommands(unclosed); !reflect.DeepEqual(got, []string{"go test ./..."}) {
+		t.Errorf("an unclosed sh fence must not run trailing prose past a heading, got %v", got)
+	}
+	// (6) `#` comment lines inside an sh fence are skipped (not collected), so they don't
+	// inflate the command count — but real commands around them still collect.
+	comments := "## Acceptance\n```sh\n# set up the checks\ngo build ./...\n# then test\ngo test ./...\n```\n"
+	if got := parseAcceptanceCommands(comments); !reflect.DeepEqual(got, []string{"go build ./...", "go test ./..."}) {
+		t.Errorf("bash `#` comments in an sh fence must be skipped, got %v", got)
+	}
+	// (7) Word-anchored heading: "## Acceptances …" must NOT match; "## Acceptance
+	// criteria" must.
+	if got := parseAcceptanceCommands("## Acceptances and other notes\n```sh\nnope\n```\n"); got != nil {
+		t.Errorf("`## Acceptances` (word not \"acceptance\") must not anchor, got %v", got)
+	}
+	if got := parseAcceptanceCommands("## Acceptance criteria\n```sh\nyep\n```\n"); !reflect.DeepEqual(got, []string{"yep"}) {
+		t.Errorf("`## Acceptance criteria` must anchor, got %v", got)
+	}
 }
 
 // acceptanceClaude drives a full clean delivery (tech lead → coder → clean review →

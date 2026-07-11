@@ -465,7 +465,7 @@ func (c *Conductor) ReconcileOrphans() {
 		// A cancelled run is already a terminal genuine record (Cancel persists
 		// Status=="cancelled" with no Error); rewriting it to "done"/Interrupted
 		// would corrupt the user's deliberate-cancel history on restart.
-		if json.Unmarshal(obj.Data, &r) != nil || r.Status == "done" || r.Status == "cancelled" || r.Status == "blocked" || r.Status == "delivery-failed" {
+		if json.Unmarshal(obj.Data, &r) != nil || isRunTerminal(r.Status) {
 			continue
 		}
 		r.Status = "done"

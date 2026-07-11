@@ -1967,16 +1967,25 @@ func runAcceptanceCommand(ctx context.Context, dir, command string) (bool, strin
 // "## Acceptance criteria". The section ends at the next line beginning with `#`.
 //
 // Within the section commands come from two shapes only, to avoid running prose as a
-// command: (1) fenced ```sh / ```bash / ```shell blocks — each non-blank line is one
-// command; (2) checklist items whose ENTIRE content after `- [ ] ` is a SINGLE
-// backtick-wrapped span and nothing else (e.g. `- [ ] `go test ./...“ → `go test
-// ./...`). A checklist line carrying a backtick span amid other prose does NOT match.
-// Returns nil when there is no such section or no runnable command in it.
+// command: (1) fenced ```sh / ```bash / ```shell blocks — each non-blank, non-comment
+// line is one command; (2) checklist items whose ENTIRE content after `- [ ] ` is a
+// SINGLE backtick-wrapped span and nothing else (e.g. `- [ ] `go test ./...“ → `go
+// test ./...`). A checklist line carrying a backtick span amid other prose does NOT
+// match. Fence tracking is applied BOTH while scanning for the heading (so a `#`
+// pseudo-heading inside a ```` ```text ```` block can't anchor the section) and while
+// collecting; a `#`-heading line ends the section even mid-fence (a heading can't
+// appear inside a well-formed fence, so an unterminated fence can't swallow trailing
+// prose). Returns nil when there is no such section or no runnable command in it.
 func parseAcceptanceCommands(md string) []string {
 	lines := strings.Split(md, "\n")
 	start := -1
+	inFence := false
 	for i, ln := range lines {
-		if isAcceptanceHeading(ln) {
+		if isFenceLine(ln) {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && isAcceptanceHeading(ln) {
 			start = i + 1
 			break
 		}
@@ -1985,26 +1994,36 @@ func parseAcceptanceCommands(md string) []string {
 		return nil
 	}
 	var cmds []string
-	inFence := false
+	inShFence := false
 	for _, ln := range lines[start:] {
 		t := strings.TrimSpace(ln)
-		if !inFence && strings.HasPrefix(t, "#") {
-			break // next heading ends the acceptance section
-		}
-		if strings.HasPrefix(t, "```") {
-			lang := strings.ToLower(strings.TrimPrefix(t, "```"))
-			if !inFence {
-				inFence = lang == "sh" || lang == "bash" || lang == "shell"
+		if isFenceLine(ln) {
+			if !inShFence {
+				lang := strings.ToLower(strings.TrimPrefix(t, "```"))
+				inShFence = lang == "sh" || lang == "bash" || lang == "shell"
 			} else {
-				inFence = false
+				inShFence = false
 			}
 			continue
 		}
-		if inFence {
+		if inShFence {
+			// A `##`+ line is a markdown sub-heading that leaked into an unterminated
+			// sh fence — end the section so a malformed fence can't run trailing prose.
+			// A single-`#` line is a bash comment — skip it (don't collect, don't end),
+			// so a commented sh block still contributes its real commands.
+			if strings.HasPrefix(t, "##") {
+				break
+			}
+			if strings.HasPrefix(t, "#") {
+				continue
+			}
 			if t != "" {
 				cmds = append(cmds, t)
 			}
 			continue
+		}
+		if strings.HasPrefix(t, "#") {
+			break // a heading ends the acceptance section
 		}
 		if cmd := wholeBacktickChecklistCommand(t); cmd != "" {
 			cmds = append(cmds, cmd)
@@ -2013,16 +2032,29 @@ func parseAcceptanceCommands(md string) []string {
 	return cmds
 }
 
-// isAcceptanceHeading reports whether a line is a markdown heading whose text starts
-// with "acceptance" (case-insensitive) after the leading `#`s and spaces are stripped.
+// isFenceLine reports whether the trimmed line opens or closes a markdown code fence.
+func isFenceLine(ln string) bool { return strings.HasPrefix(strings.TrimSpace(ln), "```") }
+
+// isAcceptanceHeading reports whether a line is a markdown heading whose text is the
+// WHOLE WORD "acceptance" (case-insensitive) after the leading `#`s and spaces are
+// stripped — "acceptance" or "acceptance <anything>" matches ("acceptance criteria"),
+// but "acceptances …" does not (the word must not run into more letters).
 func isAcceptanceHeading(ln string) bool {
 	t := strings.TrimSpace(ln)
 	if !strings.HasPrefix(t, "#") {
 		return false
 	}
-	t = strings.TrimLeft(t, "#")
-	t = strings.TrimSpace(t)
-	return strings.HasPrefix(strings.ToLower(t), "acceptance")
+	t = strings.TrimSpace(strings.TrimLeft(t, "#"))
+	low := strings.ToLower(t)
+	const word = "acceptance"
+	if !strings.HasPrefix(low, word) {
+		return false
+	}
+	if len(low) == len(word) {
+		return true // exactly "acceptance"
+	}
+	next := low[len(word)] // the char right after the word must not be a letter
+	return next < 'a' || next > 'z'
 }
 
 // wholeBacktickChecklistCommand returns the command from a checklist item whose ENTIRE
