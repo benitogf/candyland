@@ -360,6 +360,11 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// left as the REQUESTED model so the gate's expiry restores it next iteration.
 		spawnO := o
 		spawnO.model = c.effectiveModel(o.model, time.Now())
+		// Reflect the model ACTUALLY in force this attempt on the run/agent record —
+		// the one choke point that covers a pre-substituted spawn (a fresh spawn whose
+		// requested model is already gated) AND gate expiry (the requested model comes
+		// back). The run stays "running" throughout — a model fallback is never a pause.
+		c.reflectEffectiveModel(id, agentID, o.model, spawnO.model)
 		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, spawnO)
 		cancel()
 		// Upgrade the resume target to the ACTUAL work session once a spawn ran under
@@ -377,22 +382,18 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 			// burned retry — the top-of-loop awaitLimit stays open so the resume spawns
 			// right away on opus.
 			if modelScoped && spawnO.model != defaultModel {
+				// Gate only this model and reset the infra streak (a model-limit death
+				// proves the connection works, so a later blip must not count as
+				// consecutive and arm the fleet infra gate). No fleet gate, no pause, no
+				// burned retry. The StatusLine + agent Model are set at the loop top on the
+				// resume iteration (reflectEffectiveModel), so the record shows opus.
 				c.armModelLimit(spawnO.model, resetAt)
-				msg := fmt.Sprintf("%s limit reached — falling back to %s until %s",
-					spawnO.model, defaultModel, resetAt.UTC().Format(time.RFC3339))
+				infraStreak = 0
 				c.updateAgentHost(id, func(agents *[]run.Agent) {
-					appendToAgentIn(agents, agentID, run.Event{T: "system", Text: msg}, 0)
+					appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
+						"%s limit reached — falling back to %s until %s",
+						spawnO.model, defaultModel, resetAt.UTC().Format(time.RFC3339))}, 0)
 				})
-				if isRunID(id) {
-					c.Update(id, func(r *run.Run) {
-						r.StatusLine = msg // run stays "running" — a model fallback is not a pause
-						for i := range r.Agents {
-							if r.Agents[i].ID == agentID {
-								r.Agents[i].Model = defaultModel // dashboard shows the model actually in use
-							}
-						}
-					})
-				}
 				priorLegs.mergeLeg(out)
 				resumeInPlace()
 				continue

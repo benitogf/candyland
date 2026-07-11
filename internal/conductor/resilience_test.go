@@ -235,9 +235,11 @@ func TestClassifyUsageLimitVariants(t *testing.T) {
 		// model-scoped banners: the captured phrase names a specific model.
 		{"fable banner", attemptOutcome{stalled: true, lastText: "You've hit your Fable limit · resets 3pm"}, true, true, time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)},
 		{"weekly fable banner", attemptOutcome{stalled: true, lastText: "You've hit your weekly Fable limit"}, true, true, now.Add(defaultLimitBackoff)},
-		// account-scoped banners: the phrase is only a scope qualifier.
+		// account-scoped banners: the phrase is only a scope qualifier or an unknown
+		// token — it must NOT mis-route to a model fallback (allowlist, not denylist).
 		{"session banner", attemptOutcome{runErr: errStub, stderr: "You've hit your session limit"}, true, false, now.Add(defaultLimitBackoff)},
 		{"weekly banner", attemptOutcome{stalled: true, lastText: "You've hit your weekly limit"}, true, false, now.Add(defaultLimitBackoff)},
+		{"rate banner (unknown qualifier → account)", attemptOutcome{runErr: errStub, stderr: "You've hit your rate limit"}, true, false, now.Add(defaultLimitBackoff)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -401,26 +403,62 @@ func TestModelScopedLimitFallsBackToOpus(t *testing.T) {
 	}
 }
 
-// Fallback-of-fallback: when the opus fallback ITSELF hits a model banner (nothing
-// left to fall back to) the account path arms the fleet gate.
+// Fallback-of-fallback: a fable spawn hits its model limit (fall back to opus),
+// then the opus resume ITSELF hits a model limit — nothing left to fall back to, so
+// the real code path takes the account branch and arms the FLEET gate. Driven end
+// to end through streamOnce (no hand-armed gate).
 func TestFallbackModelLimitArmsFleetGate(t *testing.T) {
+	dir := t.TempDir()
+	m1 := filepath.Join(dir, "fable-hit")
+	m2 := filepath.Join(dir, "opus-hit")
+	stub := "#!/usr/bin/env bash\n" +
+		"prompt=\"$2\"\n" +
+		"if [[ ! -f \"" + m1 + "\" ]]; then\n" +
+		"  touch \"" + m1 + "\"\n" +
+		"  echo \"You've hit your Fable limit · resets 3:45pm\" >&2\n" +
+		"  exit 1\n" +
+		"elif [[ ! -f \"" + m2 + "\" ]]; then\n" +
+		"  touch \"" + m2 + "\"\n" + // this resume runs on opus (fable gated); opus banner → account
+		"  echo \"You've hit your Opus limit|$(( $(date +%s) + 1 ))\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"x\"}}]}}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"resumed green\",\"usage\":{\"output_tokens\":3}}'\n"
+	writeFakeClaude(t, stub)
+	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "5000")
+	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
+
 	c := New(nil)
-	c.armModelLimit("claude-fable-5", time.Now().Add(time.Hour))
-	// A spawn requested on fable now runs effectively on opus; opus emits its own
-	// model banner. Simulate the branch: spawnO.model == defaultModel, modelScoped.
-	out := attemptOutcome{stalled: true, lastText: "You've hit your Opus limit · resets 4pm"}
-	resetAt, modelScoped, isLimit := classifyUsageLimit(out, time.Now())
-	if !isLimit || !modelScoped {
-		t.Fatalf("opus banner not classified model-scoped: isLimit=%v modelScoped=%v", isLimit, modelScoped)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan attemptOutcome, 1)
+	go func() { done <- streamOnce(ctx, c, id, "a", "go on", dir, nil, spawnOpts{model: "claude-fable-5"}) }()
+
+	select {
+	case out := <-done:
+		if out.startErr != nil || out.runErr != nil || out.stalled {
+			t.Fatalf("run did not converge: startErr=%v runErr=%v stalled=%v", out.startErr, out.runErr, out.stalled)
+		}
+	case <-ctx.Done():
+		t.Fatal("streamOnce never returned")
 	}
-	// effectiveModel(fable) is opus (fable gated); a model-scoped limit on opus is
-	// the un-fallible case → account path arms the fleet gate.
-	if got := c.effectiveModel("claude-fable-5", time.Now()); got != defaultModel {
-		t.Fatalf("gated fable should resolve to opus, got %q", got)
-	}
-	c.armLimit("r1", resetAt) // the account path the retry loop takes for spawnO.model==defaultModel
+	// The opus-on-opus limit is un-fallible → the account path armed the fleet gate.
 	if c.limitDeadline().IsZero() {
-		t.Error("fleet gate not armed when the fallback model itself hit a limit")
+		t.Error("fleet gate not armed when the fallback model (opus) itself hit a limit")
+	}
+	// And it recorded a real fleet pause (the account branch), not a silent fallback.
+	r, _ := c.Get(id)
+	paused := false
+	for _, a := range r.Agents {
+		for _, e := range a.Events {
+			if strings.Contains(e.Text, "usage limit reached (pause") {
+				paused = true
+			}
+		}
+	}
+	if !paused {
+		t.Error("expected a fleet-pause event when the opus fallback itself hit a limit")
 	}
 }
 

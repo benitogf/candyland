@@ -11,12 +11,18 @@ import (
 )
 
 // Usage-limit auto-resume. Claude Code dies (or emits a terminal message) when
-// the account's usage limit is hit — a spawn that fails this way is NOT a fault
-// of the agent's work, so it must not burn a retry. Instead the whole conductor
-// pauses every spawn until the limit resets, then resumes the interrupted session
-// in place. The gate is conductor-wide (one account, one limit) so a limit hit by
-// any agent blocks all of them; it survives a restart via a paused run's persisted
-// resumeAt (rehydrate re-arms the gate).
+// a usage limit is hit — a spawn that fails this way is NOT a fault of the agent's
+// work, so it must not burn a retry. There are two scopes:
+//
+//   - ACCOUNT-scoped (a session/weekly/usage window, or the generic 429/rate-limit
+//     phrases): the whole conductor pauses every spawn until the limit resets, then
+//     resumes the interrupted session in place. The gate is conductor-wide (one
+//     account, one limit) so a limit hit by any agent blocks all of them; it
+//     survives a restart via a paused run's persisted resumeAt (rehydrate re-arms it).
+//   - MODEL-scoped (a banner naming a specific model, e.g. "You've hit your Fable
+//     limit"): only that model is gated — the interrupted spawn falls back to
+//     defaultModel (opus) and resumes immediately, and the fleet is NEVER paused.
+//     See the per-model gate section below.
 
 // defaultLimitBackoff is how long to wait when the death says a limit was hit but
 // carries no parseable reset time — long enough to clear a per-minute rate spike
@@ -34,9 +40,12 @@ var (
 	// The captured group (.+?) holds the scope/model phrase between "your" and
 	// "limit" ("session", "weekly Fable", "Fable"); bannerModelScoped classifies it.
 	limitBannerRe = regexp.MustCompile(`(?i)you['’]?ve hit your (.+?) limit`)
-	// limitScopeStripRe removes the ACCOUNT-scope qualifier tokens from a banner's
-	// captured phrase; any non-empty remainder is a specific model name.
-	limitScopeStripRe = regexp.MustCompile(`(?i)\b(session|weekly|usage|5[- ]hour)\b`)
+	// modelTokenRe is the ALLOWLIST of model-name tokens a banner phrase must
+	// contain to be MODEL-scoped. An allowlist (not a denylist of account
+	// qualifiers) is deliberate: a novel/unknown qualifier ("rate", "monthly",
+	// "daily") must fall through to ACCOUNT scope and pause the fleet, never be
+	// mistaken for a model and silently fall back.
+	modelTokenRe = regexp.MustCompile(`(?i)\b(fable|opus|sonnet|haiku)\b`)
 	// limitPhraseRe matches quota phrasings an AGENT might legitimately write when
 	// reviewing rate-limit code ("usage limit reached", "429"). These signal a limit
 	// ONLY when the spawn actually died — the guard that keeps a successful reviewer's
@@ -74,6 +83,14 @@ func matchesDeath(out attemptOutcome, re *regexp.Regexp) bool {
 	if !out.terminalFailed() {
 		return false
 	}
+	return re.MatchString(deathHay(out))
+}
+
+// deathHay is the trustworthy channels a death classifier scans: the process's
+// stderr and start/run error text plus the final result text. It deliberately
+// never includes out.allText (the full transcript), so an agent that merely
+// discusses a limit/outage in a completed result can't trip a classifier.
+func deathHay(out attemptOutcome) string {
 	hay := out.stderr + "\n" + out.lastText
 	if out.startErr != nil {
 		hay += "\n" + out.startErr.Error()
@@ -81,7 +98,7 @@ func matchesDeath(out attemptOutcome, re *regexp.Regexp) bool {
 	if out.runErr != nil {
 		hay += "\n" + out.runErr.Error()
 	}
-	return re.MatchString(hay)
+	return hay
 }
 
 // classifyUsageLimit reports whether an attempt hit the account's usage limit, and
@@ -111,15 +128,16 @@ func classifyUsageLimit(out attemptOutcome, now time.Time) (resetAt time.Time, m
 	// modelScoped ONLY when the banner regex fired (a death OR the short-clean-exit
 	// net) AND its captured phrase names a specific model. The generic phrase path
 	// (429 / rate limit / usage limit reached) is always account-scoped.
-	if bannerDeath || bannerNet {
-		hayB := out.stderr + "\n" + out.lastText
-		if out.startErr != nil {
-			hayB += "\n" + out.startErr.Error()
+	// Classify the phrase from the SAME channel that fired: bannerDeath matches the
+	// death hay (stderr + result + error text); bannerNet matches the trimmed final
+	// text only. Reading the submatch from a different channel could pick up a phrase
+	// that didn't actually trip the classifier.
+	if bannerDeath {
+		if m := limitBannerRe.FindStringSubmatch(deathHay(out)); m != nil {
+			modelScoped = bannerModelScoped(m[1])
 		}
-		if out.runErr != nil {
-			hayB += "\n" + out.runErr.Error()
-		}
-		if m := limitBannerRe.FindStringSubmatch(hayB); m != nil {
+	} else if bannerNet {
+		if m := limitBannerRe.FindStringSubmatch(last); m != nil {
 			modelScoped = bannerModelScoped(m[1])
 		}
 	}
@@ -131,13 +149,13 @@ func classifyUsageLimit(out attemptOutcome, now time.Time) (resetAt time.Time, m
 }
 
 // bannerModelScoped classifies a banner's captured scope phrase as MODEL-scoped
-// (a specific model like "Fable" / "weekly Opus") vs ACCOUNT-scoped ("session",
-// "weekly", "usage", "5-hour"). It lowercases, strips the account qualifier tokens
-// and collapses whitespace; a non-empty remainder is the model-name hint and means
-// model scope. An empty remainder is account scope.
+// (names a specific model like "Fable" / "weekly Opus") vs ACCOUNT-scoped. It is
+// an ALLOWLIST: the phrase is model-scoped ONLY when it contains a known model
+// token (fable|opus|sonnet|haiku). Every other phrase — "session", "weekly",
+// "rate", "monthly", any unknown qualifier — is account-scoped and pauses the
+// fleet, so a novel banner never silently mis-routes to a model fallback.
 func bannerModelScoped(phrase string) bool {
-	s := limitScopeStripRe.ReplaceAllString(strings.ToLower(phrase), " ")
-	return strings.TrimSpace(strings.Join(strings.Fields(s), " ")) != ""
+	return modelTokenRe.MatchString(phrase)
 }
 
 // parseResetTime extracts the limit's reset moment from a claude limit message,
@@ -252,13 +270,11 @@ func infraBackoff(streak int) time.Duration {
 // the SAME limitMu as the conductor-wide gate (one lock, never nested with mu).
 
 // armModelLimit gates one model until resetAt, never pulling the window earlier
-// (monotonic, mirroring reArmLimit). Lazy-inits the map under the lock.
+// (monotonic, mirroring reArmLimit). The map is initialized in New — no zero-value
+// Conductor exists — so no lazy nil-check is needed.
 func (c *Conductor) armModelLimit(model string, resetAt time.Time) {
 	c.limitMu.Lock()
 	defer c.limitMu.Unlock()
-	if c.modelLimitUntil == nil {
-		c.modelLimitUntil = map[string]time.Time{}
-	}
 	if resetAt.After(c.modelLimitUntil[model]) {
 		c.modelLimitUntil[model] = resetAt
 	}
@@ -284,6 +300,36 @@ func (c *Conductor) effectiveModel(requested string, now time.Time) string {
 		return defaultModel
 	}
 	return requested
+}
+
+// modelFallbackStatusPrefix marks a StatusLine set by a model-scoped fallback so
+// reflectEffectiveModel can recognize and clear its own line on gate expiry without
+// stomping a StatusLine another path (pause/infra) owns.
+const modelFallbackStatusPrefix = "running on "
+
+// reflectEffectiveModel records the model ACTUALLY in force for a spawn on the run's
+// agent record, and drives the run StatusLine to match. When effective differs from
+// requested (a model-scoped fallback is active) it shows the fallback; when they
+// match (requested model in force, e.g. after gate expiry) it records the requested
+// model and clears any stale fallback StatusLine. The run status is never touched —
+// a model fallback keeps the run "running". No-op for quest hosts.
+func (c *Conductor) reflectEffectiveModel(hostID, agentID, requested, effective string) {
+	if !isRunID(hostID) {
+		return
+	}
+	c.Update(hostID, func(r *run.Run) {
+		for i := range r.Agents {
+			if r.Agents[i].ID != agentID {
+				continue
+			}
+			r.Agents[i].Model = effective
+		}
+		if requested != "" && effective != requested {
+			r.StatusLine = modelFallbackStatusPrefix + effective + " (" + requested + " limit reached)"
+		} else if strings.HasPrefix(r.StatusLine, modelFallbackStatusPrefix) {
+			r.StatusLine = "" // our fallback line; the model is back — clear it
+		}
+	})
 }
 
 // limitDeadline reads the current limit window's end (zero when no limit is armed).
