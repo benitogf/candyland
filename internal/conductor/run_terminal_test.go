@@ -51,9 +51,9 @@ func TestBranchDeliveryPushFailureNeverSilentSuccess(t *testing.T) {
 	})
 	c.Begin(id)
 
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
-	if r.Status != "done" {
-		t.Fatalf("run never terminated: status=%q error=%q", r.Status, r.Error)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "delivery-failed" }, 40*time.Second)
+	if r.Status != "delivery-failed" {
+		t.Fatalf("a branch push that failed for every repo is a MECHANICAL delivery failure — want status=delivery-failed, got status=%q error=%q", r.Status, r.Error)
 	}
 	if r.Error == "" {
 		t.Fatal("a branch push that failed for every repo must record an honest error, not finish clean")

@@ -551,6 +551,9 @@ func TestBootstrapsCarryRoleContractNotContext(t *testing.T) {
 	if !strings.Contains(techLeadBootstrap, "atomic") || !strings.Contains(techLeadBootstrap, "fullstack") {
 		t.Error("tech-lead bootstrap must bless atomic + fullstack partitions")
 	}
+	if !strings.Contains(techLeadBootstrap, "ENTIRE scope") {
+		t.Error("tech-lead bootstrap must demand the partition cover the plan's ENTIRE scope (#63)")
+	}
 	if !strings.Contains(coderBootstrap, "fullstack") || !strings.Contains(coderBootstrap, "brief_get") {
 		t.Error("coder bootstrap must be role-aware (fullstack) and fetch its brief")
 	}
@@ -735,9 +738,9 @@ func TestStallFailsHonestly(t *testing.T) {
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id)
 
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 12*time.Second)
-	if r.Status != "done" {
-		t.Fatalf("stalled run never terminated: status=%q", r.Status)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "blocked" }, 12*time.Second)
+	if r.Status != "blocked" {
+		t.Fatalf("stalled run must terminate blocked: status=%q", r.Status)
 	}
 	if r.Error == "" {
 		t.Fatal("stalled run reported no error — it should fail honestly")
@@ -803,7 +806,7 @@ func TestProcessExitSurfacesStderr(t *testing.T) {
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id)
 
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 15*time.Second)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "blocked" }, 15*time.Second)
 	if r.Error == "" {
 		t.Fatal("a non-zero claude exit must record an error")
 	}
