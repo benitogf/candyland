@@ -218,30 +218,69 @@ func TestClassifyUsageLimitVariants(t *testing.T) {
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	epoch := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC).Unix()
 	cases := []struct {
-		name  string
-		out   attemptOutcome
-		want  bool
-		reset time.Time
+		name        string
+		out         attemptOutcome
+		want        bool
+		modelScoped bool
+		reset       time.Time
 	}{
-		{"stderr epoch", attemptOutcome{runErr: errStub, stderr: fmt.Sprintf("Claude AI usage limit reached|%d", epoch)}, true, time.Unix(epoch, 0).In(time.UTC)},
-		{"text clock pm", attemptOutcome{runErr: errStub, lastText: "Claude usage limit reached. Your limit will reset at 3pm."}, true, time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)},
-		{"rate limited", attemptOutcome{runErr: errStub, stderr: "rate limited, try again later"}, true, now.Add(defaultLimitBackoff)},
-		{"429", attemptOutcome{runErr: errStub, stderr: "server returned 429 Too Many Requests"}, true, now.Add(defaultLimitBackoff)},
-		{"stalled limit", attemptOutcome{stalled: true, lastText: "usage limit reached"}, true, now.Add(defaultLimitBackoff)},
-		{"ordinary crash", attemptOutcome{stderr: "panic: nil pointer", runErr: errStub}, false, time.Time{}},
-		{"clean success", attemptOutcome{sawTool: true}, false, time.Time{}},
-		{"success mentions limit in transcript", attemptOutcome{sawTool: true, lastText: "I reviewed the usage limit reached handling and 429 path", allText: "usage limit reached rate limit 429"}, false, time.Time{}},
+		{"stderr epoch", attemptOutcome{runErr: errStub, stderr: fmt.Sprintf("Claude AI usage limit reached|%d", epoch)}, true, false, time.Unix(epoch, 0).In(time.UTC)},
+		{"text clock pm", attemptOutcome{runErr: errStub, lastText: "Claude usage limit reached. Your limit will reset at 3pm."}, true, false, time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)},
+		{"rate limited", attemptOutcome{runErr: errStub, stderr: "rate limited, try again later"}, true, false, now.Add(defaultLimitBackoff)},
+		{"429", attemptOutcome{runErr: errStub, stderr: "server returned 429 Too Many Requests"}, true, false, now.Add(defaultLimitBackoff)},
+		{"stalled limit", attemptOutcome{stalled: true, lastText: "usage limit reached"}, true, false, now.Add(defaultLimitBackoff)},
+		{"ordinary crash", attemptOutcome{stderr: "panic: nil pointer", runErr: errStub}, false, false, time.Time{}},
+		{"clean success", attemptOutcome{sawTool: true}, false, false, time.Time{}},
+		{"success mentions limit in transcript", attemptOutcome{sawTool: true, lastText: "I reviewed the usage limit reached handling and 429 path", allText: "usage limit reached rate limit 429"}, false, false, time.Time{}},
+		// model-scoped banners: the captured phrase names a specific model.
+		{"fable banner", attemptOutcome{stalled: true, lastText: "You've hit your Fable limit · resets 3pm"}, true, true, time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)},
+		{"weekly fable banner", attemptOutcome{stalled: true, lastText: "You've hit your weekly Fable limit"}, true, true, now.Add(defaultLimitBackoff)},
+		// account-scoped banners: the phrase is only a scope qualifier.
+		{"session banner", attemptOutcome{runErr: errStub, stderr: "You've hit your session limit"}, true, false, now.Add(defaultLimitBackoff)},
+		{"weekly banner", attemptOutcome{stalled: true, lastText: "You've hit your weekly limit"}, true, false, now.Add(defaultLimitBackoff)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reset, ok := classifyUsageLimit(tc.out, now)
+			reset, modelScoped, ok := classifyUsageLimit(tc.out, now)
 			if ok != tc.want {
 				t.Fatalf("classifyUsageLimit ok=%v want %v", ok, tc.want)
+			}
+			if ok && modelScoped != tc.modelScoped {
+				t.Errorf("modelScoped=%v want %v", modelScoped, tc.modelScoped)
 			}
 			if ok && !reset.Equal(tc.reset) {
 				t.Errorf("reset=%v want %v", reset, tc.reset)
 			}
 		})
+	}
+}
+
+// effectiveModel maps a requested model to opus while that model is gated by a
+// model-scoped limit, and never substitutes opus for itself (no infinite fallback).
+func TestEffectiveModel(t *testing.T) {
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	c := New(nil)
+	const fable = "claude-fable-5"
+	if got := c.effectiveModel(fable, now); got != fable {
+		t.Fatalf("ungated fable → %q, want %q", got, fable)
+	}
+	c.armModelLimit(fable, now.Add(time.Hour))
+	if got := c.effectiveModel(fable, now); got != defaultModel {
+		t.Fatalf("gated fable → %q, want %q", got, defaultModel)
+	}
+	if got := c.effectiveModel(fable, now.Add(2*time.Hour)); got != fable {
+		t.Fatalf("expired gate fable → %q, want %q", got, fable)
+	}
+	// A gated defaultModel returns unchanged — nothing to fall back to.
+	c.armModelLimit(defaultModel, now.Add(time.Hour))
+	if got := c.effectiveModel(defaultModel, now); got != defaultModel {
+		t.Fatalf("gated defaultModel → %q, want %q (no infinite substitution)", got, defaultModel)
+	}
+	// armModelLimit is monotonic — a later arm never pulls the window earlier.
+	c.armModelLimit(fable, now.Add(time.Hour))
+	c.armModelLimit(fable, now.Add(30*time.Minute))
+	if !c.modelGated(fable, now.Add(45*time.Minute)) {
+		t.Error("armModelLimit pulled the window earlier — must be monotonic")
 	}
 }
 
@@ -274,6 +313,114 @@ func TestParseResetTimeTable(t *testing.T) {
 				t.Errorf("got %v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A model-scoped limit ("You've hit your Fable limit") must transparently fall
+// back to opus for THAT spawn: resume the same session immediately on opus, gate
+// only the fable model (never the fleet), and never pause the run.
+func TestModelScopedLimitFallsBackToOpus(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "fable-hit")
+	argvLog := filepath.Join(dir, "argv.log")
+	stub := "#!/usr/bin/env bash\n" +
+		"prompt=\"$2\"\n" +
+		"echo \"$@\" >> \"" + argvLog + "\"\n" +
+		"if [[ ! -f \"" + marker + "\" ]]; then\n" +
+		"  touch \"" + marker + "\"\n" +
+		"  echo \"You've hit your Fable limit · resets 3:45pm\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file\":\"x\"}}]}}'\n" +
+		"echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"resumed green\",\"usage\":{\"output_tokens\":3}}'\n"
+	writeFakeClaude(t, stub)
+	t.Setenv("CANDYLAND_AGENT_TIMEOUT_MS", "5000")
+	t.Setenv("CANDYLAND_AGENT_STALL_MS", "10000")
+
+	c := New(nil)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan attemptOutcome, 1)
+	go func() {
+		done <- streamOnce(ctx, c, id, "a", "go on", dir, nil, spawnOpts{model: "claude-fable-5"})
+	}()
+
+	var out attemptOutcome
+	select {
+	case out = <-done:
+	case <-ctx.Done():
+		t.Fatal("streamOnce never returned")
+	}
+	if out.startErr != nil || out.runErr != nil || out.stalled {
+		t.Fatalf("resume spawn failed: startErr=%v runErr=%v stalled=%v", out.startErr, out.runErr, out.stalled)
+	}
+	if !out.sawTool {
+		t.Error("resume spawn did no work — fallback did not run green")
+	}
+	// The fleet gate must stay UNARMED — a model-scoped limit never pauses the fleet.
+	if d := c.limitDeadline(); !d.IsZero() {
+		t.Errorf("fleet gate armed for a model-scoped limit (deadline=%v)", d)
+	}
+	// The fable model gate IS armed.
+	if !c.modelGated("claude-fable-5", time.Now()) {
+		t.Error("fable model gate not armed after its model-scoped limit")
+	}
+	// The run must NEVER be paused, and no usage-limit pause event is recorded.
+	r, _ := c.Get(id)
+	if r.Status == "paused" {
+		t.Errorf("run was paused for a model-scoped fallback — must stay running")
+	}
+	fellBack := false
+	for _, a := range r.Agents {
+		for _, e := range a.Events {
+			if strings.Contains(e.Text, "usage limit reached (pause") {
+				t.Errorf("model fallback wrongly recorded a fleet pause event: %q", e.Text)
+			}
+			if strings.Contains(e.Text, "falling back to "+defaultModel) {
+				fellBack = true
+			}
+		}
+	}
+	if !fellBack {
+		t.Error("no model-fallback system event recorded")
+	}
+	// The follow-up (resume) spawn's argv must carry --model opus AND --resume.
+	logBytes, _ := os.ReadFile(argvLog)
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected >=2 spawns (death + resume), got %d: %q", len(lines), lines)
+	}
+	resume := lines[len(lines)-1]
+	if !strings.Contains(resume, "--model "+defaultModel) {
+		t.Errorf("resume spawn did not use opus: %q", resume)
+	}
+	if !strings.Contains(resume, "--resume ") {
+		t.Errorf("resume spawn did not resume the interrupted session: %q", resume)
+	}
+}
+
+// Fallback-of-fallback: when the opus fallback ITSELF hits a model banner (nothing
+// left to fall back to) the account path arms the fleet gate.
+func TestFallbackModelLimitArmsFleetGate(t *testing.T) {
+	c := New(nil)
+	c.armModelLimit("claude-fable-5", time.Now().Add(time.Hour))
+	// A spawn requested on fable now runs effectively on opus; opus emits its own
+	// model banner. Simulate the branch: spawnO.model == defaultModel, modelScoped.
+	out := attemptOutcome{stalled: true, lastText: "You've hit your Opus limit · resets 4pm"}
+	resetAt, modelScoped, isLimit := classifyUsageLimit(out, time.Now())
+	if !isLimit || !modelScoped {
+		t.Fatalf("opus banner not classified model-scoped: isLimit=%v modelScoped=%v", isLimit, modelScoped)
+	}
+	// effectiveModel(fable) is opus (fable gated); a model-scoped limit on opus is
+	// the un-fallible case → account path arms the fleet gate.
+	if got := c.effectiveModel("claude-fable-5", time.Now()); got != defaultModel {
+		t.Fatalf("gated fable should resolve to opus, got %q", got)
+	}
+	c.armLimit("r1", resetAt) // the account path the retry loop takes for spawnO.model==defaultModel
+	if c.limitDeadline().IsZero() {
+		t.Error("fleet gate not armed when the fallback model itself hit a limit")
 	}
 }
 

@@ -100,6 +100,10 @@ type Conductor struct {
 	// Re-armed after a restart from a paused run's persisted resumeAt (see tracked).
 	limitMu    sync.Mutex
 	limitUntil time.Time
+	// modelLimitUntil is the per-model gate: while a model's window is in the future
+	// its spawns fall back to defaultModel (opus) instead of pausing the fleet. Guarded
+	// by limitMu. In-memory only — never persisted (a restart re-derives it by re-death).
+	modelLimitUntil map[string]time.Time
 	// wtBase is this conductor's private worktree root, minted once at
 	// construction. Run ids reset per-conductor, so a process-global
 	// os.TempDir()/candyland-wt/<runID> collides when two conductors coexist
@@ -113,11 +117,12 @@ type Conductor struct {
 // run fails honestly (see resilience.go) rather than falling back to a demo.
 func New(server *ooo.Server) *Conductor {
 	c := &Conductor{
-		server:         server,
-		runs:           map[string]*runtime{},
-		agentWrites:    map[string]*coalescedAgentWrite{},
-		coalesceWindow: 250 * time.Millisecond,
-		wtBase:         filepath.Join(os.TempDir(), "candyland-wt", instanceSuffix()),
+		server:          server,
+		runs:            map[string]*runtime{},
+		agentWrites:     map[string]*coalescedAgentWrite{},
+		modelLimitUntil: map[string]time.Time{},
+		coalesceWindow:  250 * time.Millisecond,
+		wtBase:          filepath.Join(os.TempDir(), "candyland-wt", instanceSuffix()),
 	}
 	c.folders = runFolders
 	c.prReview = ghPRReview

@@ -355,7 +355,12 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// for the full limit window (hours), so a ctx created before the pause would
 		// already be Done here — killing the resume spawn on arrival.
 		attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
-		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, o)
+		// Substitute the effective model for THIS attempt: while o.model is gated by a
+		// model-scoped limit, spawn on defaultModel (opus) instead. o.model itself is
+		// left as the REQUESTED model so the gate's expiry restores it next iteration.
+		spawnO := o
+		spawnO.model = c.effectiveModel(o.model, time.Now())
+		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, spawnO)
 		cancel()
 		// Upgrade the resume target to the ACTUAL work session once a spawn ran under
 		// one — so a later limit/connection resume continues the real interrupted work
@@ -366,7 +371,34 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// A usage-limit death is NOT the agent's fault, so it must not burn an
 		// attempt: arm the conductor-wide gate, then resume this session in place
 		// once it reopens. The re-pause counter is unbounded — a limit can recur.
-		if resetAt, isLimit := classifyUsageLimit(out, time.Now()); isLimit {
+		if resetAt, modelScoped, isLimit := classifyUsageLimit(out, time.Now()); isLimit {
+			// Model-scoped limit on a FALLIBLE model (not opus): gate only that model,
+			// fall back to opus, and resume immediately. No fleet gate, no pause, no
+			// burned retry — the top-of-loop awaitLimit stays open so the resume spawns
+			// right away on opus.
+			if modelScoped && spawnO.model != defaultModel {
+				c.armModelLimit(spawnO.model, resetAt)
+				msg := fmt.Sprintf("%s limit reached — falling back to %s until %s",
+					spawnO.model, defaultModel, resetAt.UTC().Format(time.RFC3339))
+				c.updateAgentHost(id, func(agents *[]run.Agent) {
+					appendToAgentIn(agents, agentID, run.Event{T: "system", Text: msg}, 0)
+				})
+				if isRunID(id) {
+					c.Update(id, func(r *run.Run) {
+						r.StatusLine = msg // run stays "running" — a model fallback is not a pause
+						for i := range r.Agents {
+							if r.Agents[i].ID == agentID {
+								r.Agents[i].Model = defaultModel // dashboard shows the model actually in use
+							}
+						}
+					})
+				}
+				priorLegs.mergeLeg(out)
+				resumeInPlace()
+				continue
+			}
+			// Account-wide limit — OR the fallback model (opus) itself hit a limit, so
+			// there is nothing left to fall back to: arm the conductor-wide gate and pause.
 			repaused++
 			infraStreak = 0
 			c.armLimit(id, resetAt)
