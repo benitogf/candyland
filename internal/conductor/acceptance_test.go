@@ -1,11 +1,41 @@
 package conductor
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/benitogf/candyland/internal/run"
 )
+
+// #63 Blocker 1: parseAcceptanceCommands must not misfire either way — it must not run
+// prose checklist items as commands (false positive), and it must anchor on a REAL
+// "Acceptance" heading, not the first heading that merely contains the word (false
+// negative / mis-anchor).
+func TestParseAcceptanceCommands(t *testing.T) {
+	// (1) A prose checklist item (backtick span PLUS other text) yields NO command.
+	prose := "# Task\n\n## Acceptance\n- [ ] `techLeadBootstrap` contains \"ENTIRE scope\"\n"
+	if got := parseAcceptanceCommands(prose); len(got) != 0 {
+		t.Errorf("prose checklist item must yield no command, got %v", got)
+	}
+	// (2) A real acceptance section: fenced sh block (each non-blank line) + a
+	// whole-backtick checklist item → exactly those commands, in order.
+	real := "## Acceptance criteria\nSome intro prose.\n```sh\ngo build ./...\ngo test ./...\n```\n- [ ] `golangci-lint run`\n\n## Next\n```sh\nnot-a-command\n```\n"
+	want := []string{"go build ./...", "go test ./...", "golangci-lint run"}
+	if got := parseAcceptanceCommands(real); !reflect.DeepEqual(got, want) {
+		t.Errorf("real acceptance section commands = %v, want %v", got, want)
+	}
+	// (3) Mis-anchor guard: a mid-sentence heading that merely CONTAINS "acceptance"
+	// must not win over the real "## Acceptance" heading below it.
+	misanchor := "### E. #63 optional — pre-`done` acceptance executor\n```sh\nfalse\n```\n\n## Acceptance\n```sh\ntrue\n```\n"
+	if got := parseAcceptanceCommands(misanchor); !reflect.DeepEqual(got, []string{"true"}) {
+		t.Errorf("parser must anchor on the real ## Acceptance heading, got %v", got)
+	}
+	// A doc with no acceptance section at all yields nil.
+	if got := parseAcceptanceCommands("# Title\njust prose\n"); got != nil {
+		t.Errorf("no acceptance section must yield nil, got %v", got)
+	}
+}
 
 // acceptanceClaude drives a full clean delivery (tech lead → coder → clean review →
 // clean fix pass). It is used with a prompt that carries an `## Acceptance` section so

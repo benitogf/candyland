@@ -60,6 +60,11 @@ func TestFixReviewFindingsRetriesBeforeFailing(t *testing.T) {
 	if r.PrURL != "" {
 		t.Errorf("a never-fixed review must not open a PR, got %q", r.PrURL)
 	}
+	// #64.3: a blocked terminal must drop any stale in-flight status line (e.g. the
+	// "Addressing N review findings…" line the fix pass set).
+	if r.StatusLine != "" {
+		t.Errorf("a blocked terminal must clear the stale status line, got %q", r.StatusLine)
+	}
 }
 
 // #64.4: a run parked on unresolved review findings persists those findings on its

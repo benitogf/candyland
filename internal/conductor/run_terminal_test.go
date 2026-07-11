@@ -61,6 +61,10 @@ func TestBranchDeliveryPushFailureNeverSilentSuccess(t *testing.T) {
 	if r.Phase == run.PhasePR {
 		t.Errorf("a run that pushed nothing must not claim the terminal PR phase (phase=%d)", r.Phase)
 	}
+	// #64.3: a failed terminal must drop any stale in-flight status line.
+	if r.StatusLine != "" {
+		t.Errorf("a delivery-failed terminal must clear the stale status line, got %q", r.StatusLine)
+	}
 	if ok, why := validatePostmortem(r.Postmortem); !ok {
 		t.Fatalf("a blocked branch-delivery run must carry a schema-valid postmortem: %+v (%s)", r.Postmortem, why)
 	}

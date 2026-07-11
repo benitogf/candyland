@@ -136,9 +136,10 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 			if fin, _ := c.Get(id); fin.Error == "" {
 				log.Printf("candyland: run %s done — %s", id, orDefault(fin.PrURL, "(no PR opened)"))
 			}
-			// Record the queryable audit now that the run's status is terminal
-			// ("done", with Error set on a failure). A paused/stopped run took the
-			// continue above and is not audited — it isn't a completed run.
+			// Record the queryable audit now that the run's status is terminal (the
+			// closed enum: "done" clean, or "blocked"/"delivery-failed" with Error set on
+			// a failure). A paused/stopped run took the continue above and is not audited —
+			// it isn't a completed run.
 			c.writeAudit(id)
 			c.cleanupBusConfigs(id) // no more coder spawns — drop the --mcp-config files
 			cancel()
@@ -279,14 +280,6 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return // findings unresolved (or stopped) — never open a PR on un-reviewed work
 	}
 
-	// #63: run the plan's OWN acceptance checks on the integrated primary worktree
-	// before delivering. A failing check folds into the bounded review-fix remediation
-	// and re-runs; a still-failing check terminates the run blocked, never a clean done.
-	// A run with no runnable acceptance section is unaffected.
-	if err := c.executeAcceptance(ctx, id, r, delivered[folders[0]]); err != nil {
-		return
-	}
-
 	// ── Branch delivery (quest-owned child): the run commits its work onto
 	//    the shared parent branch (quest/<id> — the same name in each
 	//    impacted repo) and opens NO PR — the parent opens one PR per repo at the end
@@ -311,6 +304,21 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 	if r.Deliver == run.DeliverReview {
 		c.deliverToReview(ctx, id, folders, delivered, r.Branch, r.TargetPR)
 		return
+	}
+
+	// #63: run the plan's OWN acceptance checks on the integrated PRIMARY worktree
+	// before opening a PR. Gated to PR/default (and babysit) deliveries only — a
+	// feedback/review run works a third-party PR whose prompt may embed untrusted PR
+	// text, so acceptance execution must never run on those. A failing check folds
+	// into the bounded review-fix remediation and re-runs; a still-failing check
+	// terminates the run blocked, never a clean done. The primary repo is the FIRST
+	// delivered repo (a multi-repo run may route every task to a secondary folder,
+	// leaving folders[0] absent from delivered); an empty delivered skips acceptance.
+	if repos := orderedRepos(folders, delivered); len(repos) > 0 {
+		primary := repos[0]
+		if err := c.executeAcceptance(ctx, id, r, primary, delivered[primary]); err != nil {
+			return
+		}
 	}
 
 	// ── Deliver: push + open one PR PER IMPACTED REPO, in folder order. These are
@@ -1862,6 +1870,9 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 			break // real work landed — proceed to commit + deliver
 		}
 		if attempt == attempts {
+			// #64.4: the blockers are known here — persist them on the run record so
+			// post-hoc recovery need not re-derive them (mirrors the rounds-exhausted park).
+			c.Update(id, func(r *run.Run) { r.ReviewFindings = findingLines(blockers) })
 			c.failReview(ctx, id, reviewerID, fmt.Sprintf("The fix pass made no changes for the review findings in %s after %d attempts — refusing to open a PR with open blockers.", repoBase(repo), attempts))
 			return false, tokens
 		}
@@ -1890,7 +1901,7 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 // FIRST failing command it folds a synthesized finding into the bounded review-fix
 // remediation and re-runs the command; if it still fails the run is failed (blocked)
 // and a non-nil error is returned so the caller terminates rather than delivering.
-func (c *Conductor) executeAcceptance(ctx context.Context, id string, r run.Run, integDir string) error {
+func (c *Conductor) executeAcceptance(ctx context.Context, id string, r run.Run, repo, integDir string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -1924,7 +1935,7 @@ func (c *Conductor) executeAcceptance(ctx context.Context, id string, r run.Run,
 		c.Update(id, func(r *run.Run) {
 			appendToAgent(r, "tl", run.Event{T: "system", Text: "acceptance check failed, attempting fix: " + cmd}, 0)
 		})
-		fixOK, _ := c.fixReviewFindings(ctx, id, integDir, integDir, r.Branch, []reviewFinding{finding}, nil, 1, fixModel, fixThinking, r.Prompt)
+		fixOK, _ := c.fixReviewFindings(ctx, id, repo, integDir, r.Branch, []reviewFinding{finding}, nil, 1, fixModel, fixThinking, r.Prompt)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1949,15 +1960,23 @@ func runAcceptanceCommand(ctx context.Context, dir, command string) (bool, strin
 }
 
 // parseAcceptanceCommands extracts runnable commands from an "Acceptance" section of
-// the given markdown: commands inside fenced ```sh / ```bash blocks under the heading,
-// and backtick-wrapped commands in `- [ ] \`<command>\“ checklist items. Returns nil
-// when there is no such section or no runnable command in it.
+// the given markdown. The heading match is deliberately strict to avoid mis-anchoring:
+// a heading line whose text (after stripping leading `#`/spaces, lowercased) STARTS
+// WITH "acceptance" — so a mid-sentence heading that merely CONTAINS the word (e.g.
+// "### E. #63 optional — pre-`done` acceptance executor") never wins over the real
+// "## Acceptance criteria". The section ends at the next line beginning with `#`.
+//
+// Within the section commands come from two shapes only, to avoid running prose as a
+// command: (1) fenced ```sh / ```bash / ```shell blocks — each non-blank line is one
+// command; (2) checklist items whose ENTIRE content after `- [ ] ` is a SINGLE
+// backtick-wrapped span and nothing else (e.g. `- [ ] `go test ./...“ → `go test
+// ./...`). A checklist line carrying a backtick span amid other prose does NOT match.
+// Returns nil when there is no such section or no runnable command in it.
 func parseAcceptanceCommands(md string) []string {
 	lines := strings.Split(md, "\n")
 	start := -1
 	for i, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "#") && strings.Contains(strings.ToLower(t), "acceptance") {
+		if isAcceptanceHeading(ln) {
 			start = i + 1
 			break
 		}
@@ -1982,31 +2001,50 @@ func parseAcceptanceCommands(md string) []string {
 			continue
 		}
 		if inFence {
-			if t != "" && !strings.HasPrefix(t, "#") {
+			if t != "" {
 				cmds = append(cmds, t)
 			}
 			continue
 		}
-		if strings.HasPrefix(t, "- [ ]") || strings.HasPrefix(t, "- [x]") {
-			if cmd := backtickCommand(t); cmd != "" {
-				cmds = append(cmds, cmd)
-			}
+		if cmd := wholeBacktickChecklistCommand(t); cmd != "" {
+			cmds = append(cmds, cmd)
 		}
 	}
 	return cmds
 }
 
-// backtickCommand returns the first backtick-wrapped span of s, or "" when none.
-func backtickCommand(s string) string {
-	i := strings.Index(s, "`")
-	if i < 0 {
-		return ""
+// isAcceptanceHeading reports whether a line is a markdown heading whose text starts
+// with "acceptance" (case-insensitive) after the leading `#`s and spaces are stripped.
+func isAcceptanceHeading(ln string) bool {
+	t := strings.TrimSpace(ln)
+	if !strings.HasPrefix(t, "#") {
+		return false
 	}
-	j := strings.Index(s[i+1:], "`")
-	if j < 0 {
-		return ""
+	t = strings.TrimLeft(t, "#")
+	t = strings.TrimSpace(t)
+	return strings.HasPrefix(strings.ToLower(t), "acceptance")
+}
+
+// wholeBacktickChecklistCommand returns the command from a checklist item whose ENTIRE
+// content after the `- [ ]`/`- [x]` marker is a single backtick-wrapped span (and
+// nothing else), or "" when the line is not such an item. This is the strict shape
+// that keeps a prose checklist item (a backtick span amid other text) from being run.
+func wholeBacktickChecklistCommand(s string) string {
+	for _, marker := range []string{"- [ ]", "- [x]", "- [X]"} {
+		if !strings.HasPrefix(s, marker) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(s, marker))
+		if len(rest) < 2 || rest[0] != '`' || rest[len(rest)-1] != '`' {
+			return ""
+		}
+		inner := rest[1 : len(rest)-1]
+		if inner == "" || strings.Contains(inner, "`") {
+			return "" // empty, or more than one backtick span (prose + span)
+		}
+		return strings.TrimSpace(inner)
 	}
-	return strings.TrimSpace(s[i+1 : i+1+j])
+	return ""
 }
 
 // orderedDelivered returns the delivered repos in a stable order (map iteration is
