@@ -235,6 +235,8 @@ func TestClassifyUsageLimitVariants(t *testing.T) {
 		// model-scoped banners: the captured phrase names a specific model.
 		{"fable banner", attemptOutcome{stalled: true, lastText: "You've hit your Fable limit · resets 3pm"}, true, true, time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)},
 		{"weekly fable banner", attemptOutcome{stalled: true, lastText: "You've hit your weekly Fable limit"}, true, true, now.Add(defaultLimitBackoff)},
+		// derived from modelOptions — a curated family other than fable classifies model-scoped.
+		{"sonnet banner", attemptOutcome{runErr: errStub, stderr: "You've hit your Sonnet limit"}, true, true, now.Add(defaultLimitBackoff)},
 		// account-scoped banners: the phrase is only a scope qualifier or an unknown
 		// token — it must NOT mis-route to a model fallback (allowlist, not denylist).
 		{"session banner", attemptOutcome{runErr: errStub, stderr: "You've hit your session limit"}, true, false, now.Add(defaultLimitBackoff)},

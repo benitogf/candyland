@@ -3,6 +3,7 @@ package conductor
 import (
 	"context"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,8 +45,13 @@ var (
 	// contain to be MODEL-scoped. An allowlist (not a denylist of account
 	// qualifiers) is deliberate: a novel/unknown qualifier ("rate", "monthly",
 	// "daily") must fall through to ACCOUNT scope and pause the fleet, never be
-	// mistaken for a model and silently fall back.
-	modelTokenRe = regexp.MustCompile(`(?i)\b(fable|opus|sonnet|haiku)\b`)
+	// mistaken for a model and silently fall back. Derived from modelOptions
+	// (settings.go) — the single source of truth for the curated model list — so a
+	// new model family is picked up automatically, not silently missed here.
+	modelTokenRe = buildModelTokenRe()
+	// versionBoundaryRe marks where a model id's family token ends and its version
+	// begins: the first "-<digit>" ("opus-4-8" → cut before "-4" → "opus").
+	versionBoundaryRe = regexp.MustCompile(`-\d`)
 	// limitPhraseRe matches quota phrasings an AGENT might legitimately write when
 	// reviewing rate-limit code ("usage limit reached", "429"). These signal a limit
 	// ONLY when the spawn actually died — the guard that keeps a successful reviewer's
@@ -156,6 +162,34 @@ func classifyUsageLimit(out attemptOutcome, now time.Time) (resetAt time.Time, m
 // fleet, so a novel banner never silently mis-routes to a model fallback.
 func bannerModelScoped(phrase string) bool {
 	return modelTokenRe.MatchString(phrase)
+}
+
+// buildModelTokenRe derives the model-family allowlist from modelOptions (the
+// curated model list in settings.go) so the two never drift: for each id it strips
+// the "claude-" vendor prefix and the version suffix, leaving the family token
+// ("claude-opus-4-8" → "opus"), and ORs them into one word-bounded regex.
+func buildModelTokenRe() *regexp.Regexp {
+	seen := map[string]bool{}
+	var toks []string
+	for id := range modelOptions {
+		fam := modelFamily(id)
+		if fam != "" && !seen[fam] {
+			seen[fam] = true
+			toks = append(toks, regexp.QuoteMeta(fam))
+		}
+	}
+	sort.Strings(toks) // deterministic alternation, independent of map order
+	return regexp.MustCompile(`(?i)\b(` + strings.Join(toks, "|") + `)\b`)
+}
+
+// modelFamily extracts the family token from a model id: drop the "claude-" vendor
+// prefix, then cut at the version boundary (first "-<digit>").
+func modelFamily(id string) string {
+	s := strings.TrimPrefix(id, "claude-")
+	if loc := versionBoundaryRe.FindStringIndex(s); loc != nil {
+		s = s[:loc[0]]
+	}
+	return s
 }
 
 // parseResetTime extracts the limit's reset moment from a claude limit message,

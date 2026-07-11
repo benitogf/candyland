@@ -322,6 +322,10 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	resumeSession := firstNonEmpty(o.forkFrom, o.sessionID)
 	repaused := 0    // usage-limit + connection-loss pauses combined (unbounded)
 	infraStreak := 0 // CONSECUTIVE connection-loss deaths (resets on any other outcome)
+	// Whether the previous attempt ran on a fallback (effective != requested) model.
+	// Tracked so the run record is published ONLY on a substitution edge (none→fallback
+	// or fallback→restored), never on every ordinary ungated spawn.
+	prevSubstituted := false
 	// Tokens burned by dead resume legs. Each paused leg is discarded except its
 	// usage; the resolving outcome folds this back in so it reports the sum.
 	var priorLegs attemptOutcome
@@ -360,11 +364,16 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// left as the REQUESTED model so the gate's expiry restores it next iteration.
 		spawnO := o
 		spawnO.model = c.effectiveModel(o.model, time.Now())
-		// Reflect the model ACTUALLY in force this attempt on the run/agent record —
-		// the one choke point that covers a pre-substituted spawn (a fresh spawn whose
-		// requested model is already gated) AND gate expiry (the requested model comes
-		// back). The run stays "running" throughout — a model fallback is never a pause.
-		c.reflectEffectiveModel(id, agentID, o.model, spawnO.model)
+		// Publish the model ACTUALLY in force ONLY on a substitution edge — the fallback
+		// engaging (none→fallback, incl. a pre-substituted fresh spawn) or the requested
+		// model coming back (fallback→restored, e.g. gate expiry). An ordinary ungated
+		// spawn publishes nothing extra (honoring the repo's publish-coalescing
+		// discipline). The run stays "running" throughout — a fallback is never a pause.
+		substituted := o.model != "" && spawnO.model != o.model
+		if substituted != prevSubstituted {
+			c.reflectEffectiveModel(id, agentID, o.model, spawnO.model)
+			prevSubstituted = substituted
+		}
 		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, spawnO)
 		cancel()
 		// Upgrade the resume target to the ACTUAL work session once a spawn ran under
