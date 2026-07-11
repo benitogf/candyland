@@ -37,7 +37,7 @@ func TestClassifyUsageLimitBannerCleanExit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := classifyUsageLimit(tc.out, now); ok != tc.want {
+			if _, _, ok := classifyUsageLimit(tc.out, now); ok != tc.want {
 				t.Fatalf("classifyUsageLimit ok=%v want %v", ok, tc.want)
 			}
 		})

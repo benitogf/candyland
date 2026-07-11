@@ -3,6 +3,7 @@ package conductor
 import (
 	"context"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -11,12 +12,18 @@ import (
 )
 
 // Usage-limit auto-resume. Claude Code dies (or emits a terminal message) when
-// the account's usage limit is hit — a spawn that fails this way is NOT a fault
-// of the agent's work, so it must not burn a retry. Instead the whole conductor
-// pauses every spawn until the limit resets, then resumes the interrupted session
-// in place. The gate is conductor-wide (one account, one limit) so a limit hit by
-// any agent blocks all of them; it survives a restart via a paused run's persisted
-// resumeAt (rehydrate re-arms the gate).
+// a usage limit is hit — a spawn that fails this way is NOT a fault of the agent's
+// work, so it must not burn a retry. There are two scopes:
+//
+//   - ACCOUNT-scoped (a session/weekly/usage window, or the generic 429/rate-limit
+//     phrases): the whole conductor pauses every spawn until the limit resets, then
+//     resumes the interrupted session in place. The gate is conductor-wide (one
+//     account, one limit) so a limit hit by any agent blocks all of them; it
+//     survives a restart via a paused run's persisted resumeAt (rehydrate re-arms it).
+//   - MODEL-scoped (a banner naming a specific model, e.g. "You've hit your Fable
+//     limit"): only that model is gated — the interrupted spawn falls back to
+//     defaultModel (opus) and resumes immediately, and the fleet is NEVER paused.
+//     See the per-model gate section below.
 
 // defaultLimitBackoff is how long to wait when the death says a limit was hit but
 // carries no parseable reset time — long enough to clear a per-minute rate spike
@@ -31,7 +38,20 @@ var (
 	// real limit death REGARDLESS of exit state — real limit deaths often exit clean
 	// with the banner as their final result rather than erroring, so gating on a
 	// process death would miss them (the misclassification bug this fixes).
-	limitBannerRe = regexp.MustCompile(`(?i)you['’]?ve hit your (?:session|usage) limit`)
+	// The captured group (.+?) holds the scope/model phrase between "your" and
+	// "limit" ("session", "weekly Fable", "Fable"); bannerModelScoped classifies it.
+	limitBannerRe = regexp.MustCompile(`(?i)you['’]?ve hit your (.+?) limit`)
+	// modelTokenRe is the ALLOWLIST of model-name tokens a banner phrase must
+	// contain to be MODEL-scoped. An allowlist (not a denylist of account
+	// qualifiers) is deliberate: a novel/unknown qualifier ("rate", "monthly",
+	// "daily") must fall through to ACCOUNT scope and pause the fleet, never be
+	// mistaken for a model and silently fall back. Derived from modelOptions
+	// (settings.go) — the single source of truth for the curated model list — so a
+	// new model family is picked up automatically, not silently missed here.
+	modelTokenRe = buildModelTokenRe()
+	// versionBoundaryRe marks where a model id's family token ends and its version
+	// begins: the first "-<digit>" ("opus-4-8" → cut before "-4" → "opus").
+	versionBoundaryRe = regexp.MustCompile(`-\d`)
 	// limitPhraseRe matches quota phrasings an AGENT might legitimately write when
 	// reviewing rate-limit code ("usage limit reached", "429"). These signal a limit
 	// ONLY when the spawn actually died — the guard that keeps a successful reviewer's
@@ -69,6 +89,14 @@ func matchesDeath(out attemptOutcome, re *regexp.Regexp) bool {
 	if !out.terminalFailed() {
 		return false
 	}
+	return re.MatchString(deathHay(out))
+}
+
+// deathHay is the trustworthy channels a death classifier scans: the process's
+// stderr and start/run error text plus the final result text. It deliberately
+// never includes out.allText (the full transcript), so an agent that merely
+// discusses a limit/outage in a completed result can't trip a classifier.
+func deathHay(out attemptOutcome) string {
 	hay := out.stderr + "\n" + out.lastText
 	if out.startErr != nil {
 		hay += "\n" + out.startErr.Error()
@@ -76,7 +104,7 @@ func matchesDeath(out attemptOutcome, re *regexp.Regexp) bool {
 	if out.runErr != nil {
 		hay += "\n" + out.runErr.Error()
 	}
-	return re.MatchString(hay)
+	return hay
 }
 
 // classifyUsageLimit reports whether an attempt hit the account's usage limit, and
@@ -95,18 +123,73 @@ func matchesDeath(out attemptOutcome, re *regexp.Regexp) bool {
 // the harness banner would be read as a limit. The banner phrasing is harness-
 // exclusive and a substantive verdict exceeds the bound, so this is far rarer than
 // the missed-limit failure the net guards against.
-func classifyUsageLimit(out attemptOutcome, now time.Time) (time.Time, bool) {
+func classifyUsageLimit(out attemptOutcome, now time.Time) (resetAt time.Time, modelScoped bool, ok bool) {
 	last := strings.TrimSpace(out.lastText)
 	bannerNet := len(last) <= bannerNetMax && limitBannerRe.MatchString(last)
-	isLimit := matchesDeath(out, limitBannerRe) || bannerNet || matchesDeath(out, limitPhraseRe)
+	bannerDeath := matchesDeath(out, limitBannerRe)
+	isLimit := bannerDeath || bannerNet || matchesDeath(out, limitPhraseRe)
 	if !isLimit {
-		return time.Time{}, false
+		return time.Time{}, false, false
+	}
+	// modelScoped ONLY when the banner regex fired (a death OR the short-clean-exit
+	// net) AND its captured phrase names a specific model. The generic phrase path
+	// (429 / rate limit / usage limit reached) is always account-scoped.
+	// Classify the phrase from the SAME channel that fired: bannerDeath matches the
+	// death hay (stderr + result + error text); bannerNet matches the trimmed final
+	// text only. Reading the submatch from a different channel could pick up a phrase
+	// that didn't actually trip the classifier.
+	if bannerDeath {
+		if m := limitBannerRe.FindStringSubmatch(deathHay(out)); m != nil {
+			modelScoped = bannerModelScoped(m[1])
+		}
+	} else if bannerNet {
+		if m := limitBannerRe.FindStringSubmatch(last); m != nil {
+			modelScoped = bannerModelScoped(m[1])
+		}
 	}
 	hay := out.stderr + "\n" + out.lastText
 	if reset, ok := parseResetTime(hay, now); ok {
-		return reset, true
+		return reset, modelScoped, true
 	}
-	return now.Add(defaultLimitBackoff), true
+	return now.Add(defaultLimitBackoff), modelScoped, true
+}
+
+// bannerModelScoped classifies a banner's captured scope phrase as MODEL-scoped
+// (names a specific model like "Fable" / "weekly Opus") vs ACCOUNT-scoped. It is
+// an ALLOWLIST: the phrase is model-scoped ONLY when it contains a known model
+// token (fable|opus|sonnet|haiku). Every other phrase — "session", "weekly",
+// "rate", "monthly", any unknown qualifier — is account-scoped and pauses the
+// fleet, so a novel banner never silently mis-routes to a model fallback.
+func bannerModelScoped(phrase string) bool {
+	return modelTokenRe.MatchString(phrase)
+}
+
+// buildModelTokenRe derives the model-family allowlist from modelOptions (the
+// curated model list in settings.go) so the two never drift: for each id it strips
+// the "claude-" vendor prefix and the version suffix, leaving the family token
+// ("claude-opus-4-8" → "opus"), and ORs them into one word-bounded regex.
+func buildModelTokenRe() *regexp.Regexp {
+	seen := map[string]bool{}
+	var toks []string
+	for id := range modelOptions {
+		fam := modelFamily(id)
+		if fam != "" && !seen[fam] {
+			seen[fam] = true
+			toks = append(toks, regexp.QuoteMeta(fam))
+		}
+	}
+	sort.Strings(toks) // deterministic alternation, independent of map order
+	return regexp.MustCompile(`(?i)\b(` + strings.Join(toks, "|") + `)\b`)
+}
+
+// modelFamily extracts the family token from a model id: drop the "claude-" vendor
+// prefix, then cut at the version boundary (first "-<digit>").
+func modelFamily(id string) string {
+	s := strings.TrimPrefix(id, "claude-")
+	if loc := versionBoundaryRe.FindStringIndex(s); loc != nil {
+		s = s[:loc[0]]
+	}
+	return s
 }
 
 // parseResetTime extracts the limit's reset moment from a claude limit message,
@@ -210,6 +293,78 @@ func infraBackoff(streak int) time.Duration {
 }
 
 // --- conductor-wide limit gate ------------------------------------------------
+
+// --- per-model gate (model-scoped fallback) -----------------------------------
+//
+// A MODEL-specific usage-limit banner ("You've hit your Fable limit") gates only
+// that model, not the whole fleet: the interrupted spawn falls back to defaultModel
+// (opus) and resumes immediately, and every later spawn of the gated model uses opus
+// until its reset. Unlike the conductor-wide gate this is in-memory ONLY — never
+// persisted; a restart's worst case is one re-death on the gated model. Guarded by
+// the SAME limitMu as the conductor-wide gate (one lock, never nested with mu).
+
+// armModelLimit gates one model until resetAt, never pulling the window earlier
+// (monotonic, mirroring reArmLimit). The map is initialized in New — no zero-value
+// Conductor exists — so no lazy nil-check is needed.
+func (c *Conductor) armModelLimit(model string, resetAt time.Time) {
+	c.limitMu.Lock()
+	defer c.limitMu.Unlock()
+	if resetAt.After(c.modelLimitUntil[model]) {
+		c.modelLimitUntil[model] = resetAt
+	}
+}
+
+// modelGated reports whether model's per-model window is still open at now.
+func (c *Conductor) modelGated(model string, now time.Time) bool {
+	c.limitMu.Lock()
+	defer c.limitMu.Unlock()
+	return c.modelLimitUntil[model].After(now)
+}
+
+// effectiveModel maps a requested model to the model a spawn should actually run
+// on: the requested model normally, or defaultModel while the requested model is
+// gated. An empty request is defaultModel. A gated defaultModel is returned
+// unchanged (nothing to fall back to) — the retry loop detects that un-fallible
+// case and arms the fleet gate instead.
+func (c *Conductor) effectiveModel(requested string, now time.Time) string {
+	if requested == "" {
+		return defaultModel
+	}
+	if c.modelGated(requested, now) {
+		return defaultModel
+	}
+	return requested
+}
+
+// modelFallbackStatusPrefix marks a StatusLine set by a model-scoped fallback so
+// reflectEffectiveModel can recognize and clear its own line on gate expiry without
+// stomping a StatusLine another path (pause/infra) owns.
+const modelFallbackStatusPrefix = "running on "
+
+// reflectEffectiveModel records the model ACTUALLY in force for a spawn on the run's
+// agent record, and drives the run StatusLine to match. When effective differs from
+// requested (a model-scoped fallback is active) it shows the fallback; when they
+// match (requested model in force, e.g. after gate expiry) it records the requested
+// model and clears any stale fallback StatusLine. The run status is never touched —
+// a model fallback keeps the run "running". No-op for quest hosts.
+func (c *Conductor) reflectEffectiveModel(hostID, agentID, requested, effective string) {
+	if !isRunID(hostID) {
+		return
+	}
+	c.Update(hostID, func(r *run.Run) {
+		for i := range r.Agents {
+			if r.Agents[i].ID != agentID {
+				continue
+			}
+			r.Agents[i].Model = effective
+		}
+		if requested != "" && effective != requested {
+			r.StatusLine = modelFallbackStatusPrefix + effective + " (" + requested + " limit reached)"
+		} else if strings.HasPrefix(r.StatusLine, modelFallbackStatusPrefix) {
+			r.StatusLine = "" // our fallback line; the model is back — clear it
+		}
+	})
+}
 
 // limitDeadline reads the current limit window's end (zero when no limit is armed).
 func (c *Conductor) limitDeadline() time.Time {

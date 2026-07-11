@@ -322,6 +322,10 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 	resumeSession := firstNonEmpty(o.forkFrom, o.sessionID)
 	repaused := 0    // usage-limit + connection-loss pauses combined (unbounded)
 	infraStreak := 0 // CONSECUTIVE connection-loss deaths (resets on any other outcome)
+	// Whether the previous attempt ran on a fallback (effective != requested) model.
+	// Tracked so the run record is published ONLY on a substitution edge (none→fallback
+	// or fallback→restored), never on every ordinary ungated spawn.
+	prevSubstituted := false
 	// Tokens burned by dead resume legs. Each paused leg is discarded except its
 	// usage; the resolving outcome folds this back in so it reports the sum.
 	var priorLegs attemptOutcome
@@ -355,7 +359,22 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// for the full limit window (hours), so a ctx created before the pause would
 		// already be Done here — killing the resume spawn on arrival.
 		attemptCtx, cancel := context.WithTimeout(parentCtx, attemptTimeout())
-		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, o)
+		// Substitute the effective model for THIS attempt: while o.model is gated by a
+		// model-scoped limit, spawn on defaultModel (opus) instead. o.model itself is
+		// left as the REQUESTED model so the gate's expiry restores it next iteration.
+		spawnO := o
+		spawnO.model = c.effectiveModel(o.model, time.Now())
+		// Publish the model ACTUALLY in force ONLY on a substitution edge — the fallback
+		// engaging (none→fallback, incl. a pre-substituted fresh spawn) or the requested
+		// model coming back (fallback→restored, e.g. gate expiry). An ordinary ungated
+		// spawn publishes nothing extra (honoring the repo's publish-coalescing
+		// discipline). The run stays "running" throughout — a fallback is never a pause.
+		substituted := o.model != "" && spawnO.model != o.model
+		if substituted != prevSubstituted {
+			c.reflectEffectiveModel(id, agentID, o.model, spawnO.model)
+			prevSubstituted = substituted
+		}
+		out := c.spawnWithForkFallback(attemptCtx, parentCtx, id, agentID, prompt, workdir, extraDirs, busCfg, spawnO)
 		cancel()
 		// Upgrade the resume target to the ACTUAL work session once a spawn ran under
 		// one — so a later limit/connection resume continues the real interrupted work
@@ -366,7 +385,30 @@ func streamOnce(parentCtx context.Context, c *Conductor, id, agentID, prompt, wo
 		// A usage-limit death is NOT the agent's fault, so it must not burn an
 		// attempt: arm the conductor-wide gate, then resume this session in place
 		// once it reopens. The re-pause counter is unbounded — a limit can recur.
-		if resetAt, isLimit := classifyUsageLimit(out, time.Now()); isLimit {
+		if resetAt, modelScoped, isLimit := classifyUsageLimit(out, time.Now()); isLimit {
+			// Model-scoped limit on a FALLIBLE model (not opus): gate only that model,
+			// fall back to opus, and resume immediately. No fleet gate, no pause, no
+			// burned retry — the top-of-loop awaitLimit stays open so the resume spawns
+			// right away on opus.
+			if modelScoped && spawnO.model != defaultModel {
+				// Gate only this model and reset the infra streak (a model-limit death
+				// proves the connection works, so a later blip must not count as
+				// consecutive and arm the fleet infra gate). No fleet gate, no pause, no
+				// burned retry. The StatusLine + agent Model are set at the loop top on the
+				// resume iteration (reflectEffectiveModel), so the record shows opus.
+				c.armModelLimit(spawnO.model, resetAt)
+				infraStreak = 0
+				c.updateAgentHost(id, func(agents *[]run.Agent) {
+					appendToAgentIn(agents, agentID, run.Event{T: "system", Text: fmt.Sprintf(
+						"%s limit reached — falling back to %s until %s",
+						spawnO.model, defaultModel, resetAt.UTC().Format(time.RFC3339))}, 0)
+				})
+				priorLegs.mergeLeg(out)
+				resumeInPlace()
+				continue
+			}
+			// Account-wide limit — OR the fallback model (opus) itself hit a limit, so
+			// there is nothing left to fall back to: arm the conductor-wide gate and pause.
 			repaused++
 			infraStreak = 0
 			c.armLimit(id, resetAt)

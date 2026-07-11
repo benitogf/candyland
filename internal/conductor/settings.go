@@ -70,6 +70,9 @@ type Settings struct {
 }
 
 // modelOptions is the curated select of models the UI offers and the API accepts.
+// It is the single source of truth for the model list: limit.go's buildModelTokenRe
+// derives the model-scoped-limit allowlist from these ids, so adding a family here
+// automatically teaches the usage-limit classifier about it.
 var modelOptions = map[string]bool{
 	"claude-opus-4-8":           true,
 	"claude-fable-5":            true,
