@@ -51,15 +51,19 @@ func TestBranchDeliveryPushFailureNeverSilentSuccess(t *testing.T) {
 	})
 	c.Begin(id)
 
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
-	if r.Status != "done" {
-		t.Fatalf("run never terminated: status=%q error=%q", r.Status, r.Error)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "delivery-failed" }, 40*time.Second)
+	if r.Status != "delivery-failed" {
+		t.Fatalf("a branch push that failed for every repo is a MECHANICAL delivery failure — want status=delivery-failed, got status=%q error=%q", r.Status, r.Error)
 	}
 	if r.Error == "" {
 		t.Fatal("a branch push that failed for every repo must record an honest error, not finish clean")
 	}
 	if r.Phase == run.PhasePR {
 		t.Errorf("a run that pushed nothing must not claim the terminal PR phase (phase=%d)", r.Phase)
+	}
+	// #64.3: a failed terminal must drop any stale in-flight status line.
+	if r.StatusLine != "" {
+		t.Errorf("a delivery-failed terminal must clear the stale status line, got %q", r.StatusLine)
 	}
 	if ok, why := validatePostmortem(r.Postmortem); !ok {
 		t.Fatalf("a blocked branch-delivery run must carry a schema-valid postmortem: %+v (%s)", r.Postmortem, why)

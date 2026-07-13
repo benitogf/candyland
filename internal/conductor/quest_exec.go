@@ -560,7 +560,7 @@ func (c *Conductor) launchChildRun(ctx context.Context, q run.Quest, it questWor
 		if !ok {
 			return childID, prs, "child run lost"
 		}
-		if r.Status == "done" || r.Status == "cancelled" {
+		if isRunTerminal(r.Status) {
 			prs = childRunPRs(r, branch)
 			if r.Error != "" {
 				return childID, prs, r.Error

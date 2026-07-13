@@ -14,7 +14,7 @@ import { CopyPrLink } from '../components/CopyPr'
 import { sumTokenAccounting } from '../meta/run'
 
 // Terminal run/quest statuses count as "delivered/finished" for progress.
-const DONE_STATUSES = new Set(['done', 'completed', 'stopped', 'cancelled', 'surfaced-only'])
+const DONE_STATUSES = new Set(['done', 'completed', 'stopped', 'cancelled', 'surfaced-only', 'blocked', 'delivery-failed'])
 export const isFinished = (status) => DONE_STATUSES.has(status)
 
 // Short relative-ish timestamp: the date/time as the backend gave it (RFC3339),

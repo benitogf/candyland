@@ -21,7 +21,7 @@ import { useToast } from '../feedback'
 import { PauseChip } from '../components/StatusBits'
 import { LiveRunWorkspace } from '../dashboard/RunHost'
 
-const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled'
+const isTerminal = (r) => r.status === 'done' || r.status === 'cancelled' || r.status === 'blocked' || r.status === 'delivery-failed'
 // A babysit run doesn't build anything — after delivery it enters a watch phase,
 // polling a single PR on an interval: fixing review feedback, merging once an
 // approval lands. It's keyed on the delivery shape (or the presence of a live
@@ -37,7 +37,7 @@ const isActive = (s) => s === 'running' || s === 'planning'
 // Hard 2-line clamp for card titles — a legacy title-less item can carry a huge
 // objective; the full text stays in the detail view's Objective & Intent tab.
 const clamp2 = { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' }
-const statusLabel = (r) => (r.status === 'done' ? 'Done' : r.status === 'cancelled' ? 'Cancelled' : (PHASES[r.phase] || r.status))
+const statusLabel = (r) => (r.status === 'done' ? 'Done' : r.status === 'cancelled' ? 'Cancelled' : r.status === 'blocked' ? 'Blocked' : r.status === 'delivery-failed' ? 'Delivery failed' : (PHASES[r.phase] || r.status))
 
 // Dismiss (archive) an item from the dashboard — it stays in the Work history.
 // Only shown for non-running items, since dismissing live work would be surprising.

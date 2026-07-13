@@ -712,6 +712,7 @@ func reinforce(prompt string, attempt int, isTechLead bool) string {
 		"Do not defer, punt, or leave any part 'for a later step'; complete the task fully in this run."
 	if isTechLead {
 		firm += " Output exactly one line beginning with `PARTITION ` followed by the JSON array, then stop."
+		firm += " The PARTITION must cover the plan's ENTIRE scope — every acceptance item in exactly one task; fold dependent chains into one task, never a later partition."
 	} else {
 		firm += " Use tools to actually make the changes — explaining is not enough."
 	}

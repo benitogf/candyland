@@ -30,6 +30,7 @@ import { CopyPrButton } from '../components/CopyPr'
 import AgentsPanel from '../panels/AgentsPanel'
 import TasksPanel from '../panels/TasksPanel'
 import { PostmortemBlock, IncidentsBlock, EscalationsBlock } from '../components/AuditBlocks'
+import { isFinished } from './rollup'
 
 // Agents (live states + full output) is the default lens for a task run — the
 // thing you want on landing. Overview/intent is a secondary tab.
@@ -193,7 +194,7 @@ const RunControls = ({ run, controls, done }) => {
     if (controls.status === 'cancelled') {
         return <Chip label="cancelled" size="small" color="default" variant="outlined" sx={{ flexShrink: 0 }} />
     }
-    if (controls.status === 'done') {
+    if (isFinished(controls.status)) {
         return (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                 {run.error
@@ -240,7 +241,7 @@ const RunWorkspace = ({ run, controls, planning, tab, onClose, onTab }) => {
         ? { kind: 'quest', id: run.questId, path: `/quest/${run.questId}` }
         : null
     const active = TABS.some((t) => t.key === tab) ? tab : TABS[0].key
-    const done = controls.controllable ? controls.status === 'done' : run.phase >= PHASES.length - 1
+    const done = controls.controllable ? isFinished(controls.status) : run.phase >= PHASES.length - 1
     const repo = run.folders?.[0] || run.branch // the run's primary working folder
     const showTabs = !isPlanning
     // The final phase isn't always a "PR" step — relabel it per delivery shape so

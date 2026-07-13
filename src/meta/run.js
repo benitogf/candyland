@@ -134,6 +134,8 @@ export const STATUS_COLOR = {
     stopped: 'default',
     paused: 'warning',
     blocked: 'warning',
+    // In-scope work was produced but the push/PR-open failed — an error terminal.
+    'delivery-failed': 'error',
     running: 'info',
     planning: 'secondary',
 }

@@ -19,7 +19,7 @@ import { noFilters, folderOf } from '../data/filters'
 // The status options the active level can actually take. Runs use the lifecycle
 // + planning; quests add paused/stopped/blocked.
 const STATUS_OPTIONS = {
-    runs: ['planning', 'running', 'paused', 'done', 'cancelled'],
+    runs: ['planning', 'running', 'paused', 'done', 'blocked', 'delivery-failed', 'cancelled'],
     quests: ['running', 'paused', 'stopped', 'blocked', 'done', 'surfaced-only'],
 }
 

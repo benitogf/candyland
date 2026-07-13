@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -115,18 +116,30 @@ func (e *ClaudeExecutor) Execute(c *Conductor, id string, control <-chan string)
 				continue
 			}
 			c.Update(id, func(r *run.Run) {
-				r.Status = "done"
-				if r.Error == "" { // a clean finish reaches PR; an errored run stays where it stopped
+				switch {
+				case r.Error == "":
+					r.Status = "done" // a clean finish reaches PR
 					r.Phase = run.PhasePR
 					r.Progress = 1
+				case r.DeliveryFailed:
+					// In-scope work was produced but couldn't be delivered mechanically
+					// (push / PR-open / PR-update) — an honest delivery terminal.
+					r.Status = "delivery-failed"
+					r.StatusLine = "" // drop any stale in-flight status line
+				default:
+					// Any other errored terminal (review refusal, bad split, environmental,
+					// budget) is a genuine block (#64.3: drop the stale in-flight line).
+					r.Status = "blocked"
+					r.StatusLine = ""
 				}
 			})
 			if fin, _ := c.Get(id); fin.Error == "" {
 				log.Printf("candyland: run %s done — %s", id, orDefault(fin.PrURL, "(no PR opened)"))
 			}
-			// Record the queryable audit now that the run's status is terminal
-			// ("done", with Error set on a failure). A paused/stopped run took the
-			// continue above and is not audited — it isn't a completed run.
+			// Record the queryable audit now that the run's status is terminal (the
+			// closed enum: "done" clean, or "blocked"/"delivery-failed" with Error set on
+			// a failure). A paused/stopped run took the continue above and is not audited —
+			// it isn't a completed run.
 			c.writeAudit(id)
 			c.cleanupBusConfigs(id) // no more coder spawns — drop the --mcp-config files
 			cancel()
@@ -293,6 +306,21 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		return
 	}
 
+	// #63: run the plan's OWN acceptance checks on the integrated PRIMARY worktree
+	// before opening a PR. Gated to PR/default (and babysit) deliveries only — a
+	// feedback/review run works a third-party PR whose prompt may embed untrusted PR
+	// text, so acceptance execution must never run on those. A failing check folds
+	// into the bounded review-fix remediation and re-runs; a still-failing check
+	// terminates the run blocked, never a clean done. The primary repo is the FIRST
+	// delivered repo (a multi-repo run may route every task to a secondary folder,
+	// leaving folders[0] absent from delivered); an empty delivered skips acceptance.
+	if repos := orderedRepos(folders, delivered); len(repos) > 0 {
+		primary := repos[0]
+		if err := c.executeAcceptance(ctx, id, r, primary, delivered[primary]); err != nil {
+			return
+		}
+	}
+
 	// ── Deliver: push + open one PR PER IMPACTED REPO, in folder order. These are
 	//    ENVIRONMENTAL (a missing 'origin' or an unauthenticated gh can't be fixed
 	//    by re-splitting). PARTIAL-FAILURE ISOLATION: one repo's push/PR failure is
@@ -330,6 +358,7 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 		if opened == 0 {
 			r.Error = "No pull request could be opened. " + firstPRErr(prs) +
 				" Check each repo has an 'origin' remote you can push to and that gh is authenticated."
+			r.DeliveryFailed = true // mechanical push/PR-open failure on delivered work
 			setAgentState(r, "tl", "blocked", "no PR opened")
 			return
 		}
@@ -355,6 +384,19 @@ func fanOut(ctx context.Context, c *Conductor, id string) {
 			c.watchPR(ctx, id, primaryRepoDir(folders, delivered, primary), primary.URL, num)
 		}
 	}
+}
+
+// isRunTerminal reports whether a run status is a terminal state a run never leaves
+// on its own — the closed terminal enum: "done" (clean), "blocked" /
+// "delivery-failed" (errored), or "cancelled" (user stop). Callers that wait for a
+// run to finish (the quest child-wait) and rehydrate gate on this so the new honest
+// failure terminals are recognized, not only "done".
+func isRunTerminal(status string) bool {
+	switch status {
+	case "done", "blocked", "delivery-failed", "cancelled":
+		return true
+	}
+	return false
 }
 
 // primaryPR returns the first successfully opened PR and its parsed number (0 when
@@ -435,6 +477,7 @@ func (c *Conductor) deliverToBranch(ctx context.Context, id string, folders []st
 		if pushed == 0 {
 			r.Error = "Couldn't push onto the quest branch " + branch + ". " + firstPRErr(prs) +
 				" Check the repo has an 'origin' remote you can push to."
+			r.DeliveryFailed = true // mechanical branch-push failure on delivered work
 			setAgentState(r, "tl", "blocked", "no branch pushed")
 			return
 		}
@@ -521,6 +564,7 @@ func (c *Conductor) deliverToFeedback(ctx context.Context, id string, folders []
 		}
 		if opened == 0 {
 			r.Error = fmt.Sprintf("Couldn't update PR #%d. %s", targetPR, firstPRErr(prs))
+			r.DeliveryFailed = true // mechanical push/PR-update failure on delivered work
 			setAgentState(r, "tl", "blocked", "no PR updated")
 			return
 		}
@@ -1131,6 +1175,7 @@ const techLeadBootstrap = "You are the tech lead. Call the brief_get tool FIRST 
 	"Don't over-split: each extra coder re-ingests the full context, so prefer fewer, bigger tasks and split only at natural independence seams. " +
 	"A single atomic task is a valid partition — when the work doesn't decompose, emit exactly one task (never treat \"one task\" as a failure). " +
 	"If the work spans more than one of the run's folders/repos, set each task's \"repo\" to the target folder's name (omit it for the primary repo); each impacted repo gets its own pull request. " +
+	"The partition must cover the plan's ENTIRE scope: every acceptance item in exactly one task. " +
 	"Then stop." + incidentDoctrine
 
 const coderBootstrap = "You are a coder. Call the brief_get tool FIRST to read your task — its title, the files you may touch, the defining test, and your role; the brief also carries the run's full prompt for context, but you work ONLY within your files boundary." + briefGetToolHint + " " +
@@ -1570,6 +1615,9 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 				structuralRound = nil
 			}
 			if round == rounds && len(citable) > 0 {
+				// #64.4: persist the reviewer's final unresolved findings on the run record
+				// so post-hoc recovery need not re-derive them from the transcript.
+				c.Update(hostID, func(r *run.Run) { r.ReviewFindings = findingLines(citable) })
 				c.failReview(ctx, hostID, reviewerID, fmt.Sprintf("Review of %s still has %d unresolved %s after %d rounds: %s. No PR is opened until review is clean.",
 					repoBase(repo), len(citable), plural(len(citable), "blocker", "blockers"), rounds, firstFinding(citable)))
 				return false, nil
@@ -1787,42 +1835,248 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	// itself, so they're impossible to miss even if the brief render drops them.
 	// The fix identity forks its doctrine template when one resolves; the fallback
 	// keeps the findings-carrying prompt so C2 survives a failed fork too.
-	prompt := reviewFixPrompt(blockers)
-	opts := spawnOpts{maxTurns: reviewFixTurns(), model: fixModel, thinking: fixThinking}
+	basePrompt := reviewFixPrompt(blockers)
+	baseOpts := spawnOpts{maxTurns: reviewFixTurns(), model: fixModel, thinking: fixThinking}
 	if tpl, ok := c.templateForWorkdir(RoleFix, repo, integDir); ok {
-		opts.forkFrom, opts.fallbackPrompt = tpl, prompt
-		opts.onForkUnresolved = func() { c.invalidateTemplate(RoleFix, repo) }
+		baseOpts.forkFrom = tpl
+		baseOpts.onForkUnresolved = func() { c.invalidateTemplate(RoleFix, repo) }
 		defer cleanupTemplateCopy(tpl, integDir)
 	}
-	out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extra, opts)
-	if ctx.Err() != nil {
-		return false, out.tokens // stopped mid-fix
-	}
-	if out.startErr != nil {
-		c.failReview(ctx, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
-		return false, out.tokens
-	}
-	// Delivery ground truth is the worktree, not the stream. A limit/connection
-	// pause can resume and emit only a summary (sawTool=false on the resolving leg)
-	// while the real edits sit committed-pending in integDir — the r123 false
-	// refusal. Judge on `git status --porcelain` of integDir: empty ⇒ genuinely no
-	// changes ⇒ refuse; non-empty ⇒ real work landed ⇒ commit + deliver. sawTool
-	// stays in diagnostics but must not gate delivery.
-	if !hasChanges(ctx, integDir) {
-		c.failReview(ctx, id, reviewerID, "The fix pass made no changes for the review findings in "+repoBase(repo)+" — refusing to open a PR with open blockers.")
-		return false, out.tokens
+	// #64.2: a single no-diff fix pass is NOT terminal — one non-interactive spawn
+	// can refuse/defer on the first try but land real edits when the same findings
+	// are fed back with a firmer prompt. Retry up to maxAttempts() spawns, feeding
+	// the SAME findings each time (reinforce, not a tech-lead), and only fail the
+	// review when EVERY attempt produced no diff. Delivery ground truth is the
+	// worktree (`git status --porcelain` of integDir), never the stream — a
+	// limit/connection resume can emit only a summary while the edits sit pending.
+	attempts := maxAttempts()
+	tokens := 0
+	for attempt := 1; attempt <= attempts; attempt++ {
+		prompt := reinforce(basePrompt, attempt, false)
+		opts := baseOpts
+		if opts.forkFrom != "" {
+			opts.fallbackPrompt = prompt
+		}
+		out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extra, opts)
+		tokens += out.tokens
+		if ctx.Err() != nil {
+			return false, tokens // stopped mid-fix
+		}
+		if out.startErr != nil {
+			c.failReview(ctx, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
+			return false, tokens
+		}
+		if hasChanges(ctx, integDir) {
+			break // real work landed — proceed to commit + deliver
+		}
+		if attempt == attempts {
+			// #64.4: the blockers are known here — persist them on the run record so
+			// post-hoc recovery need not re-derive them (mirrors the rounds-exhausted park).
+			c.Update(id, func(r *run.Run) { r.ReviewFindings = findingLines(blockers) })
+			c.failReview(ctx, id, reviewerID, fmt.Sprintf("The fix pass made no changes for the review findings in %s after %d attempts — refusing to open a PR with open blockers.", repoBase(repo), attempts))
+			return false, tokens
+		}
+		c.Update(id, func(r *run.Run) {
+			appendToAgent(r, reviewerID, run.Event{T: "system", Text: fmt.Sprintf("fix retry %d/%d — no diff yet", attempt+1, attempts)}, 0)
+		})
 	}
 	if _, err := commitAll(ctx, integDir, "candyland(review): address findings in "+repoBase(repo)); err != nil {
 		c.failReview(ctx, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
-		return false, out.tokens
+		return false, tokens
 	}
 	// The integration worktree is detached; keep the run branch ref (what push/PR
 	// resolve) tracking the review-fix commits that just landed on HEAD.
 	if err := syncBranchRef(ctx, integDir, branch); err != nil {
 		c.failReview(ctx, id, reviewerID, "Couldn't update the "+branch+" ref after review fixes for "+repoBase(repo)+": "+err.Error())
-		return false, out.tokens
+		return false, tokens
 	}
-	return true, out.tokens
+	return true, tokens
+}
+
+// executeAcceptance runs the plan's OWN acceptance checks on the integrated primary
+// worktree (integDir) before the run delivers (#63). It parses runnable commands from
+// an "Acceptance" section of the run's prompt (falling back to OriginalIntent); a run
+// with no runnable acceptance section is a no-op (feedback/review/plain-prose runs are
+// unaffected). Each command runs with the working directory set to integDir. On the
+// FIRST failing command it folds a synthesized finding into the bounded review-fix
+// remediation and re-runs the command; if it still fails the run is failed (blocked)
+// and a non-nil error is returned so the caller terminates rather than delivering.
+func (c *Conductor) executeAcceptance(ctx context.Context, id string, r run.Run, repo, integDir string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	spec := r.Prompt
+	if spec == "" {
+		spec = r.OriginalIntent
+	}
+	cmds := parseAcceptanceCommands(spec)
+	if len(cmds) == 0 {
+		c.Update(id, func(r *run.Run) {
+			appendToAgent(r, "tl", run.Event{T: "system", Text: "no runnable acceptance section — skipping acceptance checks"}, 0)
+		})
+		return nil
+	}
+	c.Update(id, func(r *run.Run) {
+		r.StatusLine = fmt.Sprintf("Running %d acceptance %s on the integrated branch…", len(cmds), plural(len(cmds), "check", "checks"))
+		setAgentState(r, "tl", "working", "running acceptance checks")
+	})
+	fixModel, fixThinking := c.agentConfig(RoleFix)
+	for _, cmd := range cmds {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		ok, out := runAcceptanceCommand(ctx, integDir, cmd)
+		if ok {
+			continue
+		}
+		// First failing check: fold it into the bounded (K-bounded) review-fix
+		// remediation as a synthesized finding, then re-run the command once.
+		finding := reviewFinding{Issue: "acceptance check failed: " + cmd + " — " + truncate(firstLine(out), 200), synthesized: true}
+		c.Update(id, func(r *run.Run) {
+			appendToAgent(r, "tl", run.Event{T: "system", Text: "acceptance check failed, attempting fix: " + cmd}, 0)
+		})
+		fixOK, _ := c.fixReviewFindings(ctx, id, repo, integDir, r.Branch, []reviewFinding{finding}, nil, 1, fixModel, fixThinking, r.Prompt)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if fixOK {
+			if ok2, _ := runAcceptanceCommand(ctx, integDir, cmd); ok2 {
+				continue
+			}
+		}
+		fail(ctx, c, id, "tl", "Acceptance check failed on the integrated branch: "+cmd+"\n"+out)
+		return fmt.Errorf("acceptance check failed: %s", cmd)
+	}
+	return nil
+}
+
+// runAcceptanceCommand runs one acceptance command via `bash -c` in dir, returning
+// success and the combined output.
+func runAcceptanceCommand(ctx context.Context, dir, command string) (bool, string) {
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return err == nil, string(out)
+}
+
+// parseAcceptanceCommands extracts runnable commands from an "Acceptance" section of
+// the given markdown. The heading match is deliberately strict to avoid mis-anchoring:
+// a heading line whose text (after stripping leading `#`/spaces, lowercased) STARTS
+// WITH "acceptance" — so a mid-sentence heading that merely CONTAINS the word (e.g.
+// "### E. #63 optional — pre-`done` acceptance executor") never wins over the real
+// "## Acceptance criteria". The section ends at the next line beginning with `#`.
+//
+// Within the section commands come from two shapes only, to avoid running prose as a
+// command: (1) fenced ```sh / ```bash / ```shell blocks — each non-blank, non-comment
+// line is one command; (2) checklist items whose ENTIRE content after `- [ ] ` is a
+// SINGLE backtick-wrapped span and nothing else (e.g. `- [ ] `go test ./...“ → `go
+// test ./...`). A checklist line carrying a backtick span amid other prose does NOT
+// match. Fence tracking is applied BOTH while scanning for the heading (so a `#`
+// pseudo-heading inside a ```` ```text ```` block can't anchor the section) and while
+// collecting; a `#`-heading line ends the section even mid-fence (a heading can't
+// appear inside a well-formed fence, so an unterminated fence can't swallow trailing
+// prose). Returns nil when there is no such section or no runnable command in it.
+func parseAcceptanceCommands(md string) []string {
+	lines := strings.Split(md, "\n")
+	start := -1
+	inFence := false
+	for i, ln := range lines {
+		if isFenceLine(ln) {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && isAcceptanceHeading(ln) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	var cmds []string
+	inShFence := false
+	for _, ln := range lines[start:] {
+		t := strings.TrimSpace(ln)
+		if isFenceLine(ln) {
+			if !inShFence {
+				lang := strings.ToLower(strings.TrimPrefix(t, "```"))
+				inShFence = lang == "sh" || lang == "bash" || lang == "shell"
+			} else {
+				inShFence = false
+			}
+			continue
+		}
+		if inShFence {
+			// A `##`+ line is a markdown sub-heading that leaked into an unterminated
+			// sh fence — end the section so a malformed fence can't run trailing prose.
+			// A single-`#` line is a bash comment — skip it (don't collect, don't end),
+			// so a commented sh block still contributes its real commands.
+			if strings.HasPrefix(t, "##") {
+				break
+			}
+			if strings.HasPrefix(t, "#") {
+				continue
+			}
+			if t != "" {
+				cmds = append(cmds, t)
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "#") {
+			break // a heading ends the acceptance section
+		}
+		if cmd := wholeBacktickChecklistCommand(t); cmd != "" {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return cmds
+}
+
+// isFenceLine reports whether the trimmed line opens or closes a markdown code fence.
+func isFenceLine(ln string) bool { return strings.HasPrefix(strings.TrimSpace(ln), "```") }
+
+// isAcceptanceHeading reports whether a line is a markdown heading whose text is the
+// WHOLE WORD "acceptance" (case-insensitive) after the leading `#`s and spaces are
+// stripped — "acceptance" or "acceptance <anything>" matches ("acceptance criteria"),
+// but "acceptances …" does not (the word must not run into more letters).
+func isAcceptanceHeading(ln string) bool {
+	t := strings.TrimSpace(ln)
+	if !strings.HasPrefix(t, "#") {
+		return false
+	}
+	t = strings.TrimSpace(strings.TrimLeft(t, "#"))
+	low := strings.ToLower(t)
+	const word = "acceptance"
+	if !strings.HasPrefix(low, word) {
+		return false
+	}
+	if len(low) == len(word) {
+		return true // exactly "acceptance"
+	}
+	next := low[len(word)] // the char right after the word must not be a letter
+	return next < 'a' || next > 'z'
+}
+
+// wholeBacktickChecklistCommand returns the command from a checklist item whose ENTIRE
+// content after the `- [ ]`/`- [x]` marker is a single backtick-wrapped span (and
+// nothing else), or "" when the line is not such an item. This is the strict shape
+// that keeps a prose checklist item (a backtick span amid other text) from being run.
+func wholeBacktickChecklistCommand(s string) string {
+	for _, marker := range []string{"- [ ]", "- [x]", "- [X]"} {
+		if !strings.HasPrefix(s, marker) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(s, marker))
+		if len(rest) < 2 || rest[0] != '`' || rest[len(rest)-1] != '`' {
+			return ""
+		}
+		inner := rest[1 : len(rest)-1]
+		if inner == "" || strings.Contains(inner, "`") {
+			return "" // empty, or more than one backtick span (prose + span)
+		}
+		return strings.TrimSpace(inner)
+	}
+	return ""
 }
 
 // orderedDelivered returns the delivered repos in a stable order (map iteration is

@@ -276,6 +276,14 @@ type Run struct {
 	Progress       float64  `json:"progress"`           // 0..1
 	StatusLine     string   `json:"statusLine,omitempty"`
 	Error          string   `json:"error,omitempty"` // set when a run hits an unrecoverable error
+	// DeliveryFailed is set when in-scope work was produced but could not be delivered
+	// at the MECHANICAL layer (push / PR-open / PR-update) — it maps the run's terminal
+	// status to `delivery-failed` rather than the default `blocked` (a review refusal,
+	// bad split, or environmental fault). Never set for a review/plan/budget block.
+	DeliveryFailed bool `json:"deliveryFailed,omitempty"`
+	// ReviewFindings is the reviewer's final unresolved findings, persisted on the run
+	// record so post-hoc recovery need not re-derive them from the transcript.
+	ReviewFindings []string `json:"reviewFindings,omitempty"`
 	// ResumeAt is set when the run auto-paused on a Claude usage limit: the RFC3339
 	// time the limit resets, after which the run re-arms and continues on its own. It
 	// is the marker that distinguishes a NON-TERMINAL limit pause (auto-resumes, no

@@ -391,9 +391,9 @@ func TestUnresolvableConflictFailsHonestly(t *testing.T) {
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	c.Begin(id)
 
-	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
-	if r.Status != "done" {
-		t.Fatalf("run did not finish: status=%q", r.Status)
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "blocked" }, 40*time.Second)
+	if r.Status != "blocked" {
+		t.Fatalf("an unresolvable conflict must terminate blocked: status=%q", r.Status)
 	}
 	if r.Error == "" {
 		t.Fatal("an unresolvable conflict must record an honest error, not finish clean")
