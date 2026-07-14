@@ -12,7 +12,7 @@ import (
 
 // === Objective-met dedup on quest relaunch ===================================
 //
-// A relaunch (a fresh BeginQuest drive after a pause/tick-bound) starts with an
+// A relaunch (a fresh BeginQuest drive after a pause) starts with an
 // empty itemAttempts map, so discovery re-surfacing an item a PRIOR drive already
 // delivered on the shared branch would re-launch it — redoing work already on the
 // branch. deliveredTitles reads the durable completed ledger as the dedup evidence,
