@@ -1144,7 +1144,8 @@ func prTitle(r run.Run) string {
 }
 
 func prBody(r run.Run) string {
-	return "Delivered by a candyland run.\n\n## Request\n\n" + strings.TrimSpace(r.Prompt) +
+	prompt := strings.TrimSpace(r.Prompt)
+	return "Delivered by a candyland run.\n\n## Request\n\n" + prompt + closingTrailer(prompt) +
 		"\n\n" + provenanceFooter("run", r.ID)
 }
 

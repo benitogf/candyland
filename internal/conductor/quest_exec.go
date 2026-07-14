@@ -905,8 +905,9 @@ func questPRTitle(q run.Quest) string {
 
 // questPRBody is the body of a converge quest's terminal PR.
 func questPRBody(q run.Quest) string {
+	objective := strings.TrimSpace(q.OriginalObjective)
 	return "Delivered by a candyland quest (bounded — converge to one PR per repo).\n\n## Objective\n\n" +
-		strings.TrimSpace(q.OriginalObjective) +
+		objective + closingTrailer(objective) +
 		"\n\n" + provenanceFooter("quest", q.ID)
 }
 

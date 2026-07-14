@@ -53,3 +53,38 @@ func TestQuestPRBodyCarriesProvenance(t *testing.T) {
 		t.Errorf("quest PR body missing provenance footer: %q", body)
 	}
 }
+
+// A backticked `Closes #53` in the source text is invisible to GitHub's auto-close
+// parser; the trailer re-emits it as a bare line so the merge still closes #53.
+func TestClosingTrailerNormalizesBacktickedRef(t *testing.T) {
+	got := closingTrailer("one PR, extending issue #53 (`Closes #53`).")
+	if got != "\n\nCloses #53" {
+		t.Errorf("backticked close ref not normalized: %q", got)
+	}
+}
+
+func TestClosingTrailerAllKeywordFormsAndDedup(t *testing.T) {
+	// Every one of GitHub's nine forms normalizes to `Closes`, and repeats of the
+	// same number collapse to one line in first-seen order.
+	got := closingTrailer("Fixes #7. Also resolved #12. And close #7 again. fixed #12.")
+	if got != "\n\nCloses #7\nCloses #12" {
+		t.Errorf("keyword-form / dedup handling wrong: %q", got)
+	}
+}
+
+func TestClosingTrailerIgnoresBarePoundAndPlainProse(t *testing.T) {
+	// A `#N` with no closing keyword is not a close directive (GitHub's own rule),
+	// so the trailer must stay empty — no spurious close.
+	if got := closingTrailer("relates to #99, see issue #100 for context"); got != "" {
+		t.Errorf("bare #N must not produce a close trailer: %q", got)
+	}
+}
+
+func TestRunPRBodyClosesReferencedIssueParseably(t *testing.T) {
+	// End-to-end: a plan that only ever wrote `Closes #53` inside backticks still
+	// yields a bare, parseable `Closes #53` in the delivered PR body.
+	body := prBody(run.Run{ID: "r-9", Prompt: "## Delivery\n\nOne PR (`Closes #53`)."})
+	if !strings.Contains(body, "\nCloses #53") {
+		t.Errorf("run PR body missing parseable close line: %q", body)
+	}
+}
