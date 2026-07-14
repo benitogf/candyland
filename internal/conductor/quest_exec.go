@@ -20,19 +20,14 @@ import (
 // agent (the "quest lead") that surfaces work items, and for the accepted items
 // the loop LAUNCHES child runs through the EXISTING run executor (Create + the
 // ClaudeExecutor fanOut/attemptDelivery flow) — it does not fork a parallel run
-// engine. The loop logic stays in Go (bounded ticks, budget
-// caps); the per-tick INTELLIGENCE (what to do, whether it's safe/in-scope)
+// engine. The loop logic stays in Go (unbounded ticks — janitor parity — with an
+// opt-in budget cap and a per-item thrash cap); the per-tick INTELLIGENCE (what to do, whether it's safe/in-scope)
 // lives in the quest-lead agent, which loads the detritus loop/audit/completion
 // doctrine via kb_get rather than an inlined rubric (the Composition Constraint).
 
 // questLeadID is the single discovery/triage agent identity per tick. It keys the
 // agent's brief on the bus (brief_get) the same way the tech-lead/coder ids do.
 const questLeadID = "quest-lead"
-
-// maxQuestTicks bounds the total ticks one BeginQuest drive performs, so a quest
-// whose discovery keeps surfacing the same item can't loop forever in one drive.
-// Tunable via CANDYLAND_QUEST_MAX_TICKS. A pause/resume starts a fresh drive.
-func maxQuestTicks() int { return envInt("CANDYLAND_QUEST_MAX_TICKS", 20) }
 
 // maxItemAttempts bounds how many times the loop will launch a child run for the
 // SAME work-item title before giving up on it (so a quest can't thrash one blocked
@@ -168,10 +163,15 @@ func (c *Conductor) QuestChildRuns(id string) []run.Run {
 	return out
 }
 
-// driveQuest is the bounded tick loop. Each tick discovers + triages work via the
-// quest lead, launches child runs for the accepted items, and
-// records the tick. It stops when stopped/paused/blocked, when no safe work
-// remains, when the token budget is exceeded, or when the tick bound is reached.
+// driveQuest is the UNBOUNDED tick loop (janitor parity — no tick cap, no default
+// token cap): it runs until no safe in-scope work remains. Each tick discovers +
+// triages work via the quest lead, launches child runs for the accepted items, and
+// records the tick. It stops ONLY on a natural condition: checks clear / no work
+// surfaced (WORKITEMS_NONE → finish); a discovery-failure escalation resolves to
+// finish or blocked; an explicit stop/pause; every accepted item exhausts its
+// per-item thrash cap (itemAttempts); or the opt-in per-quest token budget is
+// exceeded (only when a launcher set spec.TokenBudget > 0 — a user choice, not a
+// default guard).
 func (c *Conductor) driveQuest(ctx context.Context, id string) {
 	defer c.haltQuestDrive(id)    // forget the driver on exit so a later BeginQuest can re-drive
 	defer c.cleanupBusConfigs(id) // drop the quest lead's per-spawn --mcp-config files
@@ -186,7 +186,6 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 		}
 	}()
 
-	ticks := maxQuestTicks()
 	itemAttempts := map[string]int{} // work-item title → times a child run was launched (thrash cap)
 	// blocked holds items whose child run FAILED but still have attempts left (a
 	// transient block). Convergence re-surfaces them on a later tick for a retry
@@ -194,7 +193,7 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 	// "blocked" WorkItem once they exhaust the thrash cap. Keyed by title so a
 	// re-surfaced item shares the same itemAttempts counter (bounded retries).
 	blocked := map[string]questWorkItem{}
-	for tick := 1; tick <= ticks; tick++ {
+	for tick := 1; ; tick++ {
 		if ctx.Err() != nil {
 			return // paused/stopped — cooperative halt between ticks
 		}
@@ -214,14 +213,6 @@ func (c *Conductor) driveQuest(ctx context.Context, id string) {
 			return // the tick decided the loop should stop (no work / blocked / stopped / budget)
 		}
 	}
-	// Tick bound reached without a natural stop — pause so the quest can be resumed
-	// (a fresh drive) rather than silently ending.
-	c.UpdateQuest(id, func(q *run.Quest) {
-		if q.Status == "running" {
-			q.Status = "paused"
-			q.PauseReason = fmt.Sprintf("tick bound (%d) reached this drive; resume to continue", ticks)
-		}
-	})
 }
 
 // runQuestTick performs one iteration and returns whether the loop should continue.
@@ -462,11 +453,13 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 	}
 	tokens = out.tokens
 	parsed, none, ok := parseWorkItems(out.text)
+	c.persistLeadState(id, tickID, out.text)
 	if !ok {
 		// One bounded resume-and-re-ask before giving up on a missing verdict.
 		model, thinking := c.agentConfig(RoleQuestLead)
 		if rep, did := c.repairVerdict(ctx, id, questLeadID, out.sessionID, "WORKITEMS", primary, extra, model, thinking); did {
 			tokens += rep.tokens // the repair spawn's usage still belongs to this tick
+			c.persistLeadState(id, tickID, rep.allText)
 			if p, n, ok2 := parseWorkItems(rep.allText); ok2 {
 				parsed, none, ok = p, n, ok2
 			} else {
@@ -480,6 +473,20 @@ func (c *Conductor) questDiscover(ctx context.Context, id string, q run.Quest, t
 		return nil, "no work items surfaced", tokens, ""
 	}
 	return parsed, fmt.Sprintf("surfaced %d work %s", len(parsed), plural(len(parsed), "item", "items")), tokens, ""
+}
+
+// persistLeadState parses the quest lead's STATE block from its output and, when
+// present, overwrites the quest's one mutable cross-tick section (core/loop State
+// block) stamped with the source tick + time. A missing/invalid block leaves the
+// previous state untouched — never an error path (the never-fail-a-tick contract).
+func (c *Conductor) persistLeadState(id, tickID, text string) {
+	st, ok := parseLeadState(text)
+	if !ok {
+		return // keep the previous block — a missing/invalid STATE never fails a tick
+	}
+	st.SourceTick = tickID
+	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	c.UpdateQuest(id, func(q *run.Quest) { q.LeadState = &st })
 }
 
 // questLeadOutcome is the slice of streamOnce a discovery pass needs.
@@ -1108,6 +1115,69 @@ func parseWorkItems(text string) (items []questWorkItem, none, ok bool) {
 	return items, none, ok
 }
 
+// leadStateCap bounds a parsed STATE block: orientation+learned+nextTick together
+// stay within this many chars (a brief, not a transcript — the same reasoning that
+// capped priorTicksSection). Overflow truncates learned first, then nextTick, then
+// orientation, suffixing "…" on any field it cuts.
+const leadStateCap = 4000
+
+// parseLeadState extracts the quest lead's STATE block from its output — the
+// core/loop State-block homologue. A `STATE <json>` line carries the orientation /
+// learned / nextTick fields; the LAST such line wins (mirroring parseWorkItems).
+// ok is false when no valid STATE line is present (missing line or invalid JSON) —
+// a tolerant read: a missing/invalid block never fails a tick, the previous one is
+// kept. The parsed block is capped to leadStateCap total chars.
+func parseLeadState(text string) (run.QuestLeadState, bool) {
+	var st run.QuestLeadState
+	ok := false
+	for _, ln := range strings.Split(text, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "STATE ") {
+			continue
+		}
+		var parsed run.QuestLeadState
+		if json.Unmarshal([]byte(strings.TrimPrefix(ln, "STATE ")), &parsed) == nil {
+			st, ok = parsed, true // last valid STATE line wins
+		}
+	}
+	if !ok {
+		return run.QuestLeadState{}, false
+	}
+	capLeadState(&st)
+	return st, true
+}
+
+// capLeadState truncates a state block so orientation+learned+nextTick together
+// stay within leadStateCap, cutting learned first, then nextTick, then orientation.
+func capLeadState(st *run.QuestLeadState) {
+	over := len(st.Orientation) + len(st.Learned) + len(st.NextTick) - leadStateCap
+	if over <= 0 {
+		return
+	}
+	st.Learned, over = truncateField(st.Learned, over)
+	st.NextTick, over = truncateField(st.NextTick, over)
+	st.Orientation, _ = truncateField(st.Orientation, over)
+}
+
+// truncateField shortens s so its byte length drops by at least `over` (the
+// returned string, ellipsis included, is ≤ len(s)-over bytes) and reports how much
+// still needs cutting from later fields. The "…" suffix itself costs bytes, so a
+// field too small to hold the ellipsis within budget is dropped whole.
+func truncateField(s string, over int) (string, int) {
+	if over <= 0 || s == "" {
+		return s, over
+	}
+	if over >= len(s) {
+		return "", over - len(s) // dropped whole; carry the remaining overflow
+	}
+	const ellipsis = "…"
+	keep := len(s) - over - len(ellipsis)
+	if keep <= 0 {
+		return "", 0 // dropping the whole field already covers the overflow
+	}
+	return s[:keep] + ellipsis, 0
+}
+
 // acceptedItems is the subset triage decided to act on (decision "do", or empty —
 // an item with no explicit decision defaults to doable, matching how a coder treats
 // a task as work to do unless told otherwise). "skip"/"block" are excluded.
@@ -1333,6 +1403,9 @@ const questLeadIntro = "You are the quest lead driving one tick of an iterative 
 
 const questLeadDiscoverRules = "Discover the next safe, in-scope work item(s): if the brief names a TARGET PR, that PR IS the subject — you MUST actually fetch and read it (its diff and review comments, e.g. `gh pr diff <n>` / `gh pr view <n>`) and base every finding on what you read; otherwise explore the folder for concrete work. Then TRIAGE each (is it safe? in scope? a single self-contained change?). " +
 	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +
+	"Before your verdict, emit EXACTLY ONE line `STATE ` followed by a JSON object " +
+	`{"orientation":"one or two lines — the active focus","learned":"context worth carrying to the next tick (repo facts established, dead ends, open threads)","nextTick":"concrete first move for the next tick"}` +
+	" — this is your cross-tick state block: the next tick's brief replays it back to you so you resume from it instead of re-deriving your bearings cold. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `WORKITEMS_NONE` (no safe in-scope work remains this tick) " +
 	"OR `WORKITEMS ` followed by a JSON array " + `[{"title":"…","evidence":"why it's needed","classification":"category","decision":"do|skip|block"}]` +
 	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. " +
@@ -1397,11 +1470,33 @@ func questBriefPrompt(q run.Quest, tickID string) string {
 	}
 	b.WriteString("Do NOT surface, reconcile, or supersede your own prior deliveries (the branch/PRs above) — those are your output, not new work.\n")
 	fmt.Fprintf(&b, "TICK: %s\n", tickID)
+	// Your own cross-tick state block (core/loop State block): what you wrote at the
+	// end of the last tick, replayed so you resume from your own orientation rather
+	// than re-deriving it cold. nil renders nothing — a first tick's brief is
+	// byte-identical to one without this section (pinned by test).
+	b.WriteString(leadStateSection(q))
 	// Decision memory: the durable triage ledger of every prior tick, so this
 	// tick can neither re-surface an item already decided nor contradict the
 	// decision. Empty history renders nothing — a first tick's brief is
 	// byte-identical to one without this section.
 	b.WriteString(priorTicksSection(q))
+	return b.String()
+}
+
+// leadStateSection renders the quest lead's own state block into the next tick's
+// brief. Returns "" when no block has been recorded yet, so the brief is byte-
+// identical to today's whenever LeadState is nil (same empty-case pattern as
+// priorTicksSection).
+func leadStateSection(q run.Quest) string {
+	if q.LeadState == nil {
+		return ""
+	}
+	s := q.LeadState
+	var b strings.Builder
+	fmt.Fprintf(&b, "YOUR STATE BLOCK (you wrote this at the end of tick %s — resume from it, do not re-derive):\n", s.SourceTick)
+	fmt.Fprintf(&b, "ORIENTATION: %s\n", s.Orientation)
+	fmt.Fprintf(&b, "LEARNED: %s\n", s.Learned)
+	fmt.Fprintf(&b, "NEXT-TICK PLAN: %s\n", s.NextTick)
 	return b.String()
 }
 
