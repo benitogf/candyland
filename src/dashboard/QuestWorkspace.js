@@ -212,6 +212,17 @@ const QuestWorkspace = ({ id, onClose }) => {
                         ) : <Empty>No ticks yet.</Empty>}
                     </Block>
 
+                    {quest.leadState && (
+                        <Block title="lead state">
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                                the quest lead's cross-tick working memory, written at the end of tick {quest.leadState.sourceTick || '—'} and fed back into the next tick.
+                            </Typography>
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}><b>Orientation:</b> {quest.leadState.orientation || '—'}</Typography>
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', mt: 0.5 }}><b>Learned:</b> {quest.leadState.learned || '—'}</Typography>
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', mt: 0.5 }}><b>Next-tick plan:</b> {quest.leadState.nextTick || '—'}</Typography>
+                        </Block>
+                    )}
+
                     <Block title={`findings · ${(quest.workItems || []).length}`}>
                         {(quest.workItems || []).length === 0
                             ? <Empty>No work items discovered yet.</Empty>
