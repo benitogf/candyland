@@ -629,6 +629,10 @@ type Quest struct {
 	StopReason string     `json:"stopReason,omitempty"`
 	WorkItems  []WorkItem `json:"workItems"`
 	Ticks      []Tick     `json:"ticks"`
+	// LeadState is the quest lead's self-maintained state block (core/loop State
+	// block homologue): overwritten each tick, rendered into the next tick's brief
+	// so the lead resumes from its own orientation instead of re-deriving it cold.
+	LeadState *QuestLeadState `json:"leadState,omitempty"`
 	// PRs is a converge quest's TERMINAL delivery: one PR per impacted repo, opened
 	// from quest/<id> when the quest meets its objective. A perFinding quest opens
 	// PRs per child run (recorded on ticks), not here.
@@ -664,6 +668,18 @@ type Quest struct {
 	// TraceVersion is the schema version of this Quest record, mirroring how a Run's
 	// exported trace carries TraceVersion so a future store can detect/migrate.
 	TraceVersion int `json:"traceVersion"`
+}
+
+// QuestLeadState is the quest lead's cross-tick State block (the core/loop
+// State-block homologue): the lead emits it each tick and the conductor
+// overwrites this one mutable section, then renders it into the next tick's
+// brief so the lead resumes from its own orientation instead of re-deriving it.
+type QuestLeadState struct {
+	Orientation string `json:"orientation"`
+	Learned     string `json:"learned"`
+	NextTick    string `json:"nextTick"`
+	SourceTick  string `json:"sourceTick"`          // tick id that wrote it
+	UpdatedAt   string `json:"updatedAt,omitempty"` // RFC3339
 }
 
 // RunTrace is the normalized, exportable trace of a single run: the stored Run

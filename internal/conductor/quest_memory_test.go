@@ -245,6 +245,9 @@ const wantColdQuestLeadBootstrap = "You are the quest lead driving one tick of a
 	"Do NOT improvise your own rubric — use the doctrine you loaded. " +
 	"Discover the next safe, in-scope work item(s): if the brief names a TARGET PR, that PR IS the subject — you MUST actually fetch and read it (its diff and review comments, e.g. `gh pr diff <n>` / `gh pr view <n>`) and base every finding on what you read; otherwise explore the folder for concrete work. Then TRIAGE each (is it safe? in scope? a single self-contained change?). " +
 	"Never emit WORKITEMS_NONE for a TARGET PR without having read that PR first. " +
+	"Before your verdict, emit EXACTLY ONE line `STATE ` followed by a JSON object " +
+	`{"orientation":"one or two lines — the active focus","learned":"context worth carrying to the next tick (repo facts established, dead ends, open threads)","nextTick":"concrete first move for the next tick"}` +
+	" — this is your cross-tick state block: the next tick's brief replays it back to you so you resume from it instead of re-deriving your bearings cold. " +
 	"Then emit EXACTLY ONE verdict line and stop: either `WORKITEMS_NONE` (no safe in-scope work remains this tick) " +
 	"OR `WORKITEMS ` followed by a JSON array " + `[{"title":"…","evidence":"why it's needed","classification":"category","decision":"do|skip|block"}]` +
 	" listing only items you triaged as safe and in scope (decision \"do\"); use \"skip\"/\"block\" for items you surfaced but will not act on. " +
