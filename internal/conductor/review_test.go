@@ -391,3 +391,111 @@ func TestFixReviewFindingsRefusesOnCleanWorktree(t *testing.T) {
 		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
 	}
 }
+
+// The r138 shape (#71): every blocker is a conductor-synthesized narration bounce,
+// the fix pass correctly concludes false-positive, cites concrete evidence, and
+// re-stamps REVIEW_CLEAN with no diff — by design. That resolution must be
+// ACCEPTED (ok=true, nothing committed), not counted as a failed attempt.
+const fixNoDiffCleanResolutionClaude = `#!/usr/bin/env bash
+echo '{"type":"result","subtype":"success","result":"I verified the finding is a false positive: the handler is registered in router.go line 12 and TestHandlerRoundTrip exercises it end to end and passes. The change is wired and works.\nREVIEW_CLEAN","usage":{"output_tokens":1}}'
+`
+
+func TestFixReviewFindingsAcceptsNoDiffCleanForSynthesized(t *testing.T) {
+	c, repo := deliveryConductor(t, fixNoDiffCleanResolutionClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	tipBefore, err := exec.Command("git", "-C", repo, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse main: %v\n%s", err, tipBefore)
+	}
+	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration — cite mitigating evidence", synthesized: true}}
+	ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	if !ok {
+		r, _ := c.Get(id)
+		t.Fatalf("an evidence-cited, detector-clean no-diff resolution of an all-synthesized finding set must be accepted; got ok=false error=%q", r.Error)
+	}
+	r, _ := c.Get(id)
+	if r.Error != "" {
+		t.Errorf("the accept path must not record an error, got %q", r.Error)
+	}
+	tipAfter, err := exec.Command("git", "-C", repo, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse main after: %v\n%s", err, tipAfter)
+	}
+	if string(tipBefore) != string(tipAfter) {
+		t.Errorf("a no-diff acceptance must not create a commit: tip moved %s -> %s", tipBefore, tipAfter)
+	}
+}
+
+// Guard: a REAL (reviewer-cited) finding keeps the hasChanges requirement even
+// when the pass re-stamps REVIEW_CLEAN with no diff.
+func TestFixReviewFindingsNoDiffCleanStillRefusesForRealFinding(t *testing.T) {
+	c, repo := deliveryConductor(t, fixNoDiffCleanResolutionClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
+	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
+		t.Fatal("a no-diff pass against a real finding must refuse even if it stamps REVIEW_CLEAN")
+	}
+	r, _ := c.Get(id)
+	if !strings.Contains(strings.ToLower(r.Error), "made no changes") {
+		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
+	}
+}
+
+// Guard: a synthesized finding resolved with no diff but NO re-stamped verdict
+// still refuses — prose alone is not an acceptable resolution.
+func TestFixReviewFindingsNoVerdictNoDiffStillRefusesForSynthesized(t *testing.T) {
+	c, repo := deliveryConductor(t, fixCleanNoOpClaude) // "nothing to change", no verdict line
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration", synthesized: true}}
+	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
+		t.Fatal("a no-diff pass without a re-stamped REVIEW_CLEAN must refuse")
+	}
+	r, _ := c.Get(id)
+	if !strings.Contains(strings.ToLower(r.Error), "made no changes") {
+		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
+	}
+}
+
+// Guard: a re-stamped REVIEW_CLEAN whose own prose hedges must fail the re-run
+// verdict-integrity detector and still refuse.
+const fixNoDiffHedgedCleanClaude = `#!/usr/bin/env bash
+echo '{"type":"result","subtype":"success","result":"the code is probably fine, I did not find anything concrete.\nREVIEW_CLEAN","usage":{"output_tokens":1}}'
+`
+
+func TestFixReviewFindingsHedgedCleanStillRefusesForSynthesized(t *testing.T) {
+	c, repo := deliveryConductor(t, fixNoDiffHedgedCleanClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration", synthesized: true}}
+	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
+		t.Fatal("a hedged no-diff REVIEW_CLEAN must fail the detector re-run and refuse")
+	}
+	r, _ := c.Get(id)
+	if !strings.Contains(strings.ToLower(r.Error), "made no changes") {
+		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
+	}
+}
+
+// Guard: a DIRTY worktree keeps the existing commit+deliver path even for a
+// synthesized finding set — the accept path only applies when there is no diff.
+const fixDirtySynthesizedClaude = `#!/usr/bin/env bash
+printf 'hardened\n' >> hardened.txt
+echo '{"type":"result","subtype":"success","result":"I hardened the cited path and verified it.\nREVIEW_CLEAN","usage":{"output_tokens":1}}'
+`
+
+func TestFixReviewFindingsDirtyWorktreeStillCommitsForSynthesized(t *testing.T) {
+	c, repo := deliveryConductor(t, fixDirtySynthesizedClaude)
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration", synthesized: true}}
+	ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	if !ok {
+		r, _ := c.Get(id)
+		t.Fatalf("a dirty worktree must commit+deliver for synthesized findings too; got ok=false error=%q", r.Error)
+	}
+	out, err := exec.Command("git", "-C", repo, "show", "main:hardened.txt").CombinedOutput()
+	if err != nil {
+		t.Fatalf("reading hardened.txt on the branch: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "hardened") {
+		t.Errorf("the fix must be committed before delivery:\n%s", out)
+	}
+}
