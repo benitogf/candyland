@@ -71,8 +71,14 @@ func tryWindow(server *ooo.Server, spaURL string, width, height int, debug bool,
 	w.SetTitle("Candyland")
 	w.SetSize(width, height, webview.HintNone)
 	w.Navigate(spaURL)
-	go server.WaitClose() // honor Ctrl-C / SIGTERM while the window is open
-	w.Run()               // blocks on the GUI loop until the window is closed
+	// Honor Ctrl-C / SIGTERM / POST /api/shutdown while the window is open: when
+	// the server closes, terminate the GUI loop so w.Run() below unblocks and the
+	// process exits — otherwise main stays wedged in w.Run() on a dead backend.
+	go func() {
+		server.WaitClose()
+		w.Terminate()
+	}()
+	w.Run() // blocks on the GUI loop until the window is closed or terminated
 	server.Close(os.Interrupt)
 	return true
 }
