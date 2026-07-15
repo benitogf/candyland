@@ -120,6 +120,14 @@ func TestCleanVerdictRegressionQAActivityNotAdmission(t *testing.T) {
 		"This introduces a regression.\n\nOtherwise fine.\nREVIEW_CLEAN",
 		"There is a regression in the retry path.\n\nOtherwise fine.\nREVIEW_CLEAN",
 		"Bare regression mentioned here.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		// Clause boundaries: punctuation between "regression" and a QA noun is an
+		// admission followed by a NEW clause, not the QA-activity collocation — the
+		// suppression window must not trim past it.
+		"This introduces a regression. Tests were not updated.\n\nREVIEW_CLEAN",
+		"This introduces a regression; tests TestRetry and TestBackoff now fail.\n\nREVIEW_CLEAN",
+		"I found a regression, tests fail on the handler.\n\nREVIEW_CLEAN",
+		"There is a regression — tests fail.\n\nREVIEW_CLEAN",
+		"Regression: tests fail on main.\n\nREVIEW_CLEAN",
 	}
 	for _, text := range flagged {
 		if bad, _ := cleanVerdictContradictsNarration(text); !bad {

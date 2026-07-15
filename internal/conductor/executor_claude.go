@@ -1400,9 +1400,13 @@ var qaActivityNouns = []string{
 
 // qaActivityAt reports whether the phrase spanning [i, i+n) in lower is immediately
 // followed by a QA-activity noun ("regression sweep:", "regression-test") — the next
-// word after the match, tolerating intervening punctuation/hyphens/whitespace.
+// word after the match, tolerating only whitespace/hyphens in between. Clause
+// punctuation (period, comma, semicolon, colon, dash) ends the window: "a
+// regression. Tests were not updated." is an admission followed by a new clause,
+// never QA vocabulary — trimming past it would blind the gate to exactly the
+// self-contradicting CLEAN it exists to stop.
 func qaActivityAt(lower string, i, n int) bool {
-	rest := strings.TrimLeft(lower[i+n:], " \t-–—:,.;")
+	rest := strings.TrimLeft(lower[i+n:], " \t-")
 	next := rest
 	if j := strings.IndexFunc(rest, func(r rune) bool {
 		return !('a' <= r && r <= 'z')
@@ -1915,8 +1919,9 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 		// "cite mitigating evidence the change is wired and works and re-stamp
 		// REVIEW_CLEAN". Accept it iff the pass re-stamped a clean verdict AND that
 		// verdict passes the same verdict-integrity detector that produced the
-		// bounce (evidence-citing, un-hedged). Nothing to commit; the caller
-		// re-verifies via its next reviewer round.
+		// bounce (evidence-citing, un-hedged). Nothing to commit; each caller keeps
+		// its own downstream gate — reviewUntilClean re-verifies via its next
+		// reviewer round, executeAcceptance re-runs the failed acceptance command.
 		if allSynthesized(blockers) {
 			if v, vok := parseReview(out.allText); vok && len(v.Blockers) == 0 {
 				if bad, _ := cleanVerdictContradictsNarration(out.allText); !bad {
