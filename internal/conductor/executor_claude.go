@@ -1258,6 +1258,18 @@ type reviewFinding struct {
 	synthesized bool `json:"-"`
 }
 
+// allSynthesized reports whether every finding in the set is conductor-synthesized
+// (a narration bounce). Only such a set admits a legitimately no-diff resolution;
+// any real reviewer-cited finding keeps the worktree-diff delivery requirement.
+func allSynthesized(findings []reviewFinding) bool {
+	for _, f := range findings {
+		if !f.synthesized {
+			return false
+		}
+	}
+	return len(findings) > 0
+}
+
 // reviewVerdict is the structured outcome a reviewer emits — either a single line
 // `REVIEW_CLEAN` (no blockers) or `REVIEW_FINDINGS {"blockers":[…]}`.
 type reviewVerdict struct {
@@ -1596,7 +1608,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 					c.updateAgentHost(hostID, func(agents *[]run.Agent) {
 						appendToAgentIn(agents, reviewerID, run.Event{T: "system", Text: "rejected REVIEW_CLEAN for " + repoBase(repo) + ": " + reason}, 0)
 					})
-					verdict.Blockers = []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration (" + reason + ") — cite mitigating evidence the change is wired and works, or emit an explicit blocker", synthesized: true}}
+					verdict.Blockers = []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration (" + reason + ") — cite mitigating evidence the change is wired and works and re-stamp REVIEW_CLEAN, or emit an explicit blocker", synthesized: true}}
 				}
 			}
 			if len(verdict.Blockers) == 0 {
@@ -1869,6 +1881,24 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 		}
 		if hasChanges(ctx, integDir) {
 			break // real work landed — proceed to commit + deliver
+		}
+		// #71: when EVERY finding is a conductor-synthesized narration bounce, a
+		// legitimately no-diff resolution is possible — the bounce itself authorizes
+		// "cite mitigating evidence the change is wired and works and re-stamp
+		// REVIEW_CLEAN". Accept it iff the pass re-stamped a clean verdict AND that
+		// verdict passes the same verdict-integrity detector that produced the
+		// bounce (evidence-citing, un-hedged). Nothing to commit; the caller
+		// re-verifies via its next reviewer round.
+		if allSynthesized(blockers) {
+			if v, vok := parseReview(out.allText); vok && len(v.Blockers) == 0 {
+				if bad, _ := cleanVerdictContradictsNarration(out.allText); !bad {
+					c.Update(id, func(r *run.Run) {
+						setAgentState(r, reviewerID, "green", "accepted no-diff resolution in "+repoBase(repo))
+						appendToAgent(r, reviewerID, run.Event{T: "system", Text: "accepted no-diff resolution of synthesized finding(s) in " + repoBase(repo) + ": evidence-cited REVIEW_CLEAN passed the verdict-integrity detector; nothing to commit"}, 0)
+					})
+					return true, tokens
+				}
+			}
 		}
 		if attempt == attempts {
 			// #64.4: the blockers are known here — persist them on the run record so
