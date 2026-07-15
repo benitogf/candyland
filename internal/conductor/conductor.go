@@ -264,6 +264,60 @@ func (c *Conductor) Get(id string) (run.Run, bool) {
 	return cloneRun(rt.r), true
 }
 
+// ActiveRuns returns the number of runs currently in the "running" state, read
+// from the conductor's in-memory runtime map. No shell-outs or storage reads, so
+// it is safe to call from the /api/health hot poll.
+func (c *Conductor) ActiveRuns() int {
+	c.mu.Lock()
+	rts := make([]*runtime, 0, len(c.runs))
+	for _, rt := range c.runs {
+		rts = append(rts, rt)
+	}
+	c.mu.Unlock()
+	n := 0
+	for _, rt := range rts {
+		rt.mu.Lock()
+		if rt.r.Status == "running" {
+			n++
+		}
+		rt.mu.Unlock()
+	}
+	return n
+}
+
+// ActiveQuests returns the number of quests currently in the "running" state.
+// Quests live in ooo storage (not an in-memory map like runs), so this reads the
+// embedded/memory-layer store directly — a local read, never a shell-out — which
+// keeps /api/health a safe hot poll.
+func (c *Conductor) ActiveQuests() int {
+	if c.server == nil {
+		return 0
+	}
+	keys, err := c.server.Storage.Keys()
+	if err != nil {
+		log.Printf("candyland: ActiveQuests: list keys: %v", err)
+		return 0
+	}
+	n := 0
+	for _, k := range keys {
+		if !strings.HasPrefix(k, "quests/") {
+			continue
+		}
+		obj, err := c.server.Storage.Get(k)
+		if err != nil {
+			continue
+		}
+		var q run.Quest
+		if err := json.Unmarshal(obj.Data, &q); err != nil {
+			continue
+		}
+		if q.Status == "running" {
+			n++
+		}
+	}
+	return n
+}
+
 // cloneRun deep-copies the slices that get mutated in place so a returned run is
 // safe to read without holding rt.mu.
 func cloneRun(r run.Run) run.Run {

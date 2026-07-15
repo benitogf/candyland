@@ -22,14 +22,17 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// Register opens the realtime run paths and mounts the REST endpoints.
-func Register(server *ooo.Server, c *conductor.Conductor) {
+// Register opens the realtime run paths and mounts the REST endpoints. uiMode
+// reports the resolved UI surface (window/browser/headless) on /api/health; it
+// may be nil in server-only contexts (health then reports "headless").
+func Register(server *ooo.Server, c *conductor.Conductor, uiMode func() string) {
 	server.OpenFilter("runs/*")   // enables both the list (runs/*) and item (runs/<id>) reads
 	server.OpenFilter("quests/*") // quest state (quests/* list + quests/<id> item)
 	server.OpenFilter("audits/*") // per-run verification audits (audits/* list + audits/<id> item)
 	server.OpenFilter("settings") // per-role model+thinking config (live read; POST /api/settings writes)
 	registerSystem(server)
-	registerHealth(server)
+	registerHealth(server, c, uiMode)
+	registerShutdown(server, c, serverShutdown(server))
 	registerReference(server)
 	registerAccounting(server)
 	// Host the per-agent coordination-bus comms tools over HTTP at
