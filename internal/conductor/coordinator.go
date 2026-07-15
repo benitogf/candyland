@@ -171,16 +171,21 @@ func inheritedMCPServers() map[string]mcpServerSpec {
 		// Not inline JSON — treat it as a path to a config file.
 		fileData, err := os.ReadFile(raw)
 		if err != nil {
+			log.Printf("candyland: CANDYLAND_INHERITED_MCP set but unreadable as a config path (%v); spawned agents inherit no MCP servers", err)
 			return servers
 		}
 		data = fileData
 	}
 	var cfg mcpConfigFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Printf("candyland: CANDYLAND_INHERITED_MCP set but not valid mcp-config JSON (%v); spawned agents inherit no MCP servers", err)
 		return servers
 	}
 	for name, spec := range cfg.MCPServers {
 		servers[name] = spec
+	}
+	if len(servers) == 0 {
+		log.Printf("candyland: CANDYLAND_INHERITED_MCP set but its mcpServers object is empty; spawned agents inherit no MCP servers")
 	}
 	return servers
 }
