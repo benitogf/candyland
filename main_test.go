@@ -1,11 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/benitogf/candyland/internal/version"
 )
+
+func TestPrintVersion(t *testing.T) {
+	var buf bytes.Buffer
+	printVersion(&buf)
+
+	got := buf.String()
+	want := version.Version + "\n"
+	if got != want {
+		t.Fatalf("printVersion = %q, want %q", got, want)
+	}
+}
 
 func TestEndpointFileWriteAndRemove(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "endpoint.json")

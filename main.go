@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -75,13 +76,20 @@ type endpointInfo struct {
 	StartedAt string `json:"startedAt"`
 }
 
+// printVersion writes the candyland version line to w. Extracted from main so
+// the --version contract (prints the version, caller exits 0) is testable
+// without spawning a process.
+func printVersion(w io.Writer) {
+	fmt.Fprintln(w, version.Version)
+}
+
 func main() {
 	flag.Parse()
 
 	// --version is a pure query: print and exit before any server setup, so a
 	// launcher can learn the installed binary's version with one cheap exec.
 	if *showVersion {
-		fmt.Println(version.Version)
+		printVersion(os.Stdout)
 		os.Exit(0)
 	}
 

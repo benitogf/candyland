@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"log"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/benitogf/ooo"
@@ -47,7 +49,23 @@ func newShutdownHandler(act healthActivity, shutdown func()) http.HandlerFunc {
 }
 
 // serverShutdown is the real shutdown trigger passed to registerShutdown in
-// production: the same clean path as SIGTERM.
+// production. It signals the process with SIGTERM rather than calling
+// server.Close directly: main blocks in server.WaitClose, which only returns on
+// a signal delivered to its notify channel. Calling Close in isolation shuts the
+// API listener but leaves WaitClose parked, so main never returns and the SPA
+// port stays bound (a takeover relaunch then cannot rebind). Routing through the
+// real SIGTERM path unblocks WaitClose, so main runs its deferred cleanup and
+// the process exits, releasing every port.
 func serverShutdown(server *ooo.Server) func() {
-	return func() { server.Close(os.Interrupt) }
+	return func() {
+		proc, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			log.Printf("serverShutdown: could not find own process (%v); forcing exit", err)
+			os.Exit(0)
+		}
+		if err := proc.Signal(syscall.SIGTERM); err != nil {
+			log.Printf("serverShutdown: could not deliver SIGTERM (%v); forcing exit", err)
+			os.Exit(0)
+		}
+	}
 }

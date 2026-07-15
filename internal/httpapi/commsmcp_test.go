@@ -22,7 +22,7 @@ func TestCommsMCPEndpointMountedAndInitializes(t *testing.T) {
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	c := conductor.New(srv)
-	c.StartBus()     // bus filters + reactor before Start
+	c.StartBus()          // bus filters + reactor before Start
 	Register(srv, c, nil) // mounts /mcp/comms/{agentID} (RegisterCommsMCP)
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
