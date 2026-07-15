@@ -103,6 +103,42 @@ func TestAcceptanceFailureBlocksDelivery(t *testing.T) {
 	}
 }
 
+// acceptanceNoDiffCleanClaude mirrors acceptanceClaude but its fix pass makes NO edit
+// and instead re-stamps an evidence-cited REVIEW_CLEAN — the #71 no-diff accept shape.
+var acceptanceNoDiffCleanClaude = stubClaude(
+	roleCleanReviewer,
+	role("review findings",
+		emitText("Verified: the change is wired and the suite is green.")+
+			emitText("REVIEW_CLEAN")+emitResult("resolved", 1)),
+	role("tech lead", emitPartition(`[{"id":"a","title":"do the item","files":["a.txt"],"test":"t"}]`)),
+	coder(writeWorktreeFile("a.txt"), emitTest(1, 0)),
+)
+
+// #71 guard: the no-diff accept path must not let a fix pass TALK its way past a
+// failing acceptance check. The accepted clean-stamped resolution returns fixOK, but
+// executeAcceptance re-runs the command — still failing, the run blocks and no PR
+// opens; the command re-run, not the fix pass's verdict, is the ground truth.
+func TestAcceptanceFailureNoDiffCleanStampStillBlocks(t *testing.T) {
+	c, _ := deliveryConductor(t, acceptanceNoDiffCleanClaude)
+	t.Setenv("CANDYLAND_REVIEW_ROUNDS", "3")
+	prompt := "do the thing\n\n## Acceptance\n```sh\nfalse\n```\n"
+	id := c.Create(run.Spec{Prompt: prompt})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool {
+		return r.Status == "blocked" || r.Status == "done" || r.Status == "delivery-failed"
+	}, 60*time.Second)
+	if r.Status == "done" {
+		t.Fatalf("a clean-stamped no-diff fix must not deliver past a failing acceptance check (error=%q)", r.Error)
+	}
+	if r.Status != "blocked" {
+		t.Fatalf("a still-failing acceptance check must terminate blocked, got %q (error=%q)", r.Status, r.Error)
+	}
+	if r.PrURL != "" {
+		t.Errorf("a still-failing acceptance check must not open a PR, got %q", r.PrURL)
+	}
+}
+
 // #63 regression: a run whose prompt has NO runnable acceptance section delivers
 // exactly as before (clean done + PR opened).
 func TestNoAcceptanceSectionDeliversAsBefore(t *testing.T) {

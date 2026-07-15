@@ -94,6 +94,48 @@ func TestCleanVerdictHedgeScanConfinedToVerdictBlock(t *testing.T) {
 	}
 }
 
+// "regression" immediately followed by a QA-activity noun (sweep/test/suite/check…)
+// is the reviewer DESCRIBING verification work, not admitting a defect — it must not
+// bounce a clean verdict. Genuine defect shapes and the negation guard are unchanged.
+func TestCleanVerdictRegressionQAActivityNotAdmission(t *testing.T) {
+	notFlagged := []string{
+		// r138's exact shapes.
+		"Final regression sweep:\n\nAll checks pass.\nREVIEW_CLEAN",
+		"Regression sweep: `go vet` clean, `go build` green.\n\nVerified end to end.\nREVIEW_CLEAN",
+		// Other QA-activity collocations, incl. hyphenated.
+		"The regression tests pass on this branch.\n\nConfirmed.\nREVIEW_CLEAN",
+		"The regression suite is green.\n\nConfirmed.\nREVIEW_CLEAN",
+		"I ran the regression checks and they pass.\n\nConfirmed.\nREVIEW_CLEAN",
+		"Added a regression-test for the fix.\n\nConfirmed.\nREVIEW_CLEAN",
+		// Negation guard must keep working.
+		"There is no regression here.\n\nConfirmed.\nREVIEW_CLEAN",
+	}
+	for _, text := range notFlagged {
+		if bad, reason := cleanVerdictContradictsNarration(text); bad {
+			t.Errorf("QA-activity 'regression' collocation must not bounce: %q -> reason %q", text, reason)
+		}
+	}
+
+	flagged := []string{
+		"This introduces a regression.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"There is a regression in the retry path.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"Bare regression mentioned here.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		// Clause boundaries: punctuation between "regression" and a QA noun is an
+		// admission followed by a NEW clause, not the QA-activity collocation — the
+		// suppression window must not trim past it.
+		"This introduces a regression. Tests were not updated.\n\nREVIEW_CLEAN",
+		"This introduces a regression; tests TestRetry and TestBackoff now fail.\n\nREVIEW_CLEAN",
+		"I found a regression, tests fail on the handler.\n\nREVIEW_CLEAN",
+		"There is a regression — tests fail.\n\nREVIEW_CLEAN",
+		"Regression: tests fail on main.\n\nREVIEW_CLEAN",
+	}
+	for _, text := range flagged {
+		if bad, _ := cleanVerdictContradictsNarration(text); !bad {
+			t.Errorf("defect-shaped 'regression' must still bounce: %q", text)
+		}
+	}
+}
+
 // The ground-truth delivery gate counts a PR as delivered ONLY on a real URL with no
 // recorded error — never an optimistic or half-written record.
 func TestDeliveredPRs(t *testing.T) {
