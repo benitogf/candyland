@@ -7,11 +7,16 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/benitogf/candyland/internal/conductor"
@@ -35,15 +40,51 @@ var (
 	dataPath = flag.String("dataPath", "", "data storage path (default: ~/.candyland/db)")
 	silence  = flag.Bool("silence", true, "silence ooo output")
 
+	showVersion = flag.Bool("version", false, "print the candyland version and exit")
+
 	// Desktop window (webview build only; ignored by the default headless build).
 	headless     = flag.Bool("headless", false, "serve the UI on spaPort only, without opening the desktop window")
+	openBrowser  = flag.Bool("openBrowser", false, "when no desktop window opens, open the dashboard in the default browser")
 	windowW      = flag.Int("width", 1280, "desktop window width")
 	windowH      = flag.Int("height", 820, "desktop window height")
 	debugWebview = flag.Bool("debugWebview", false, "open the desktop window with devtools")
 )
 
+// uiModeHolder is the shared UI-mode cell: main seeds it "headless", runUI
+// updates it to "window"/"browser" when a surface opens, and /api/health reads it
+// via get. Backed by atomic.Value so the health poll and runUI never race.
+type uiModeHolder struct{ v atomic.Value }
+
+func (h *uiModeHolder) set(mode string) { h.v.Store(mode) }
+
+func (h *uiModeHolder) get() string {
+	if mode, ok := h.v.Load().(string); ok {
+		return mode
+	}
+	return "headless"
+}
+
+// endpointInfo is the ~/.candyland/endpoint.json advertisement: enough for a
+// launcher to discover the running sidecar's ports and verify its identity
+// against /api/health before trusting it.
+type endpointInfo struct {
+	APIPort   int    `json:"apiPort"`
+	SpaPort   int    `json:"spaPort"`
+	PID       int    `json:"pid"`
+	Version   string `json:"version"`
+	StartedAt string `json:"startedAt"`
+}
+
 func main() {
 	flag.Parse()
+
+	// --version is a pure query: print and exit before any server setup, so a
+	// launcher can learn the installed binary's version with one cheap exec.
+	if *showVersion {
+		fmt.Println(version.Version)
+		os.Exit(0)
+	}
+
 	log.Printf("candyland %s", version.Version)
 
 	// The pinned claude CLI must support `type:http` mcp-config entries (the
@@ -70,8 +111,12 @@ func main() {
 		Silence: *silence,
 	}
 
+	// Seed the UI-mode holder headless; runUI promotes it once a surface opens.
+	uiMode := &uiModeHolder{}
+	uiMode.set("headless")
+
 	cond := conductor.New(server)
-	httpapi.Register(server, cond)
+	httpapi.Register(server, cond, uiMode.get)
 	// Register the coordination bus (Realization B) before Start — filters must
 	// be registered before the listener binds. A back-channel beside the stdout
 	// loop; per-agent inboxes are registered at spawn.
@@ -95,6 +140,55 @@ func main() {
 	// network unless the user explicitly opts in with --host 0.0.0.0.
 	server.Start(*host + ":" + strconv.Itoa(*port))
 	log.Printf("candyland API → http://%s:%d (bound to %s; use --host 0.0.0.0 to expose on the network)", *host, *port, *host)
+
+	// Advertise the bound endpoint at ~/.candyland/endpoint.json (fixed per-user
+	// path, independent of --dataPath) so a launcher can discover this sidecar.
+	// Removed on clean exit both here (defer) and on the SIGTERM path (preclose).
+	endpointPath := datadir.EndpointPath()
+	writeEndpointFile(endpointPath, endpointInfo{
+		APIPort:   *port,
+		SpaPort:   *spaPort,
+		PID:       os.Getpid(),
+		Version:   version.Version,
+		StartedAt: time.Now().Format(time.RFC3339),
+	})
+	server.RegisterPreClose(func() { removeEndpointFile(endpointPath) })
+	defer removeEndpointFile(endpointPath)
+
 	cond.ReconcileOrphans() // storage is live only after Start; close out phantom runs from a prior process
-	runUI(server, "http://localhost:"+strconv.Itoa(*spaPort), *headless, *windowW, *windowH, *debugWebview)
+	runUI(server, "http://localhost:"+strconv.Itoa(*spaPort), *headless, *windowW, *windowH, *debugWebview, *openBrowser, uiMode.set)
+}
+
+// writeEndpointFile writes the endpoint advertisement to path (0600, parent dir
+// 0700). Best-effort: any failure is logged and swallowed — a missing endpoint
+// file only degrades discovery, it must never abort startup. A "" path (no home
+// directory) skips advertising.
+func writeEndpointFile(path string, info endpointInfo) {
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Printf("candyland: could not create endpoint dir %q (%v); discovery file not written", filepath.Dir(path), err)
+		return
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		log.Printf("candyland: could not marshal endpoint info (%v); discovery file not written", err)
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		log.Printf("candyland: could not write endpoint file %q (%v); discovery degraded", path, err)
+	}
+}
+
+// removeEndpointFile deletes the endpoint advertisement on clean exit. A missing
+// file is fine (consumers verify via health before trusting it, so a stale file
+// is harmless); any other error is logged and swallowed.
+func removeEndpointFile(path string) {
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("candyland: could not remove endpoint file %q (%v)", path, err)
+	}
 }

@@ -19,7 +19,7 @@ func questServer(t *testing.T) (*conductor.Conductor, *ooo.Server) {
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	c := conductor.New(srv)
-	Register(srv, c)
+	Register(srv, c, nil)
 	if err := srv.StartWithError("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
 	}

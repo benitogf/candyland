@@ -22,6 +22,24 @@ const LegacyRelPath = "db/data"
 // HomeSubPath is the data directory under the user's home: ~/.candyland/db.
 var HomeSubPath = filepath.Join(".candyland", "db")
 
+// EndpointRelPath is the per-user endpoint advertisement file, relative to the
+// home directory: ~/.candyland/endpoint.json. It is intentionally INDEPENDENT of
+// --dataPath — a launcher must be able to discover a running sidecar without
+// knowing which data path it was started with.
+var EndpointRelPath = filepath.Join(".candyland", "endpoint.json")
+
+// EndpointPath resolves the absolute path of the endpoint advertisement file at
+// ~/.candyland/endpoint.json. It returns "" when no home directory is available
+// (the caller then skips advertising, rather than aborting startup).
+func EndpointPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("datadir: os.UserHomeDir failed (%v); endpoint file not advertised", err)
+		return ""
+	}
+	return filepath.Join(home, EndpointRelPath)
+}
+
 // Resolve returns the data path candyland should open, performing the legacy
 // migration as a side effect. An explicit flag value wins verbatim; an empty
 // flag resolves to ~/.candyland/db. Directory creation and migration are
