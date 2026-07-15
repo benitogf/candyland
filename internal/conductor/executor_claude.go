@@ -1378,6 +1378,33 @@ func negatedAt(lower string, i int) bool {
 	return false
 }
 
+// qaActivityNouns are the words that, immediately after "regression", turn it from a
+// defect admission into QA-activity vocabulary: "regression sweep", "regression tests
+// pass", "regression suite is green" describe the reviewer's own verification work
+// (exactly what a rigorous review narrates), not a defect it found.
+var qaActivityNouns = []string{
+	"sweep", "sweeps", "test", "tests", "testing", "suite", "suites", "check", "checks",
+}
+
+// qaActivityAt reports whether the phrase spanning [i, i+n) in lower is immediately
+// followed by a QA-activity noun ("regression sweep:", "regression-test") — the next
+// word after the match, tolerating intervening punctuation/hyphens/whitespace.
+func qaActivityAt(lower string, i, n int) bool {
+	rest := strings.TrimLeft(lower[i+n:], " \t-–—:,.;")
+	next := rest
+	if j := strings.IndexFunc(rest, func(r rune) bool {
+		return !('a' <= r && r <= 'z')
+	}); j >= 0 {
+		next = rest[:j]
+	}
+	for _, noun := range qaActivityNouns {
+		if next == noun {
+			return true
+		}
+	}
+	return false
+}
+
 // verdictBearingBlock returns the block of prose that carries the reviewer's verdict:
 // the last verdict line (REVIEW_CLEAN / REVIEW_FINDINGS …) together with the nearest
 // non-empty paragraph before it — the rationale the reviewer offers FOR that verdict.
@@ -1437,7 +1464,8 @@ func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 				break
 			}
 			at := from + idx
-			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) {
+			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) &&
+				!(p == "regression" && qaActivityAt(lower, at, len(p))) {
 				return true, "blocker-class admission in narration: " + strconv.Quote(p)
 			}
 			from = at + len(p)
