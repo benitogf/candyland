@@ -62,6 +62,10 @@ func Register(server *ooo.Server, c *conductor.Conductor, uiMode func() string) 
 				http.Error(w, "deliver \""+string(spec.Deliver)+"\" requires targetPr > 0 (the existing PR to update)", http.StatusBadRequest)
 				return
 			}
+			if msg, ok := ghGateReject(); !ok {
+				http.Error(w, msg, http.StatusBadRequest)
+				return
+			}
 			writeJSON(w, map[string]string{"id": c.Create(spec)})
 		},
 	})
@@ -242,6 +246,10 @@ func registerQuestEndpoints(server *ooo.Server, c *conductor.Conductor) {
 			// feedback/review update an EXISTING PR — they require its number.
 			if (spec.Deliver == run.DeliverFeedback || spec.Deliver == run.DeliverReview) && spec.TargetPR <= 0 {
 				http.Error(w, "deliver \""+string(spec.Deliver)+"\" requires targetPr > 0 (the existing PR to update)", http.StatusBadRequest)
+				return
+			}
+			if msg, ok := ghGateReject(); !ok {
+				http.Error(w, msg, http.StatusBadRequest)
 				return
 			}
 			writeJSON(w, map[string]string{"id": c.CreateQuest(spec)})

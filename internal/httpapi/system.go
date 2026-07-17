@@ -9,10 +9,160 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benitogf/candyland/internal/conductor"
 	"github.com/benitogf/candyland/internal/version"
 	"github.com/benitogf/candyland/internal/winproc"
 	"github.com/benitogf/ooo"
 )
+
+// GhCapability reports whether the resolved gh CLI can actually DELIVER a run —
+// installed, authenticated, and holding the OAuth scopes a push may need. It is
+// probed at launch (the gate) and surfaced standing in the system panel, so the
+// build-30-minutes-then-fail-at-push class is caught before a run starts. It is
+// internal plumbing (the panel surfaces through Dep.Why + Recommendations, the
+// gate through ghGateReject); it is never marshaled, so it carries no json tags.
+type GhCapability struct {
+	Installed   bool
+	Authed      bool
+	Scopes      []string
+	ScopesKnown bool
+	Missing     []string // subset of {repo, workflow}
+	Remedy      string   // exact command to fix
+}
+
+// ghRequiredScopes is the single place the delivery-capable scope set lives —
+// extend here if a future push class needs another scope.
+var ghRequiredScopes = []string{"repo", "workflow"}
+
+// parseGhAuthStatus turns `gh auth status` output into a GhCapability. It is
+// PURE (no exec) so the whole capability judgement is table-testable. gh prints
+// one block per authenticated account, each with a `- Active account: true|false`
+// marker and its own `- Token scopes:` line (quoted+comma-separated, e.g.
+// `- Token scopes: 'gist', 'repo'`). The gate must judge the ACTIVE account's
+// token — the one gh actually uses for git/PR operations — so we select the block
+// marked active (falling back to the first block for older single-account output
+// that has no `Active account:` line). Fine-grained PATs / GitHub App tokens print
+// NO scopes line, which we fail OPEN on (ScopesKnown=false, no Missing) — blocking
+// on a guess would lock out valid setups.
+func parseGhAuthStatus(out string, installed bool) GhCapability {
+	if !installed {
+		return GhCapability{Installed: false, Remedy: ghInstall(runtime.GOOS)}
+	}
+	ghc := GhCapability{Installed: true}
+
+	block := activeAccountBlock(out)
+	if !strings.Contains(strings.ToLower(block), "logged in to github.com") {
+		ghc.Remedy = "run `gh auth login`"
+		return ghc
+	}
+	ghc.Authed = true
+
+	// Find the active block's "Token scopes:" line (case-insensitive), parse tolerantly.
+	for _, line := range strings.Split(block, "\n") {
+		lower := strings.ToLower(line)
+		idx := strings.Index(lower, "token scopes:")
+		if idx < 0 {
+			continue
+		}
+		ghc.ScopesKnown = true
+		rest := line[idx+len("token scopes:"):]
+		for _, tok := range strings.Split(rest, ",") {
+			s := strings.Trim(strings.TrimSpace(tok), "'`\" ")
+			if s != "" {
+				ghc.Scopes = append(ghc.Scopes, s)
+			}
+		}
+		break
+	}
+	if !ghc.ScopesKnown {
+		return ghc // fine-grained token — fail open
+	}
+	for _, req := range ghRequiredScopes {
+		found := false
+		for _, s := range ghc.Scopes {
+			if strings.EqualFold(s, req) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ghc.Missing = append(ghc.Missing, req)
+		}
+	}
+	if len(ghc.Missing) > 0 {
+		ghc.Remedy = "gh auth refresh -h github.com -s " + strings.Join(ghc.Missing, ",")
+	}
+	return ghc
+}
+
+// activeAccountBlock splits `gh auth status` output into per-account blocks (each
+// starts at a "Logged in to" line) and returns the one marked `Active account:
+// true`. With no active marker (older single-account gh) it returns the first
+// block; with no "Logged in to" line at all it returns the whole output unchanged
+// so the caller's not-authed detection still fires.
+func activeAccountBlock(out string) string {
+	var blocks []string
+	var cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			blocks = append(blocks, strings.Join(cur, "\n"))
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(strings.ToLower(line), "logged in to") {
+			flush() // start a new account block (drops any pre-login header lines)
+			cur = []string{line}
+			continue
+		}
+		if cur != nil {
+			cur = append(cur, line)
+		}
+	}
+	flush()
+	if len(blocks) == 0 {
+		return out
+	}
+	// gh prints one section PER HOST, each marking its OWN active account, so a
+	// user logged into both a GHE host and github.com has TWO active blocks. Only
+	// the github.com account can deliver here (github.com is hardcoded in every
+	// remedy), so we consider ONLY github.com blocks: prefer the active one, else
+	// the first github.com block. A capable github.com account must never be
+	// shadowed by another host's block that happens to sort first.
+	var ghDotComBlocks []string
+	for _, b := range blocks {
+		if strings.Contains(strings.ToLower(strings.SplitN(b, "\n", 2)[0]), "github.com") {
+			ghDotComBlocks = append(ghDotComBlocks, b)
+		}
+	}
+	if len(ghDotComBlocks) == 0 {
+		return blocks[0] // no github.com block (pure-GHE) — known product-scope limitation
+	}
+	for _, b := range ghDotComBlocks {
+		if strings.Contains(strings.ToLower(b), "active account: true") {
+			return b
+		}
+	}
+	return ghDotComBlocks[0]
+}
+
+// ghCapability probes the resolved gh binary. The `auth status` call is bounded
+// so a hung gh can't stall a launch; gh has written this to stderr historically
+// and stdout in newer versions, so both are captured before parsing.
+func ghCapability() GhCapability {
+	if _, err := exec.LookPath(conductor.GhBin()); err != nil {
+		return parseGhAuthStatus("", false)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, conductor.GhBin(), "auth", "status")
+	winproc.Configure(cmd)
+	var buf strings.Builder
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	_ = cmd.Run()
+	return parseGhAuthStatus(buf.String(), true)
+}
 
 // Dep reports whether a required CLI is present and its version.
 type Dep struct {
@@ -114,6 +264,27 @@ func depVersion(bin string) (string, string, bool) {
 	return path, strings.TrimSpace(string(out)), true
 }
 
+// ghGateReject is the launch gate: creating a run or quest requires a
+// delivery-capable gh, so the build-then-fail-at-push class is caught before a
+// run starts. It rejects when gh is absent, unauthenticated, or KNOWN to be
+// missing a required scope. When scopes are uninspectable (fine-grained token)
+// it fails OPEN — the enriched push error is the safety net. Returns (msg, false)
+// to reject (msg is the one-line reason + remedy), or ("", true) to allow.
+func ghGateReject() (msg string, ok bool) {
+	ghc := ghCapability()
+	if !ghc.Installed || !ghc.Authed || (ghc.ScopesKnown && len(ghc.Missing) > 0) {
+		switch {
+		case !ghc.Installed:
+			return "gh (GitHub CLI) isn't installed — a run can't deliver its PR. " + ghc.Remedy, false
+		case !ghc.Authed:
+			return "gh isn't authenticated — a run can build but never deliver; " + ghc.Remedy + ".", false
+		default:
+			return "gh token is missing the `" + strings.Join(ghc.Missing, ", ") + "` scope(s) — delivery would fail; run `" + ghc.Remedy + "`.", false
+		}
+	}
+	return "", true
+}
+
 func buildSystemInfo() SystemInfo {
 	wsl := detectWSL()
 	osName := runtime.GOOS
@@ -121,11 +292,24 @@ func buildSystemInfo() SystemInfo {
 	claudePath, claudeVer, claudeOK := depVersion("claude")
 	gitPath, gitVer, gitOK := depVersion("git")
 	ghPath, ghVer, ghOK := depVersion("gh")
+	ghCap := ghCapability()
+
+	ghWhy := "opens the pull request the run delivers"
+	if ghOK {
+		switch {
+		case !ghCap.Authed:
+			ghWhy += " (not authenticated)"
+		case ghCap.ScopesKnown:
+			ghWhy += " (authenticated; scopes: " + strings.Join(ghCap.Scopes, ", ") + ")"
+		default:
+			ghWhy += " (authenticated; scopes not inspectable)"
+		}
+	}
 
 	deps := []Dep{
 		{Name: "claude", Installed: claudeOK, Version: claudeVer, Path: claudePath, Install: claudeInstall(osName), Why: "drives the agents (headless Claude Code); runs need it — there is no demo mode"},
 		{Name: "git", Installed: gitOK, Version: gitVer, Path: gitPath, Install: gitInstall(osName), Why: "agents work in git worktrees; the run branch is committed and pushed from git"},
-		{Name: "gh", Installed: ghOK, Version: ghVer, Path: ghPath, Install: ghInstall(osName), Why: "opens the pull request the run delivers"},
+		{Name: "gh", Installed: ghOK, Version: ghVer, Path: ghPath, Install: ghInstall(osName), Why: ghWhy},
 	}
 
 	recs := []string{}
@@ -139,6 +323,12 @@ func buildSystemInfo() SystemInfo {
 	}
 	if !ghOK {
 		recs = append(recs, "GitHub CLI (gh) isn't installed — install and authenticate it (`gh auth login`) so a run can open its PR: "+ghInstall(osName))
+	} else if !ghCap.Authed {
+		recs = append(recs, "gh isn't authenticated — runs can build but never deliver; run `gh auth login`.")
+	} else if ghCap.ScopesKnown && len(ghCap.Missing) > 0 {
+		recs = append(recs, "gh token is missing the `"+strings.Join(ghCap.Missing, ", ")+"` scope(s) — delivery will fail for any run whose diff needs them; run `"+ghCap.Remedy+"`.")
+	} else if !ghCap.ScopesKnown {
+		recs = append(recs, "gh token scopes aren't inspectable (fine-grained token) — the launch gate can't verify delivery capability; a push may still be rejected at delivery.")
 	}
 
 	return SystemInfo{

@@ -20,12 +20,30 @@ import (
 // a local `origin` remote), so the whole branch → worktree → integrate → push →
 // PR path is verifiable without touching GitHub or spending Claude tokens.
 
-// ghBin is the GitHub CLI binary; overridable for tests via CANDYLAND_GH.
-func ghBin() string {
+// GhBin is the GitHub CLI binary; overridable for tests via CANDYLAND_GH.
+func GhBin() string {
 	if b := os.Getenv("CANDYLAND_GH"); b != "" {
 		return b
 	}
 	return "gh"
+}
+
+// EnrichPushErr recognizes GitHub's rejection of a push that touches
+// .github/workflows/* with a gh token lacking the `workflow` OAuth scope — a
+// class that only surfaces at delivery, after a run has already built green —
+// and wraps err with the exact remedy plus the local branch the work is safe on.
+// Any other error is returned unchanged.
+func EnrichPushErr(err error, branch string) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	oauthApp := strings.Contains(msg, "refusing to allow an oauth app")
+	workflowScope := strings.Contains(msg, "workflow") && strings.Contains(msg, "scope") && strings.Contains(msg, "refus")
+	if !oauthApp && !workflowScope {
+		return err
+	}
+	return fmt.Errorf("%w\n\nThe gh token can't push workflow files. Fix: gh auth refresh -h github.com -s workflow (or push over SSH). Your work is intact on local branch %q — refresh the scope and push it manually.", err, branch)
 }
 
 // expandHome expands a leading ~ to the user's home directory.
@@ -80,7 +98,7 @@ func currentBranch(ctx context.Context, dir string) (string, error) {
 // neither resolves, so a caller can degrade to currentBranch rather than open a PR
 // against a wrong base silently.
 func defaultBranch(ctx context.Context, repo string) (string, error) {
-	if out, err := runCmd(ctx, repo, ghBin(), "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"); err == nil {
+	if out, err := runCmd(ctx, repo, GhBin(), "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"); err == nil {
 		if b := strings.TrimSpace(out); b != "" {
 			return b, nil
 		}
@@ -322,13 +340,13 @@ func pushBranch(ctx context.Context, repo, branch string) error {
 			return nil
 		}
 		if !isNonFastForward(err) {
-			return err // a real failure — rebasing won't help
+			return EnrichPushErr(err, branch) // a real failure — rebasing won't help
 		}
 		if rebaseErr := rebaseOntoOrigin(ctx, repo, branch); rebaseErr != nil {
 			return fmt.Errorf("push rejected (origin advanced) and rebase failed: %w", rebaseErr)
 		}
 	}
-	return err
+	return EnrichPushErr(err, branch)
 }
 
 // isNonFastForward reports whether err is git's non-fast-forward push rejection —
@@ -367,7 +385,7 @@ func rebaseOntoOrigin(ctx context.Context, repo, branch string) error {
 // PRs of a multi-repo run). The cwd repo is the integration worktree the PR was
 // opened from. Best-effort: the caller treats a failure as non-fatal.
 func commentPR(ctx context.Context, repo, prURL, body string) error {
-	_, err := runCmd(ctx, repo, ghBin(), "pr", "comment", prURL, "--body", body)
+	_, err := runCmd(ctx, repo, GhBin(), "pr", "comment", prURL, "--body", body)
 	return err
 }
 
@@ -375,7 +393,7 @@ func commentPR(ctx context.Context, repo, prURL, body string) error {
 // run can base its work on (and push back onto) that branch — updating the PR in
 // place rather than opening a new one.
 func prHeadBranch(ctx context.Context, repo string, n int) (string, error) {
-	out, err := runCmd(ctx, repo, ghBin(), "pr", "view", strconv.Itoa(n), "--json", "headRefName", "--jq", ".headRefName")
+	out, err := runCmd(ctx, repo, GhBin(), "pr", "view", strconv.Itoa(n), "--json", "headRefName", "--jq", ".headRefName")
 	if err != nil {
 		return "", err
 	}
@@ -389,7 +407,7 @@ func prHeadBranch(ctx context.Context, repo string, n int) (string, error) {
 // prURL resolves an existing PR's web URL via gh, so a feedback/review run records
 // the PR it UPDATED as its delivery result (never opening a new one).
 func prURL(ctx context.Context, repo string, n int) (string, error) {
-	out, err := runCmd(ctx, repo, ghBin(), "pr", "view", strconv.Itoa(n), "--json", "url", "--jq", ".url")
+	out, err := runCmd(ctx, repo, GhBin(), "pr", "view", strconv.Itoa(n), "--json", "url", "--jq", ".url")
 	if err != nil {
 		return "", err
 	}
@@ -408,7 +426,7 @@ func prURL(ctx context.Context, repo string, n int) (string, error) {
 // per-review commit: an absent oid leaves ApprovedSHA empty (→ treated as no
 // current approval). Overridable for tests via Conductor.prReview.
 func ghPRReview(ctx context.Context, repo string, n int) (run.PRReview, error) {
-	out, err := runCmd(ctx, repo, ghBin(), "pr", "view", strconv.Itoa(n),
+	out, err := runCmd(ctx, repo, GhBin(), "pr", "view", strconv.Itoa(n),
 		"--json", "state,reviewDecision,headRefOid,reviews")
 	if err != nil {
 		return run.PRReview{}, err
@@ -440,12 +458,12 @@ func ghPRReview(ctx context.Context, repo string, n int) (run.PRReview, error) {
 // ghMergePR merges a watched PR via gh (squash-merge, deleting the head branch).
 // Overridable for tests via Conductor.mergePR.
 func ghMergePR(ctx context.Context, repo string, n int) error {
-	_, err := runCmd(ctx, repo, ghBin(), "pr", "merge", strconv.Itoa(n), "--squash", "--delete-branch")
+	_, err := runCmd(ctx, repo, GhBin(), "pr", "merge", strconv.Itoa(n), "--squash", "--delete-branch")
 	return err
 }
 
 func openPR(ctx context.Context, repo, base, head, title, body string) (string, error) {
-	out, err := runCmd(ctx, repo, ghBin(), "pr", "create",
+	out, err := runCmd(ctx, repo, GhBin(), "pr", "create",
 		"--base", base, "--head", head, "--title", title, "--body", body)
 	if err != nil {
 		return "", err
@@ -464,7 +482,7 @@ func openPR(ctx context.Context, repo, base, head, title, body string) (string, 
 // any — re-finishing a quest delivery must reuse it, never error on a
 // duplicate `gh pr create`. A gh/list error or no match returns ("", false).
 func existingOpenPR(ctx context.Context, repo, head string) (string, bool) {
-	out, err := runCmd(ctx, repo, ghBin(), "pr", "list", "--head", head, "--state", "open", "--json", "url")
+	out, err := runCmd(ctx, repo, GhBin(), "pr", "list", "--head", head, "--state", "open", "--json", "url")
 	if err != nil {
 		return "", false
 	}

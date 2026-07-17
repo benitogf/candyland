@@ -545,6 +545,7 @@ func (c *Conductor) deliverToFeedback(ctx context.Context, id string, folders []
 		}
 		// Push the integrated branch's tip onto the PR's head branch in place.
 		if _, err := git(ctx, integDir, "push", "origin", branch+":"+head); err != nil {
+			err = EnrichPushErr(err, branch)
 			pr.Err = "push to PR head failed: " + err.Error()
 		} else if url, err := prURL(ctx, repo, targetPR); err != nil {
 			pr.Err = fmt.Sprintf("PR #%d URL lookup failed: %v", targetPR, err)
