@@ -82,6 +82,24 @@ func TestParseGhAuthStatus(t *testing.T) {
 			wantInstall: true, wantAuthed: true, wantKnown: true, wantMissing: []string{"workflow"}, wantRemedy: true,
 		},
 		{
+			name: "multi-host: GHE active first, github.com capable second → github.com decides, not blocked",
+			out: "ghe.corp.com\n" +
+				"  ✓ Logged in to ghe.corp.com account bob (keyring)\n" +
+				"  - Active account: true\n" +
+				"  - Git operations protocol: https\n" +
+				"  - Token: ghe_****\n" +
+				"  - Token scopes: 'repo'\n" +
+				"\n" +
+				"github.com\n" +
+				"  ✓ Logged in to github.com account alice (keyring)\n" +
+				"  - Active account: true\n" +
+				"  - Git operations protocol: https\n" +
+				"  - Token: gho_****\n" +
+				"  - Token scopes: 'repo', 'workflow'",
+			installed:   true,
+			wantInstall: true, wantAuthed: true, wantKnown: true, wantMissing: nil, wantRemedy: false,
+		},
+		{
 			name:        "not logged in",
 			out:         "You are not logged into any GitHub hosts. Run gh auth login to authenticate.",
 			installed:   true,

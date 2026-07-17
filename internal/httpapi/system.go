@@ -123,12 +123,27 @@ func activeAccountBlock(out string) string {
 	if len(blocks) == 0 {
 		return out
 	}
+	// gh prints one section PER HOST, each marking its OWN active account, so a
+	// user logged into both a GHE host and github.com has TWO active blocks. Only
+	// the github.com account can deliver here (github.com is hardcoded in every
+	// remedy), so we consider ONLY github.com blocks: prefer the active one, else
+	// the first github.com block. A capable github.com account must never be
+	// shadowed by another host's block that happens to sort first.
+	var ghDotComBlocks []string
 	for _, b := range blocks {
+		if strings.Contains(strings.ToLower(strings.SplitN(b, "\n", 2)[0]), "github.com") {
+			ghDotComBlocks = append(ghDotComBlocks, b)
+		}
+	}
+	if len(ghDotComBlocks) == 0 {
+		return blocks[0] // no github.com block (pure-GHE) — known product-scope limitation
+	}
+	for _, b := range ghDotComBlocks {
 		if strings.Contains(strings.ToLower(b), "active account: true") {
 			return b
 		}
 	}
-	return blocks[0]
+	return ghDotComBlocks[0]
 }
 
 // ghCapability probes the resolved gh binary. The `auth status` call is bounded
