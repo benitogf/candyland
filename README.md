@@ -170,7 +170,9 @@ Dependencies a run needs:
 - **Claude Code** (`claude`) — drives the agents. Without it a run **fails
   honestly** with an actionable error; there is no demo/scripted fallback.
 - **git** — for the run branch and worktrees.
-- **GitHub CLI** (`gh`) — opens the PR a run delivers (`gh auth login`).
+- **GitHub CLI** (`gh`) — opens the PR a run delivers. Must be authenticated
+  (`gh auth login`) with the `repo` and `workflow` scopes, or run/quest creation
+  is rejected up front (a token missing `workflow` can't push `.github/workflows/*`).
 
 The app binds to **loopback by default**: a run drives headless Claude with
 `--dangerously-skip-permissions` (a non-interactive run has no human to approve

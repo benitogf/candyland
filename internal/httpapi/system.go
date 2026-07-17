@@ -18,14 +18,16 @@ import (
 // GhCapability reports whether the resolved gh CLI can actually DELIVER a run —
 // installed, authenticated, and holding the OAuth scopes a push may need. It is
 // probed at launch (the gate) and surfaced standing in the system panel, so the
-// build-30-minutes-then-fail-at-push class is caught before a run starts.
+// build-30-minutes-then-fail-at-push class is caught before a run starts. It is
+// internal plumbing (the panel surfaces through Dep.Why + Recommendations, the
+// gate through ghGateReject); it is never marshaled, so it carries no json tags.
 type GhCapability struct {
-	Installed   bool     `json:"installed"`
-	Authed      bool     `json:"authed"`
-	Scopes      []string `json:"scopes,omitempty"`
-	ScopesKnown bool     `json:"scopesKnown"`
-	Missing     []string `json:"missing,omitempty"` // subset of {repo, workflow}
-	Remedy      string   `json:"remedy,omitempty"`  // exact command to fix
+	Installed   bool
+	Authed      bool
+	Scopes      []string
+	ScopesKnown bool
+	Missing     []string // subset of {repo, workflow}
+	Remedy      string   // exact command to fix
 }
 
 // ghRequiredScopes is the single place the delivery-capable scope set lives —
@@ -34,22 +36,29 @@ var ghRequiredScopes = []string{"repo", "workflow"}
 
 // parseGhAuthStatus turns `gh auth status` output into a GhCapability. It is
 // PURE (no exec) so the whole capability judgement is table-testable. gh prints
-// scopes quoted+comma-separated (`- Token scopes: 'gist', 'repo'`); fine-grained
-// PATs and GitHub App tokens print NO scopes line, which we fail OPEN on
-// (ScopesKnown=false, no Missing) — blocking on a guess would lock out valid setups.
+// one block per authenticated account, each with a `- Active account: true|false`
+// marker and its own `- Token scopes:` line (quoted+comma-separated, e.g.
+// `- Token scopes: 'gist', 'repo'`). The gate must judge the ACTIVE account's
+// token — the one gh actually uses for git/PR operations — so we select the block
+// marked active (falling back to the first block for older single-account output
+// that has no `Active account:` line). Fine-grained PATs / GitHub App tokens print
+// NO scopes line, which we fail OPEN on (ScopesKnown=false, no Missing) — blocking
+// on a guess would lock out valid setups.
 func parseGhAuthStatus(out string, installed bool) GhCapability {
 	if !installed {
 		return GhCapability{Installed: false, Remedy: ghInstall(runtime.GOOS)}
 	}
 	ghc := GhCapability{Installed: true}
-	if !strings.Contains(strings.ToLower(out), "logged in to github.com") {
+
+	block := activeAccountBlock(out)
+	if !strings.Contains(strings.ToLower(block), "logged in to github.com") {
 		ghc.Remedy = "run `gh auth login`"
 		return ghc
 	}
 	ghc.Authed = true
 
-	// Find the "Token scopes:" line (case-insensitive) and parse tolerantly.
-	for _, line := range strings.Split(out, "\n") {
+	// Find the active block's "Token scopes:" line (case-insensitive), parse tolerantly.
+	for _, line := range strings.Split(block, "\n") {
 		lower := strings.ToLower(line)
 		idx := strings.Index(lower, "token scopes:")
 		if idx < 0 {
@@ -84,6 +93,42 @@ func parseGhAuthStatus(out string, installed bool) GhCapability {
 		ghc.Remedy = "gh auth refresh -h github.com -s " + strings.Join(ghc.Missing, ",")
 	}
 	return ghc
+}
+
+// activeAccountBlock splits `gh auth status` output into per-account blocks (each
+// starts at a "Logged in to" line) and returns the one marked `Active account:
+// true`. With no active marker (older single-account gh) it returns the first
+// block; with no "Logged in to" line at all it returns the whole output unchanged
+// so the caller's not-authed detection still fires.
+func activeAccountBlock(out string) string {
+	var blocks []string
+	var cur []string
+	flush := func() {
+		if len(cur) > 0 {
+			blocks = append(blocks, strings.Join(cur, "\n"))
+			cur = nil
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(strings.ToLower(line), "logged in to") {
+			flush() // start a new account block (drops any pre-login header lines)
+			cur = []string{line}
+			continue
+		}
+		if cur != nil {
+			cur = append(cur, line)
+		}
+	}
+	flush()
+	if len(blocks) == 0 {
+		return out
+	}
+	for _, b := range blocks {
+		if strings.Contains(strings.ToLower(b), "active account: true") {
+			return b
+		}
+	}
+	return blocks[0]
 }
 
 // ghCapability probes the resolved gh binary. The `auth status` call is bounded
@@ -208,8 +253,8 @@ func depVersion(bin string) (string, string, bool) {
 // delivery-capable gh, so the build-then-fail-at-push class is caught before a
 // run starts. It rejects when gh is absent, unauthenticated, or KNOWN to be
 // missing a required scope. When scopes are uninspectable (fine-grained token)
-// it fails OPEN — the enriched push error is the safety net. Returns ("", false)
-// to reject with the one-line message, or ("", true) to allow.
+// it fails OPEN — the enriched push error is the safety net. Returns (msg, false)
+// to reject (msg is the one-line reason + remedy), or ("", true) to allow.
 func ghGateReject() (msg string, ok bool) {
 	ghc := ghCapability()
 	if !ghc.Installed || !ghc.Authed || (ghc.ScopesKnown && len(ghc.Missing) > 0) {

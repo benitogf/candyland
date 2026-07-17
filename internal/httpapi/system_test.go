@@ -51,6 +51,37 @@ func TestParseGhAuthStatus(t *testing.T) {
 			wantInstall: true, wantAuthed: true, wantKnown: false, wantMissing: nil, wantRemedy: false,
 		},
 		{
+			name: "multi-account: active has repo+workflow, inactive missing → not blocked",
+			out: "github.com\n" +
+				"  ✓ Logged in to github.com account USERA (keyring)\n" +
+				"  - Active account: true\n" +
+				"  - Git operations protocol: https\n" +
+				"  - Token: gho_****\n" +
+				"  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'\n" +
+				"\n" +
+				"  ✓ Logged in to github.com account USERB (keyring)\n" +
+				"  - Active account: false\n" +
+				"  - Token: gho_****\n" +
+				"  - Token scopes: 'repo'",
+			installed:   true,
+			wantInstall: true, wantAuthed: true, wantKnown: true, wantMissing: nil, wantRemedy: false,
+		},
+		{
+			name: "multi-account: active missing workflow, inactive complete → blocked on active",
+			out: "github.com\n" +
+				"  ✓ Logged in to github.com account USERA (keyring)\n" +
+				"  - Active account: false\n" +
+				"  - Token: gho_****\n" +
+				"  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'\n" +
+				"\n" +
+				"  ✓ Logged in to github.com account USERB (keyring)\n" +
+				"  - Active account: true\n" +
+				"  - Token: gho_****\n" +
+				"  - Token scopes: 'repo'",
+			installed:   true,
+			wantInstall: true, wantAuthed: true, wantKnown: true, wantMissing: []string{"workflow"}, wantRemedy: true,
+		},
+		{
 			name:        "not logged in",
 			out:         "You are not logged into any GitHub hosts. Run gh auth login to authenticate.",
 			installed:   true,
