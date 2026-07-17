@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/benitogf/candyland/internal/conductor"
@@ -14,8 +15,28 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// writeGhAuthStub drops an executable gh stub that prints statusOut for
+// `gh auth status`, and points CANDYLAND_GH at it. Used to give the launch gate
+// a delivery-capable (or deliberately incapable) gh independent of the host's.
+func writeGhAuthStub(t *testing.T, statusOut string) {
+	t.Helper()
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	script := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1\" == auth && \"$2\" == status ]]; then\n" +
+		"cat <<'EOF'\n" + statusOut + "\nEOF\n" +
+		"exit 0\nfi\nexit 0\n"
+	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CANDYLAND_GH", gh)
+}
+
 func questServer(t *testing.T) (*conductor.Conductor, *ooo.Server) {
 	t.Helper()
+	// A delivery-capable gh by default, so the launch gate admits the
+	// success-path tests regardless of the host's real gh scopes.
+	writeGhAuthStub(t, "Logged in to github.com account tester\n- Token scopes: 'repo', 'workflow'")
 	st := storage.New(storage.LayeredConfig{Memory: storage.NewMemoryLayer()})
 	srv := &ooo.Server{Storage: st, Static: true, Router: mux.NewRouter(), Silence: true}
 	c := conductor.New(srv)
