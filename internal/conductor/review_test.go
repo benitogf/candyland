@@ -177,7 +177,7 @@ func TestFixReviewFindingsFailsFastOnEmptyFindings(t *testing.T) {
 	c, _ := deliveryConductor(t, reviewThenCleanClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	// Call the fix pass directly with empty blockers — it must abort fast.
-	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1, "", "", ""); ok {
+	if ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", t.TempDir(), "br", nil, nil, 1, "", "", ""); ok {
 		t.Fatal("a fix pass with no findings must return false (fail fast), not true")
 	}
 	r, _ := c.Get(id)
@@ -353,7 +353,7 @@ func TestFixReviewFindingsDeliversOnDirtyWorktreeDespiteNoTool(t *testing.T) {
 	c, repo := deliveryConductor(t, fixDirtyNoToolClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
-	ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
 	if !ok {
 		r, _ := c.Get(id)
 		t.Fatalf("a dirty integDir must deliver even with sawTool=false; got ok=false error=%q", r.Error)
@@ -372,23 +372,43 @@ func TestFixReviewFindingsDeliversOnDirtyWorktreeDespiteNoTool(t *testing.T) {
 	}
 }
 
-// The other side of the gate: a fix pass that genuinely changes nothing (clean
-// worktree, sawTool=false) must still refuse and record the "made no changes"
-// error rather than open a PR with open blockers.
+// A fix pass that genuinely changes nothing (clean worktree, sawTool=false).
 const fixCleanNoOpClaude = `#!/usr/bin/env bash
 echo '{"type":"result","subtype":"success","result":"nothing to change","usage":{"output_tokens":1}}'
 `
 
-func TestFixReviewFindingsRefusesOnCleanWorktree(t *testing.T) {
+// core/completion (detritus#224): a no-op remediation is a delivery signal, not a
+// block. A no-diff fix pass over a REAL (reviewer-cited) finding no longer refuses
+// at the unit level — the finding may already be satisfied at the integrated HEAD
+// (e.g. an integration merge landed the fix after the review was computed), and
+// maker≠checker forbids the fixer from self-clearing it either way. It returns true
+// WITHOUT creating a commit, deferring to the caller's confirming reviewer round:
+// reviewUntilClean re-reviews at HEAD next round and only a FRESH reviewer clears the
+// real finding. The end-to-end refusal of a finding that KEEPS reproducing is
+// preserved at the caller level (see TestReviewRealNoDiffNeverClearsBlocksWithoutPR).
+func TestFixReviewFindingsDefersRealNoDiffToReReview(t *testing.T) {
 	c, repo := deliveryConductor(t, fixCleanNoOpClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
+	tipBefore, err := exec.Command("git", "-C", repo, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse main: %v\n%s", err, tipBefore)
+	}
 	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
-	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
-		t.Fatal("a genuinely no-op fix pass must refuse (return false), not deliver")
+	ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	if !ok {
+		r, _ := c.Get(id)
+		t.Fatalf("a no-diff pass over a real finding must DEFER (ok=true) to the confirming reviewer, not refuse; error=%q", r.Error)
 	}
 	r, _ := c.Get(id)
-	if !strings.Contains(strings.ToLower(r.Error), "made no changes") {
-		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
+	if r.Error != "" {
+		t.Errorf("the deferral must not record a failure error, got %q", r.Error)
+	}
+	tipAfter, err := exec.Command("git", "-C", repo, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse main after: %v\n%s", err, tipAfter)
+	}
+	if string(tipBefore) != string(tipAfter) {
+		t.Errorf("a no-diff deferral must not create a commit: tip moved %s -> %s", tipBefore, tipAfter)
 	}
 }
 
@@ -408,7 +428,7 @@ func TestFixReviewFindingsAcceptsNoDiffCleanForSynthesized(t *testing.T) {
 		t.Fatalf("rev-parse main: %v\n%s", err, tipBefore)
 	}
 	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration — cite mitigating evidence", synthesized: true}}
-	ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
 	if !ok {
 		r, _ := c.Get(id)
 		t.Fatalf("an evidence-cited, detector-clean no-diff resolution of an all-synthesized finding set must be accepted; got ok=false error=%q", r.Error)
@@ -426,18 +446,30 @@ func TestFixReviewFindingsAcceptsNoDiffCleanForSynthesized(t *testing.T) {
 	}
 }
 
-// Guard: a REAL (reviewer-cited) finding keeps the hasChanges requirement even
-// when the pass re-stamps REVIEW_CLEAN with no diff.
-func TestFixReviewFindingsNoDiffCleanStillRefusesForRealFinding(t *testing.T) {
+// The maker≠checker case: even when the no-diff pass RE-STAMPS REVIEW_CLEAN, the
+// fixer's own verdict must NOT self-clear a REAL reviewer-cited finding (only the
+// #71 all-synthesized accept path may act on a bounce-authorized re-stamp). It still
+// returns true WITHOUT committing — deferring confirmation to a FRESH reviewer round
+// at HEAD, never trusting the fixer's own REVIEW_CLEAN as the clearing authority.
+func TestFixReviewFindingsDefersRealNoDiffCleanToReReview(t *testing.T) {
 	c, repo := deliveryConductor(t, fixNoDiffCleanResolutionClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
-	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
-	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
-		t.Fatal("a no-diff pass against a real finding must refuse even if it stamps REVIEW_CLEAN")
+	tipBefore, err := exec.Command("git", "-C", repo, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse main: %v\n%s", err, tipBefore)
 	}
-	r, _ := c.Get(id)
-	if !strings.Contains(strings.ToLower(r.Error), "made no changes") {
-		t.Errorf("the refusal must name the empty change set, got %q", r.Error)
+	blockers := []reviewFinding{{File: "a.go", Line: 1, Issue: "fix this"}}
+	ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	if !ok {
+		r, _ := c.Get(id)
+		t.Fatalf("a no-diff pass over a real finding must DEFER (ok=true), not refuse, even with a re-stamped REVIEW_CLEAN; error=%q", r.Error)
+	}
+	tipAfter, err := exec.Command("git", "-C", repo, "rev-parse", "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse main after: %v\n%s", err, tipAfter)
+	}
+	if string(tipBefore) != string(tipAfter) {
+		t.Errorf("the fixer's own REVIEW_CLEAN must NOT self-clear a real finding into a commit: tip moved %s -> %s", tipBefore, tipAfter)
 	}
 }
 
@@ -447,7 +479,7 @@ func TestFixReviewFindingsNoVerdictNoDiffStillRefusesForSynthesized(t *testing.T
 	c, repo := deliveryConductor(t, fixCleanNoOpClaude) // "nothing to change", no verdict line
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration", synthesized: true}}
-	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
+	if ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
 		t.Fatal("a no-diff pass without a re-stamped REVIEW_CLEAN must refuse")
 	}
 	r, _ := c.Get(id)
@@ -466,7 +498,7 @@ func TestFixReviewFindingsHedgedCleanStillRefusesForSynthesized(t *testing.T) {
 	c, repo := deliveryConductor(t, fixNoDiffHedgedCleanClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration", synthesized: true}}
-	if ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
+	if ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", ""); ok {
 		t.Fatal("a hedged no-diff REVIEW_CLEAN must fail the detector re-run and refuse")
 	}
 	r, _ := c.Get(id)
@@ -486,7 +518,7 @@ func TestFixReviewFindingsDirtyWorktreeStillCommitsForSynthesized(t *testing.T) 
 	c, repo := deliveryConductor(t, fixDirtySynthesizedClaude)
 	id := c.Create(run.Spec{Prompt: "do the thing"})
 	blockers := []reviewFinding{{Issue: "REVIEW_CLEAN contradicts its own narration", synthesized: true}}
-	ok, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
+	ok, _, _ := c.fixReviewFindings(t.Context(), id, "repo", repo, "main", blockers, nil, 1, "", "", "")
 	if !ok {
 		r, _ := c.Get(id)
 		t.Fatalf("a dirty worktree must commit+deliver for synthesized findings too; got ok=false error=%q", r.Error)
@@ -497,5 +529,141 @@ func TestFixReviewFindingsDirtyWorktreeStillCommitsForSynthesized(t *testing.T) 
 	}
 	if !strings.Contains(string(out), "hardened") {
 		t.Errorf("the fix must be committed before delivery:\n%s", out)
+	}
+}
+
+// Caller-level regression guard: a REAL finding that KEEPS reproducing (the reviewer
+// flags it EVERY round, the fixer NEVER produces a diff — a lazy/incapable fixer)
+// must still ultimately terminate the run blocked WITHOUT opening a PR. The unit-level
+// refusal moved to a deferral (fixReviewFindings returns true on a no-diff real
+// finding), so the safety property the refusal used to guarantee is now enforced at
+// the caller: reviewUntilClean defers to a confirming reviewer round each time, and
+// the round cap terminates blocked ("still has N unresolved after N rounds"). This is
+// the critical guard that the no-op-is-a-delivery-signal change does NOT let
+// deliverable-looking-but-unresolved work through — maker≠checker holds end to end.
+//
+// The reviewer stub emits a session_id init line so round 2 RESUMES the reviewer
+// session (production's real path) and is driven by the DEFERRAL reverify prompt — it
+// dispatches on "code reviewer" (cold round 1) OR "Re-verify" (the resumed round). The
+// still-reproducing finding must slip through neither.
+const reviewRealNoDiffNeverCleanClaude = `#!/usr/bin/env bash
+prompt="$2"
+if [[ "$prompt" == *"code reviewer"* || "$prompt" == *"Re-verify"* ]]; then
+  echo '{"type":"system","subtype":"init","session_id":"sess-rev"}'
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_FINDINGS {\"blockers\":[{\"file\":\"a.txt\",\"line\":1,\"issue\":\"still wrong\"}]}"}]}}'
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"review findings"* ]]; then
+  echo '{"type":"result","subtype":"success","result":"nothing to change","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+else
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
+  echo "content" > "a.txt"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+fi
+`
+
+func TestReviewRealNoDiffNeverClearsBlocksWithoutPR(t *testing.T) {
+	c, _ := deliveryConductor(t, reviewRealNoDiffNeverCleanClaude)
+	t.Setenv("CANDYLAND_REVIEW_ROUNDS", "2") // round 1 defers, round 2 hits the cap
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "blocked" }, 40*time.Second)
+	if r.Status != "blocked" {
+		t.Fatalf("a real finding the fixer never resolves must terminate blocked at the round cap: status=%q error=%q", r.Status, r.Error)
+	}
+	if r.Error == "" {
+		t.Fatal("an un-clearable review must record an honest error, not finish clean")
+	}
+	if !strings.Contains(strings.ToLower(r.Error), "unresolved") {
+		t.Errorf("the error should name the unresolved findings at the round cap, got %q", r.Error)
+	}
+	// The defining safety property: no PR on a real finding never cleared.
+	if r.PrURL != "" {
+		t.Errorf("a never-cleared real finding must not open a PR, got %q", r.PrURL)
+	}
+	if len(r.PRs) != 0 {
+		t.Errorf("no PR record should exist for a blocked review, got %+v", r.PRs)
+	}
+}
+
+// The fix itself: a REAL finding that is STALE — the reviewer flags it in round 1,
+// the fixer produces no diff (it is already satisfied at the integrated HEAD, e.g. an
+// integration merge landed the fix after the review was computed), then the round-2
+// CONFIRMING reviewer re-reviews at HEAD and returns REVIEW_CLEAN — must DELIVER, not
+// false-block. This is exactly the telemetry incident (detritus#224): correct no-op
+// remediation of an already-satisfied finding is a delivery signal.
+//
+// The reviewer stub emits a session_id init line so round 2 RESUMES (production's real
+// path) and is driven by the DEFERRAL reverify prompt. That resumed round captures the
+// exact prompt it received to $CANDYLAND_REVERIFY_PROMPT so the test can assert it is
+// TRUTHFUL — it must NOT claim a fix was committed (which would bias the confirming
+// reviewer toward clean), and must ask whether the finding still reproduces at HEAD.
+const reviewStaleFindingThenCleanClaude = `#!/usr/bin/env bash
+prompt="$2"
+if [[ "$prompt" == *"code reviewer"* || "$prompt" == *"Re-verify"* ]]; then
+  if [[ "$prompt" == *"Re-verify"* && -n "$CANDYLAND_REVERIFY_PROMPT" ]]; then
+    printf '%s' "$prompt" > "$CANDYLAND_REVERIFY_PROMPT"
+  fi
+  echo '{"type":"system","subtype":"init","session_id":"sess-rev"}'
+  n=$(cat "$CANDYLAND_REVIEW_COUNT" 2>/dev/null || echo 0)
+  n=$((n+1)); echo "$n" > "$CANDYLAND_REVIEW_COUNT"
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff"}}]}}'
+  if [[ "$n" -le 1 ]]; then
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_FINDINGS {\"blockers\":[{\"file\":\"a.txt\",\"line\":1,\"issue\":\"needs a guard\"}]}"}]}}'
+  else
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_CLEAN"}]}}'
+  fi
+  echo '{"type":"result","subtype":"success","result":"reviewed","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"review findings"* ]]; then
+  echo '{"type":"result","subtype":"success","result":"already satisfied at the integrated HEAD; nothing to change","usage":{"output_tokens":1}}'
+elif [[ "$prompt" == *"tech lead"* ]]; then
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PARTITION [{\"id\":\"a\",\"title\":\"task a\",\"files\":[\"a.txt\"],\"test\":\"t\"}]"}]}}'
+  echo '{"type":"result","subtype":"success","result":"ok","usage":{"output_tokens":1}}'
+else
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file":"a.txt"}}]}}'
+  echo "content" > "a.txt"
+  echo '{"type":"result","subtype":"success","result":"green","usage":{"output_tokens":2}}'
+fi
+`
+
+func TestReviewStaleRealFindingNoDiffThenReReviewCleanDelivers(t *testing.T) {
+	c, _ := deliveryConductor(t, reviewStaleFindingThenCleanClaude)
+	dir := t.TempDir()
+	t.Setenv("CANDYLAND_REVIEW_COUNT", dir+"/n")
+	t.Setenv("CANDYLAND_REVERIFY_PROMPT", dir+"/reverify-prompt")
+	t.Setenv("CANDYLAND_REVIEW_ROUNDS", "3")
+	id := c.Create(run.Spec{Prompt: "do the thing"})
+	c.Begin(id)
+
+	r := waitFor(t, c, id, func(r run.Run) bool { return r.Status == "done" }, 40*time.Second)
+	if r.Status != "done" {
+		t.Fatalf("a stale real finding cleared by the confirming reviewer must DELIVER: status=%q error=%q", r.Status, r.Error)
+	}
+	if r.Error != "" {
+		t.Fatalf("a no-op remediation of an already-satisfied finding must not error, got %q", r.Error)
+	}
+	if r.PrURL == "" {
+		t.Error("once the confirming reviewer re-verifies clean at HEAD, the run must open a PR")
+	}
+	// The confirming (resumed) reviewer round actually ran — proving production's
+	// resume path, not a cold fork, cleared the finding.
+	reverify, err := os.ReadFile(dir + "/reverify-prompt")
+	if err != nil {
+		t.Fatalf("the resumed confirming reviewer round did not run (no reverify prompt captured): %v", err)
+	}
+	rv := string(reverify)
+	// Blocker 1 regression guard: the deferral reverify prompt must be TRUTHFUL — no
+	// "fixes are committed / diff the new commits" lie when nothing was committed.
+	for _, lie := range []string{"are committed", "diff the new commits"} {
+		if strings.Contains(rv, lie) {
+			t.Errorf("the deferral reverify prompt must not claim a fix was committed (found %q):\n%s", lie, rv)
+		}
+	}
+	if !strings.Contains(rv, "made NO changes") || !strings.Contains(rv, "STILL reproduce") {
+		t.Errorf("the deferral reverify prompt must truthfully state no fix landed and ask whether the finding still reproduces at HEAD:\n%s", rv)
 	}
 }

@@ -231,12 +231,29 @@ func TestConflictRulingHostFor(t *testing.T) {
 // === reviewReverifyPrompt carries the just-fixed blockers ==================
 
 func TestReviewReverifyPromptCarriesBlockers(t *testing.T) {
-	p := reviewReverifyPrompt([]reviewFinding{{File: "a.go", Line: 3, Issue: "off by one"}})
+	p := reviewReverifyPrompt([]reviewFinding{{File: "a.go", Line: 3, Issue: "off by one"}}, false)
 	if !strings.Contains(p, reviewReverifyBootstrap) {
 		t.Error("reverify prompt must embed the reverify bootstrap")
 	}
 	if !strings.Contains(p, "a.go:3 off by one") {
 		t.Errorf("reverify prompt must list the cited blockers, got %q", p)
+	}
+	// The DEFERRAL variant must be TRUTHFUL: nothing was committed, so it must NOT
+	// claim a fix landed, and it must ask whether the finding still reproduces at HEAD.
+	d := reviewReverifyPrompt([]reviewFinding{{File: "a.go", Line: 3, Issue: "off by one"}}, true)
+	if !strings.Contains(d, reviewReverifyDeferredBootstrap) {
+		t.Error("the deferred reverify prompt must embed the deferred reverify bootstrap")
+	}
+	if !strings.Contains(d, "a.go:3 off by one") {
+		t.Errorf("the deferred reverify prompt must still list the cited findings, got %q", d)
+	}
+	for _, lie := range []string{"are committed", "diff the new commits"} {
+		if strings.Contains(d, lie) {
+			t.Errorf("the deferred reverify prompt must not claim a fix was committed (found %q): %q", lie, d)
+		}
+	}
+	if !strings.Contains(d, "made NO changes") || !strings.Contains(d, "STILL reproduce") {
+		t.Errorf("the deferred reverify prompt must state no fix landed and ask whether the finding still reproduces at HEAD, got %q", d)
 	}
 }
 
@@ -279,7 +296,7 @@ func TestReviewerContinuityRoundTwoResumes(t *testing.T) {
 	c := New(nil)
 	var sess string
 	// Round 1: cold spawn (no template) captures the session id.
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, &sess, bus.Brief{Role: "reviewer"})
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, false, &sess, bus.Brief{Role: "reviewer"})
 	if sess != "rev-1" {
 		t.Fatalf("round 1 must capture the reviewer session, got %q", sess)
 	}
@@ -288,7 +305,7 @@ func TestReviewerContinuityRoundTwoResumes(t *testing.T) {
 	// reverify text appear only in the round-2 spawn.)
 	os.Remove(argvLog)
 	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "",
-		[]reviewFinding{{File: "a.go", Line: 2, Issue: "x"}}, &sess, bus.Brief{Role: "reviewer"})
+		[]reviewFinding{{File: "a.go", Line: 2, Issue: "x"}}, false, &sess, bus.Brief{Role: "reviewer"})
 	log2 := readFileStr(t, argvLog)
 	if !strings.Contains(log2, "--resume rev-1") || strings.Contains(log2, "--fork-session") {
 		t.Errorf("round 2 must resume the round-1 session (no fork), got %q", log2)
@@ -301,8 +318,8 @@ func TestReviewerContinuityRoundTwoResumes(t *testing.T) {
 	t.Setenv("CANDYLAND_REVIEW_CONTINUITY", "0")
 	os.Remove(argvLog)
 	var sess2 string
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, &sess2, bus.Brief{Role: "reviewer"})
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess2, bus.Brief{Role: "reviewer"})
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 1, "", false, "", "", nil, false, &sess2, bus.Brief{Role: "reviewer"})
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, false, &sess2, bus.Brief{Role: "reviewer"})
 	if strings.Contains(readFileStr(t, argvLog), "--resume") {
 		t.Error("with continuity off no round may resume")
 	}
@@ -496,7 +513,7 @@ func TestReviewerResumeFailureFallsBackToFork(t *testing.T) {
 
 	c := New(nil)
 	sess := "rev-1"
-	out := c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess, bus.Brief{Role: "reviewer"})
+	out := c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, false, &sess, bus.Brief{Role: "reviewer"})
 	if out.startErr != nil {
 		t.Fatalf("fallback fork must complete: %+v", out)
 	}
@@ -666,7 +683,7 @@ func TestForkReviewerRebriefsOverFixBrief(t *testing.T) {
 
 	sess := "rev-1" // continuity off → round 2 still forks, ignoring the session
 	rb := bus.Brief{Role: "reviewer", Title: "review repo", Prompt: "git diff main..quest/q1"}
-	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, &sess, rb)
+	c.spawnReviewer(context.Background(), "q1", "repo", t.TempDir(), nil, 2, "", false, "", "", nil, false, &sess, rb)
 
 	obj, err := c.server.Storage.Get(bus.BriefKey(reviewerID))
 	if err != nil {
