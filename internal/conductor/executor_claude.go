@@ -1578,7 +1578,12 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 				cleanupTemplateCopy(s, integDir)
 			}
 		}()
-		var pendingReverify []reviewFinding // blockers the fix pass just addressed, to re-verify
+		// findings the prior fix round handed to the next reviewer round to re-verify —
+		// EITHER committed fixes to confirm OR (pendingDeferred) a no-diff DEFERRAL where
+		// nothing was committed. pendingDeferred flips the reverify prompt to the truthful
+		// variant so the confirming reviewer is never told a fix landed when none did.
+		var pendingReverify []reviewFinding
+		var pendingDeferred bool
 		repoClean := false
 		for round := 1; round <= rounds; round++ {
 			if ctx.Err() != nil {
@@ -1594,7 +1599,7 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 				setAgentStateIn(agents, reviewerID, "working", fmt.Sprintf("reviewing %s (round %d/%d)", repoBase(repo), round, rounds))
 			})
 			out := c.spawnReviewer(ctx, hostID, repo, integDir, extraDirsForDelivered(repo, folders),
-				round, tpl, tplOK, reviewerModel, reviewerThinking, pendingReverify, &reviewerSession, reviewerBrief)
+				round, tpl, tplOK, reviewerModel, reviewerThinking, pendingReverify, pendingDeferred, &reviewerSession, reviewerBrief)
 			gateTokens += out.tokens
 			if reviewerSession != "" && !slices.Contains(reviewerSessions, reviewerSession) {
 				reviewerSessions = append(reviewerSessions, reviewerSession)
@@ -1669,13 +1674,17 @@ func (c *Conductor) reviewUntilClean(ctx context.Context, hostID string,
 				return false, nil
 			}
 			if len(citable) > 0 {
-				// Re-engage a fix agent on the citable subset, commit onto the branch.
-				fixOK, fixTokens := c.fixReviewFindings(ctx, hostID, repo, integDir, branch, citable, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking, taskIntent)
+				// Re-engage a fix agent on the citable subset, commit onto the branch. A
+				// no-diff DEFERRAL (fixDeferred) returns ok=true with nothing committed — the
+				// next reviewer round re-verifies whether the finding still reproduces at HEAD,
+				// prompted truthfully (no committed-fix claim) via pendingDeferred.
+				fixOK, fixDeferred, fixTokens := c.fixReviewFindings(ctx, hostID, repo, integDir, branch, citable, extraDirsForDelivered(repo, folders), round, fixModel, fixThinking, taskIntent)
 				gateTokens += fixTokens
 				if !fixOK {
 					return false, nil
 				}
 				pendingReverify = citable
+				pendingDeferred = fixDeferred
 			}
 			if len(structuralRound) > 0 {
 				// Non-citable findings need decomposition by the level above — return them
@@ -1713,7 +1722,7 @@ func reviewContinuityEnabled() bool { return os.Getenv("CANDYLAND_REVIEW_CONTINU
 // clears the session and retries the same round via the fork path.
 func (c *Conductor) spawnReviewer(ctx context.Context, hostID, repo, integDir string, extra []string,
 	round int, tpl string, tplOK bool, reviewerModel, reviewerThinking string,
-	reverify []reviewFinding, reviewerSession *string, reviewerBrief bus.Brief) attemptOutcome {
+	reverify []reviewFinding, reverifyDeferred bool, reviewerSession *string, reviewerBrief bus.Brief) attemptOutcome {
 	forkSpawn := func() attemptOutcome {
 		// Re-put the reviewer brief immediately before every FORK spawn: the reviewer
 		// and the fix identity share brief/<reviewerID>, so a prior fix pass leaves the
@@ -1735,7 +1744,7 @@ func (c *Conductor) spawnReviewer(ctx context.Context, hostID, repo, integDir st
 		return out
 	}
 	if round >= 2 && reviewContinuityEnabled() && *reviewerSession != "" {
-		out := streamOnce(ctx, c, hostID, reviewerID, reviewReverifyPrompt(reverify), integDir, extra,
+		out := streamOnce(ctx, c, hostID, reviewerID, reviewReverifyPrompt(reverify, reverifyDeferred), integDir, extra,
 			spawnOpts{resumeFrom: *reviewerSession, maxTurns: reviewFixTurns(), model: reviewerModel, thinking: reviewerThinking})
 		if !out.terminalFailed() && out.startErr == nil {
 			return out
@@ -1859,17 +1868,23 @@ func (c *Conductor) addGateReviewTokens(hostID string, n int) {
 }
 
 // fixReviewFindings re-engages a fix agent in the integration worktree to address
-// the reviewer's cited blockers and commits the fixes onto the run branch. It
-// returns ok=true when the fixes were made and committed, false when the agent failed
-// to act (error recorded) or the run was stopped, plus the fix spawn's token usage
-// (for the gate budget accounting).
-func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking, intent string) (bool, int) {
+// the reviewer's cited blockers and commits the fixes onto the run branch. It returns
+// (ok, deferred, tokens): ok=true when the fixes were made and committed, when an
+// all-synthesized finding set was resolved with an evidence-cited no-diff re-stamp
+// (#71), OR when a REAL finding produced no diff after the attempt budget and is
+// deferred to the caller's confirming reviewer round (deferred=true, NOTHING committed
+// — the finding may already be satisfied at HEAD, and maker≠checker forbids the fixer
+// self-clearing it); ok=false when the agent failed to act (error recorded) or the run
+// was stopped. deferred is true ONLY on that real-finding no-diff deferral so the
+// caller can prompt its next reviewer round TRUTHFULLY (no fix was committed). tokens
+// is the fix spawn's usage (for the gate budget accounting).
+func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, branch string, blockers []reviewFinding, extra []string, round int, fixModel, fixThinking, intent string) (bool, bool, int) {
 	// C2 fail-fast: a fix pass with NO findings has nothing to act on. Never let it
 	// run and silently re-derive its own task list (a context-blind agent then
 	// explores the whole tree); record an explicit error and abort the pass.
 	if len(blockers) == 0 {
 		c.failReview(ctx, id, reviewerID, "A fix pass was requested for "+repoBase(repo)+" with no review findings — aborting (no PR is opened, and the pass does not silently re-derive work).")
-		return false, 0
+		return false, false, 0
 	}
 	c.Update(id, func(r *run.Run) {
 		r.StatusLine = fmt.Sprintf("Addressing %d review %s in %s…", len(blockers), plural(len(blockers), "finding", "findings"), repoBase(repo))
@@ -1906,11 +1921,11 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 		out := streamOnce(ctx, c, id, reviewerID, prompt, integDir, extra, opts)
 		tokens += out.tokens
 		if ctx.Err() != nil {
-			return false, tokens // stopped mid-fix
+			return false, false, tokens // stopped mid-fix
 		}
 		if out.startErr != nil {
 			c.failReview(ctx, id, reviewerID, startFailurePrefix+out.startErr.Error()+". The fix pass couldn't start.")
-			return false, tokens
+			return false, false, tokens
 		}
 		if hasChanges(ctx, integDir) {
 			break // real work landed — proceed to commit + deliver
@@ -1930,16 +1945,48 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 						setAgentState(r, reviewerID, "green", "accepted no-diff resolution in "+repoBase(repo))
 						appendToAgent(r, reviewerID, run.Event{T: "system", Text: "accepted no-diff resolution of synthesized finding(s) in " + repoBase(repo) + ": evidence-cited REVIEW_CLEAN passed the verdict-integrity detector; nothing to commit"}, 0)
 					})
-					return true, tokens
+					return true, false, tokens
 				}
 			}
 		}
 		if attempt == attempts {
+			// core/completion doctrine: "A no-op remediation is a delivery signal, not a
+			// block — re-verify findings at the integrated HEAD. A finding that no longer
+			// reproduces at HEAD is stale, objective-met-deduped, and delivered — never fed
+			// to the fixer and never a `blocked` terminal. A 'no changes after K attempts'
+			// guard may terminate `blocked` only when a finding STILL reproduces at HEAD
+			// after the remediation budget." (detritus#224.) For a REAL reviewer-cited
+			// finding the fixer producing no diff can mean it is already satisfied at HEAD
+			// (e.g. an integration merge landed the fix after the review was computed), not
+			// that it "can't be fixed" — so a no-op here must NOT false-block deliverable
+			// work. Maker≠checker: the fixer must not self-clear a real finding on its own
+			// word, so we do NOT accept here; instead we DEFER (return deferred=true) to the
+			// caller's confirming reviewer round. reviewUntilClean re-reviews at the current
+			// integrated HEAD on the next round whenever this returns true — a RESUMED
+			// reviewer session when continuity is on (still the reviewer re-verifying, never
+			// the fixer — maker≠checker holds), or a fresh fork otherwise. deferred=true tells
+			// the caller to prompt that round TRUTHFULLY: no fix was committed, so the reverify
+			// prompt must ask whether each finding STILL reproduces at HEAD rather than claim a
+			// fix landed. If the finding still reproduces there, the round cap terminates
+			// `blocked` ("still has N unresolved after N rounds") — the refusal is preserved,
+			// just relocated to the confirming re-review. Nothing to commit; return before the
+			// commitAll/syncBranchRef tail, exactly like the #71 accept path.
+			if !allSynthesized(blockers) {
+				c.Update(id, func(r *run.Run) {
+					appendToAgent(r, reviewerID, run.Event{T: "system", Text: fmt.Sprintf("fix pass made no changes after %d attempts — deferring to a confirming reviewer round (findings may already be satisfied at HEAD)", attempts)}, 0)
+				})
+				return true, true, tokens
+			}
+			// An all-synthesized finding set that did NOT re-stamp a detector-clean verdict
+			// (the #71 accept path above did not fire) has no bounce-authorized no-diff
+			// resolution and no fresh-reviewer re-review guaranteed by its callers'
+			// downstream gate (executeAcceptance re-runs the acceptance command on a true
+			// return), so it must keep failing here rather than pass on the fixer's silence.
 			// #64.4: the blockers are known here — persist them on the run record so
 			// post-hoc recovery need not re-derive them (mirrors the rounds-exhausted park).
 			c.Update(id, func(r *run.Run) { r.ReviewFindings = findingLines(blockers) })
 			c.failReview(ctx, id, reviewerID, fmt.Sprintf("The fix pass made no changes for the review findings in %s after %d attempts — refusing to open a PR with open blockers.", repoBase(repo), attempts))
-			return false, tokens
+			return false, false, tokens
 		}
 		c.Update(id, func(r *run.Run) {
 			appendToAgent(r, reviewerID, run.Event{T: "system", Text: fmt.Sprintf("fix retry %d/%d — no diff yet", attempt+1, attempts)}, 0)
@@ -1947,15 +1994,15 @@ func (c *Conductor) fixReviewFindings(ctx context.Context, id, repo, integDir, b
 	}
 	if _, err := commitAll(ctx, integDir, "candyland(review): address findings in "+repoBase(repo)); err != nil {
 		c.failReview(ctx, id, reviewerID, "Couldn't commit the review fixes for "+repoBase(repo)+": "+err.Error())
-		return false, tokens
+		return false, false, tokens
 	}
 	// The integration worktree is detached; keep the run branch ref (what push/PR
 	// resolve) tracking the review-fix commits that just landed on HEAD.
 	if err := syncBranchRef(ctx, integDir, branch); err != nil {
 		c.failReview(ctx, id, reviewerID, "Couldn't update the "+branch+" ref after review fixes for "+repoBase(repo)+": "+err.Error())
-		return false, tokens
+		return false, false, tokens
 	}
-	return true, tokens
+	return true, false, tokens
 }
 
 // executeAcceptance runs the plan's OWN acceptance checks on the integrated primary
@@ -2000,7 +2047,7 @@ func (c *Conductor) executeAcceptance(ctx context.Context, id string, r run.Run,
 		c.Update(id, func(r *run.Run) {
 			appendToAgent(r, "tl", run.Event{T: "system", Text: "acceptance check failed, attempting fix: " + cmd}, 0)
 		})
-		fixOK, _ := c.fixReviewFindings(ctx, id, repo, integDir, r.Branch, []reviewFinding{finding}, nil, 1, fixModel, fixThinking, r.Prompt)
+		fixOK, _, _ := c.fixReviewFindings(ctx, id, repo, integDir, r.Branch, []reviewFinding{finding}, nil, 1, fixModel, fixThinking, r.Prompt)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -2291,12 +2338,31 @@ const rootIntentReviewClause = "If the brief carries a ROOT INTENT section: you 
 // fresh evidence WITHOUT re-deriving context it already holds this session.
 const reviewReverifyBootstrap = "The fix identity has addressed your cited blockers (listed below); the fixes are committed on the branch you are reviewing. Re-verify with FRESH evidence: diff the new commits, re-run the acceptance checks you already established in this session, and confirm each cited blocker is resolved and nothing regressed. Do not re-derive context you already hold. Then emit EXACTLY ONE verdict line and stop: REVIEW_CLEAN or REVIEW_FINDINGS <json>. " + rootIntentReviewClause + incidentDoctrine
 
-// reviewReverifyPrompt builds the round-≥2 reverify prompt, carrying the just-fixed
+// reviewReverifyDeferredBootstrap is the round-≥2 prompt for the DEFERRAL case: the
+// fix pass made NO changes and committed NOTHING (a real finding that may already be
+// satisfied at the current integrated HEAD — e.g. an integration merge landed the fix
+// after the review was computed — or may still reproduce). It must NOT claim a fix was
+// committed (that would bias the reviewer toward REVIEW_CLEAN on a finding that could
+// still reproduce); instead it asks the reviewer to determine, against HEAD, whether
+// each cited finding STILL reproduces. This is the maker≠checker clearing authority:
+// only THIS reviewer pass may clear a real finding, never the fixer's silence.
+const reviewReverifyDeferredBootstrap = "The fix pass made NO changes for the cited finding(s) below — it committed nothing. The finding(s) may ALREADY be satisfied at the current integrated HEAD (for example an integration merge landed the fix after your prior review), or they may STILL reproduce. Do NOT assume any fix was committed and do NOT look for new commits to trust. Re-verify with FRESH evidence AGAINST HEAD whether each cited finding STILL reproduces: run the diff command in your brief against HEAD, read the current state of each cited location, and re-run the acceptance checks you already established in this session. Do not re-derive context you already hold. Then emit EXACTLY ONE verdict line and stop: REVIEW_CLEAN (only if no cited finding reproduces at HEAD) or REVIEW_FINDINGS <json>. " + rootIntentReviewClause + incidentDoctrine
+
+// reviewReverifyPrompt builds the round-≥2 reverify prompt, carrying the just-handled
 // blockers rendered exactly as reviewFixPrompt renders them (reuse findingLines).
-func reviewReverifyPrompt(blockers []reviewFinding) string {
+// deferred selects the TRUTHFUL no-commit variant: when the prior round was a no-diff
+// deferral (nothing committed), the reviewer must be told so rather than that a fix
+// landed on the branch.
+func reviewReverifyPrompt(blockers []reviewFinding, deferred bool) string {
 	var b strings.Builder
-	b.WriteString(reviewReverifyBootstrap)
-	b.WriteString("\n\n--- CITED BLOCKERS (now addressed on the branch) ---\n")
+	header := "\n\n--- CITED BLOCKERS (now addressed on the branch) ---\n"
+	if deferred {
+		b.WriteString(reviewReverifyDeferredBootstrap)
+		header = "\n\n--- CITED FINDINGS (fix pass made NO changes — re-verify whether each STILL reproduces at HEAD) ---\n"
+	} else {
+		b.WriteString(reviewReverifyBootstrap)
+	}
+	b.WriteString(header)
 	for _, ln := range findingLines(blockers) {
 		b.WriteString("- ")
 		b.WriteString(ln)
