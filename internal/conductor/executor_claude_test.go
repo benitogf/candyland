@@ -136,6 +136,38 @@ func TestCleanVerdictRegressionQAActivityNotAdmission(t *testing.T) {
 	}
 }
 
+// A negator wrapped in markdown emphasis (**no**, *not*, _no_) must still be read as
+// a negator: reviewers write prose in markdown and bold their key claim, so a bolded
+// "no regression" is mitigating evidence, not a defect admission. Regression coverage
+// for a run that terminated `blocked` because every re-stamp bolded "**No regression**"
+// and the negator went unrecognised.
+func TestCleanVerdictMarkdownEmphasisedNegatorNotAdmission(t *testing.T) {
+	notFlagged := []string{
+		"- **No regression**: the diff is exactly one file.\n\nAll checks green.\nREVIEW_CLEAN",
+		"Linux build exit 0 — **no regression to the twin**.\n\nConfirmed.\nREVIEW_CLEAN",
+		"The symbol is *not* dead code; it resolves via the entrypoint.\n\nConfirmed.\nREVIEW_CLEAN",
+		"There is _no_ unreachable path here.\n\nConfirmed.\nREVIEW_CLEAN",
+		"This is **not** a regression; behaviour is identical.\n\nConfirmed.\nREVIEW_CLEAN",
+	}
+	for _, text := range notFlagged {
+		if bad, reason := cleanVerdictContradictsNarration(text); bad {
+			t.Errorf("markdown-emphasised negator must not bounce: %q -> reason %q", text, reason)
+		}
+	}
+
+	// The emphasis strip must not swallow a genuine admission: bolding the DEFECT
+	// (not a negator before it) still bounces.
+	flagged := []string{
+		"This introduces a **regression**.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"The handler is **unreachable**.\n\nOtherwise fine.\nREVIEW_CLEAN",
+	}
+	for _, text := range flagged {
+		if bad, _ := cleanVerdictContradictsNarration(text); !bad {
+			t.Errorf("emphasised defect admission must still bounce: %q", text)
+		}
+	}
+}
+
 // The ground-truth delivery gate counts a PR as delivered ONLY on a real URL with no
 // recorded error — never an optimistic or half-written record.
 func TestDeliveredPRs(t *testing.T) {

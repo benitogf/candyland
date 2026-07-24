@@ -1373,12 +1373,16 @@ func quotedAt(lower string, i, n int) bool {
 }
 
 // negatedAt reports whether the phrase found at index i in lower is preceded (within
-// a few words) by a negator, making it mitigating rather than an admission.
+// a few words) by a negator, making it mitigating rather than an admission. The word
+// trim also strips markdown emphasis (* and _): reviewers write prose in markdown and
+// reflexively emphasise their key claim, so a bolded/italicised negator ("**no**
+// regression", "*not* wired") must tokenize to the bare negator or it is missed and
+// the following blocker phrase false-fires — bouncing a correct REVIEW_CLEAN.
 func negatedAt(lower string, i int) bool {
 	prefix := lower[:i]
 	fields := strings.Fields(prefix)
 	for j := len(fields) - 1; j >= 0 && j >= len(fields)-4; j-- {
-		w := strings.Trim(fields[j], ".,;:!?\"'()")
+		w := strings.Trim(fields[j], ".,;:!?\"'()*_")
 		if strings.HasSuffix(w, "n't") {
 			return true
 		}
