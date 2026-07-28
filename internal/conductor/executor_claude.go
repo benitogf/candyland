@@ -1359,30 +1359,73 @@ func narrationProse(text string) string {
 var negators = []string{"not", "no", "isn't", "aren't", "wasn't", "never", "nor", "without"}
 
 // quotedAt reports whether the phrase spanning [i, i+n) in lower is wrapped in
-// matching backticks or double quotes — the reviewer QUOTING a phrase/identifier
-// (e.g. naming the "dead code" admission string this file itself lists) rather than
-// admitting the defect. narrationProse strips fenced/diff blocks but not inline
-// quotations, so without this a reviewer discussing a change that is ABOUT
-// blocker-class phrases would bounce its own clean verdict.
+// matching backticks, double quotes, or single quotes — the reviewer QUOTING a
+// phrase/identifier (e.g. naming the "dead code" admission string this file itself
+// lists, or the 'regression' term it is refuting) rather than admitting the defect.
+// narrationProse strips fenced/diff blocks but not inline quotations, so without this
+// a reviewer discussing a change that is ABOUT blocker-class phrases would bounce its
+// own clean verdict.
 func quotedAt(lower string, i, n int) bool {
 	if i == 0 || i+n >= len(lower) {
 		return false
 	}
 	open, close := lower[i-1], lower[i+n]
-	return (open == '`' && close == '`') || (open == '"' && close == '"')
+	return (open == '`' && close == '`') || (open == '"' && close == '"') || (open == '\'' && close == '\'')
 }
 
-// negatedAt reports whether the phrase found at index i in lower is preceded (within
-// a few words) by a negator, making it mitigating rather than an admission. The word
-// trim also strips markdown emphasis (* and _): reviewers write prose in markdown and
-// reflexively emphasise their key claim, so a bolded/italicised negator ("**no**
-// regression", "*not* wired") must tokenize to the bare negator or it is missed and
-// the following blocker phrase false-fires — bouncing a correct REVIEW_CLEAN.
+// endsClause reports whether a RAW (untrimmed) word terminates the clause it sits in —
+// trailing sentence/clause punctuation or an em/en-dash. A lookbehind that reads past
+// such a boundary would let a benign cue in a PRIOR clause ("It guards against overflow.
+// This introduces a regression.") suppress an admission in a LATER one. qaActivityAt
+// enforces the same discipline in the lookahead direction; the lookbehind helpers below
+// share it via clauseWordsBefore.
+func endsClause(raw string) bool {
+	// An em/en-dash or "--" anywhere in the token joins two clauses ("failures—but").
+	if strings.ContainsAny(raw, "—–") || strings.Contains(raw, "--") {
+		return true
+	}
+	// Strip trailing closing wrappers (markdown emphasis, quotes, brackets) so a
+	// terminator wrapped in them ("**No issues.**", `test."`, "(no test.)") is still
+	// seen. "**no**" strips to "no" — a non-terminator — so #79 markdown negators are
+	// unaffected.
+	raw = strings.TrimRight(raw, "*_\"'`)]}")
+	if n := len(raw); n > 0 {
+		switch raw[n-1] {
+		case '.', ',', ';', ':', '!', '?':
+			return true
+		}
+	}
+	return false
+}
+
+// clauseWordsBefore returns up to max words immediately before index i in lower,
+// most-recent first, each trimmed of punctuation and markdown emphasis — but STOPPING
+// at the first clause boundary so the scan never crosses into a prior clause. A line
+// break is itself a hard boundary (strings.Fields would otherwise collapse it), and
+// endsClause catches sentence/clause punctuation and dashes. The trim strips * and _ so
+// a bolded/italicised cue ("**no**", "*not*") still tokenizes to the bare word.
+func clauseWordsBefore(lower string, i, max int) []string {
+	seg := lower[:i]
+	if nl := strings.LastIndexByte(seg, '\n'); nl >= 0 {
+		seg = seg[nl+1:]
+	}
+	fields := strings.Fields(seg)
+	out := make([]string, 0, max)
+	for j := len(fields) - 1; j >= 0 && len(out) < max; j-- {
+		if endsClause(fields[j]) {
+			break
+		}
+		out = append(out, strings.Trim(fields[j], ".,;:!?\"'()*_-"))
+	}
+	return out
+}
+
+// negatedAt reports whether the phrase found at index i in lower is preceded, WITHIN THE
+// SAME CLAUSE, by a negator — making it mitigating rather than an admission. "not dead
+// code", "**no** regression". A negator in a prior clause ("There is no test. Dead code
+// remains.") must NOT clear the later admission, so the scan stops at clause boundaries.
 func negatedAt(lower string, i int) bool {
-	prefix := lower[:i]
-	fields := strings.Fields(prefix)
-	for j := len(fields) - 1; j >= 0 && j >= len(fields)-4; j-- {
-		w := strings.Trim(fields[j], ".,;:!?\"'()*_")
+	for _, w := range clauseWordsBefore(lower, i, 4) {
 		if strings.HasSuffix(w, "n't") {
 			return true
 		}
@@ -1397,10 +1440,11 @@ func negatedAt(lower string, i int) bool {
 
 // qaActivityNouns are the words that, immediately after "regression", turn it from a
 // defect admission into QA-activity vocabulary: "regression sweep", "regression tests
-// pass", "regression suite is green" describe the reviewer's own verification work
-// (exactly what a rigorous review narrates), not a defect it found.
+// pass", "regression suite is green", "regression guard" describe the reviewer's own
+// verification work (exactly what a rigorous review narrates), not a defect it found.
 var qaActivityNouns = []string{
 	"sweep", "sweeps", "test", "tests", "testing", "suite", "suites", "check", "checks",
+	"guard", "guards", "guarding",
 }
 
 // qaActivityAt reports whether the phrase spanning [i, i+n) in lower is immediately
@@ -1421,6 +1465,95 @@ func qaActivityAt(lower string, i, n int) bool {
 	for _, noun := range qaActivityNouns {
 		if next == noun {
 			return true
+		}
+	}
+	return false
+}
+
+// removalCues are the verbs that, preceding a blocker-class phrase, mark it as a defect
+// the change ELIMINATED rather than one it still carries: "removes the dead code",
+// "removes an unreachable statement". The phrase names what was taken out, so the
+// verdict is not self-contradicting — the mirror of negators, for the removal case.
+var removalCues = []string{
+	"remove", "removes", "removed", "removing",
+	"delete", "deletes", "deleted", "deleting",
+	"eliminate", "eliminates", "eliminated", "eliminating",
+	"drop", "drops", "dropped", "dropping",
+}
+
+// refutedAt reports whether the blocker phrase at index i in lower is preceded, WITHIN
+// THE SAME CLAUSE, by a removal cue — the description of a defect the change removed
+// rather than a standing one. "removes the dead code" clears; "removes the caller,
+// leaving dead code" fires (the removal cue is in a prior clause, past the comma).
+func refutedAt(lower string, i int) bool {
+	for _, w := range clauseWordsBefore(lower, i, 4) {
+		for _, c := range removalCues {
+			if w == c {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// guardVerbs describe protecting AGAINST a regression rather than admitting one: a
+// "guards against a … regression" test narration.
+var guardVerbs = []string{"guard", "guards", "guarding", "guarded"}
+
+// guardFillers are the only words allowed between "against" and "regression" for
+// guardsAgainstAt to treat the collocation as protecting against THIS regression —
+// articles/determiners/adjectives. Any other word ("guards against overflow but
+// introduces a regression") means "against" governs something else, so it fires.
+var guardFillers = map[string]bool{
+	"a": true, "an": true, "the": true, "this": true, "that": true, "these": true,
+	"those": true, "future": true, "potential": true, "possible": true, "any": true,
+	"further": true, "new": true, "similar": true, "such": true,
+}
+
+// guardsAgainstAt reports whether, within the same clause before the "regression" at
+// index i, a guard verb is immediately followed by "against" whose object is this
+// regression (only guardFillers intervene). A bare "guard" noun, or "guards against
+// <other-noun> … a regression", does NOT clear — so genuine admissions still fire.
+func guardsAgainstAt(lower string, i int) bool {
+	ws := clauseWordsBefore(lower, i, 8) // most-recent first
+	for k := 0; k < len(ws); k++ {
+		if ws[k] != "against" {
+			continue
+		}
+		onlyFiller := true
+		for m := 0; m < k; m++ { // words between "against" and the token
+			if !guardFillers[ws[m]] {
+				onlyFiller = false
+				break
+			}
+		}
+		if onlyFiller && k+1 < len(ws) {
+			for _, v := range guardVerbs {
+				if ws[k+1] == v {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// deniedAdmissionAt reports whether, within the same clause before the "regression" at
+// index i, a NEGATED "admission"/"admitting" appears — the reviewer explicitly denying
+// an admission ("… is not an admission that the change introduces a regression"), which
+// on a re-review is refuting the finding, not making one. A plain (un-negated)
+// "admission", or one in a prior clause ("makes no admission, but … a regression"),
+// does not clear.
+func deniedAdmissionAt(lower string, i int) bool {
+	ws := clauseWordsBefore(lower, i, 10) // most-recent first
+	for k := 0; k < len(ws); k++ {
+		if ws[k] != "admission" && ws[k] != "admitting" {
+			continue
+		}
+		for m := k + 1; m < len(ws) && m <= k+3; m++ { // words before "admission"
+			if ws[m] == "not" || ws[m] == "no" || ws[m] == "never" || strings.HasSuffix(ws[m], "n't") {
+				return true
+			}
 		}
 	}
 	return false
@@ -1466,27 +1599,42 @@ func verdictBearingBlock(prose string) string {
 // It scans only the reviewer's PROSE (via narrationProse), never quoted diff/code,
 // so a keyword present in the change under review isn't mistaken for an admission.
 // A blocker phrase in a NEGATED/mitigating context ("not dead code", "isn't
-// unreachable") is the reviewer refuting the defect, not admitting it, so it is not
-// flagged — otherwise the cited-mitigating-evidence path a bounce demands could
-// never clear. An inline-QUOTED occurrence (`dead code` / "dead code") is the
-// reviewer naming the phrase (e.g. reviewing a change that is itself about these
-// admission strings), not admitting the defect, so it is not flagged either.
-// Blocker-class admissions are scanned across the whole prose (they describe a
-// concrete defect wherever they appear), but the hedge-word scan is confined to the
-// verdict-bearing block (see verdictBearingBlock) so exploratory hedging that the
-// reviewer later resolved before stamping CLEAN doesn't bounce a proven verdict.
+// unreachable"), a REMOVAL context ("removes the dead code", "removes an unreachable
+// statement"), or an inline-QUOTED occurrence (`dead code` / "dead code" / 'regression')
+// is the reviewer refuting/naming the defect, not admitting it, so it is not flagged —
+// otherwise the cited-mitigating-evidence path a bounce demands could never clear.
+//
+// All blocker phrases are scanned across the whole prose (they describe a concrete
+// defect wherever they appear). The "regression" token gets three extra benign guards
+// the structural phrases don't need, because it is dominated by benign QA/guard/refuting
+// vocabulary and, on a re-review, the reviewer MUST discuss the flagged word to refute a
+// false finding — prose that lexically mimics an admission. qaActivityAt clears
+// QA-activity collocations ("regression test", "regression guard"); guardsAgainstAt
+// clears "guards against a … regression" (a protecting test, not a defect);
+// deniedAdmissionAt clears "… is not an admission that the change introduces a
+// regression" (the reviewer explicitly denying the finding, where the negator is too
+// far for negatedAt's window). Each is NARROW by design — a bare "guard" noun or a plain
+// (un-negated) "admission" does NOT clear — so genuine admissions stated plainly ("there
+// is a regression", "this introduces a regression", "Regression: tests fail") still fire.
+// The hedge-word scan stays confined to the verdict-bearing block so exploratory hedging
+// the reviewer later resolved doesn't bounce.
 func cleanVerdictContradictsNarration(text string) (bad bool, reason string) {
 	prose := narrationProse(text)
 	lower := strings.ToLower(prose)
 	for _, p := range blockerAdmissions {
+		meta := p == "regression" // the overloaded token needs the QA + refutation guards
 		for from := 0; ; {
 			idx := strings.Index(lower[from:], p)
 			if idx < 0 {
 				break
 			}
 			at := from + idx
-			if !negatedAt(lower, at) && !quotedAt(lower, at, len(p)) &&
-				!(p == "regression" && qaActivityAt(lower, at, len(p))) {
+			benign := negatedAt(lower, at) || quotedAt(lower, at, len(p)) || refutedAt(lower, at)
+			if meta {
+				benign = benign || qaActivityAt(lower, at, len(p)) ||
+					guardsAgainstAt(lower, at) || deniedAdmissionAt(lower, at)
+			}
+			if !benign {
 				return true, "blocker-class admission in narration: " + strconv.Quote(p)
 			}
 			from = at + len(p)

@@ -168,6 +168,81 @@ func TestCleanVerdictMarkdownEmphasisedNegatorNotAdmission(t *testing.T) {
 	}
 }
 
+// A reviewer refuting a false "regression" finding — or narrating a regression-GUARD
+// test, or reporting that the change REMOVES dead/unreachable code — writes the blocker
+// keyword in benign, descriptive context. None of it is a defect admission, so a
+// REVIEW_CLEAN alongside it must not bounce. Regression coverage for a run that
+// terminated `blocked` because every re-stamp discussed the word "regression" while
+// refuting the finding and the gate re-fired on that discussion.
+func TestCleanVerdictDescriptiveBlockerNotAdmission(t *testing.T) {
+	notFlagged := []string{
+		// "regression" as a guard-test descriptor (lookahead + lookbehind).
+		"The test is a \"FUTURE-REGRESSION GUARD\".\n\nConfirmed.\nREVIEW_CLEAN",
+		"It documents itself as a future-regression guard test.\n\nConfirmed.\nREVIEW_CLEAN",
+		"This guards against a future regression.\n\nConfirmed.\nREVIEW_CLEAN",
+		"Both the discriminator and the regression-guard test pass.\n\nConfirmed.\nREVIEW_CLEAN",
+		// The flagged word quoted with single quotes — the reviewer naming it. Marker-free
+		// on purpose: this must clear via quotedAt's single-quote branch alone, so the
+		// assert fails if that branch regresses (not masked by another exemption).
+		"The identifier 'regression' appears verbatim in the narration.\n\nConfirmed.\nREVIEW_CLEAN",
+		// The r148 meta-refutation: the negator is too far for negatedAt's window, but
+		// First 'regression' clears via quotedAt (single quotes); the second, in
+		// "not an admission that … introduces a regression", clears via deniedAdmissionAt
+		// (the negated "admission" in the same clause); "future-regression guard" via
+		// qaActivityAt. None of it is a live-defect admission.
+		"The word 'regression' here is not an admission that the change introduces a regression; it is a future-regression guard test.\n\nConfirmed.\nREVIEW_CLEAN",
+		// Structural blocker keywords describing what the change REMOVES.
+		"The change removes the dead code path that followed the 500 write.\n\nConfirmed.\nREVIEW_CLEAN",
+		"This removes an unreachable statement after the panic.\n\nConfirmed.\nREVIEW_CLEAN",
+	}
+	for _, text := range notFlagged {
+		if bad, reason := cleanVerdictContradictsNarration(text); bad {
+			t.Errorf("descriptive/refuting blocker keyword must not bounce: %q -> reason %q", text, reason)
+		}
+	}
+
+	// Genuine admissions still bounce — the narrow guards must not swallow a real defect.
+	// The last four are the exact shapes that prove the guards are NARROW: an incidental
+	// "guard" noun, "cited", "finding", or "against main" near a real "introduces/is a
+	// regression" must NOT clear (a broad marker list would have wrongly suppressed them).
+	flagged := []string{
+		"There is still dead code after the fix.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"The error branch is unreachable and never runs.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"This change introduces a regression in the reboot path.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"The fix causes a regression in shutdown.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"The guard misses the nil case and introduces a regression.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"The cited fix introduces a regression.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"Finding: this change introduces a regression in the retry path.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		"Compared against main, this is a regression.\n\nOtherwise fine.\nREVIEW_CLEAN",
+		// Clause-boundary discipline: a benign cue in a PRIOR clause/sentence must not
+		// suppress an admission in a LATER one. The guard/removal/denied-admission cue
+		// governs a different clause, so each must still bounce.
+		"The new check guards against overflow but introduces a regression in the retry path.\n\nREVIEW_CLEAN",
+		"It guards against overflow. This introduces a regression.\n\nREVIEW_CLEAN",
+		"The author makes no admission, but the change introduces a regression.\n\nREVIEW_CLEAN",
+		"This removes the caller, leaving dead code.\n\nREVIEW_CLEAN",
+		"Throughput shows a 30% drop — a regression from the previous release.\n\nREVIEW_CLEAN",
+		"There is no test. Dead code remains.\n\nREVIEW_CLEAN",
+		// Sibling sentence terminators (! ?) and a line break are boundaries too, so a
+		// prior-clause cue does not suppress these admissions.
+		"There is no test! Dead code remains.\n\nREVIEW_CLEAN",
+		"Does the change remove anything? Dead code remains.\n\nREVIEW_CLEAN",
+		"This is not an admission of guilt! The change introduces a regression.\n\nREVIEW_CLEAN",
+		"No issues\nDead code remains in module B.\n\nREVIEW_CLEAN",
+		// A sentence terminator wrapped in markdown emphasis / quotes / parens is still a
+		// boundary — the prior-sentence negator/removal cue must not leak into the next.
+		"**No issues.** Dead code remains in module B.\n\nREVIEW_CLEAN",
+		"\"There is no test.\" Dead code remains.\n\nREVIEW_CLEAN",
+		"(There is no test.) Dead code remains.\n\nREVIEW_CLEAN",
+		"**The change removes nothing.** Dead code remains.\n\nREVIEW_CLEAN",
+	}
+	for _, text := range flagged {
+		if bad, _ := cleanVerdictContradictsNarration(text); !bad {
+			t.Errorf("standing defect admission must still bounce: %q", text)
+		}
+	}
+}
+
 // The ground-truth delivery gate counts a PR as delivered ONLY on a real URL with no
 // recorded error — never an optimistic or half-written record.
 func TestDeliveredPRs(t *testing.T) {
